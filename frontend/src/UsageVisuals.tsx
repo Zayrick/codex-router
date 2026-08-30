@@ -175,6 +175,7 @@ function ActivityCard({
 	title: string;
 }) {
 	const columns = Math.max(1, Math.ceil(series.length / 7));
+	const minimumWidth = columns * 8 + Math.max(0, columns - 1) * 3;
 	return (
 		<article className={`usage-activity-card ${className}`}>
 			<header className="usage-activity-card-header">
@@ -194,7 +195,10 @@ function ActivityCard({
 							aria-label={ariaLabel}
 							className="activity-heatmap"
 							role="img"
-							style={{ "--activity-columns": columns } as CSSProperties}
+							style={{
+								"--activity-columns": columns,
+								"--activity-min-width": `${minimumWidth}px`,
+							} as CSSProperties}
 						>
 							{series.map((point, index) => {
 								const future = point.startAt > now;

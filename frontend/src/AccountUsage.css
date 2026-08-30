@@ -339,13 +339,6 @@
 	overflow-x: auto;
 }
 
-.public-account-activity-stack .activity-heatmap {
-	width: 100%;
-	min-width: 0;
-	height: auto;
-	aspect-ratio: 24 / 7;
-}
-
 .public-account-visuals .donut-content {
 	grid-template-columns: minmax(7.5rem, 0.75fr) minmax(7.5rem, 1fr);
 	gap: 0.65rem;
@@ -479,7 +472,7 @@
 	}
 
 	.public-account-activity-stack .activity-heatmap-scroll {
-		padding: 0.2rem 0;
+		padding: 0.35rem;
 	}
 
 	.public-account-metrics {
@@ -488,10 +481,6 @@
 
 	.public-account-metric {
 		border-left: 0;
-	}
-
-	.public-account-visuals .activity-heatmap {
-		min-width: min(100%, 24rem);
 	}
 
 	.skeleton-content {

@@ -140,20 +140,6 @@ function AccountUsage() {
 
 				{snapshot && usage && totals ? (
 					<div className={loading ? "public-account-content is-refreshing" : "public-account-content"}>
-						<section className="public-account-quota" aria-label="账户额度时间条">
-							{snapshot.quota && snapshot.quota.windows.length > 0 ? (
-								<QuotaTimeline
-									className="public-account-quota-timeline"
-									now={now}
-									planType={snapshot.quota.planType}
-									sampledAt={snapshot.quota.sampledAt}
-									windows={snapshot.quota.windows}
-								/>
-							) : (
-								<div className="public-account-quota-empty">额度时间条尚未完成首次同步。</div>
-							)}
-						</section>
-
 						<section className="public-account-range-bar" aria-label="统计时间范围">
 							<div className="public-account-range-copy">
 								<strong>统计范围</strong>
@@ -209,6 +195,20 @@ function AccountUsage() {
 								<ModelTokenDonut usage={usage} />
 							</section>
 						</div>
+
+						<section className="public-account-quota" aria-label="账户额度时间条">
+							{snapshot.quota && snapshot.quota.windows.length > 0 ? (
+								<QuotaTimeline
+									className="public-account-quota-timeline"
+									now={now}
+									planType={snapshot.quota.planType}
+									sampledAt={snapshot.quota.sampledAt}
+									windows={snapshot.quota.windows}
+								/>
+							) : (
+								<div className="public-account-quota-empty">额度时间条尚未完成首次同步。</div>
+							)}
+						</section>
 					</div>
 				) : null}
 			</div>
@@ -228,9 +228,9 @@ function AccountMetric({ label, value }: { label: string; value: string }) {
 function AccountPageSkeleton() {
 	return (
 		<div className="public-account-skeleton" role="status" aria-label="正在读取账户用量">
-			<div className="skeleton-quota" />
 			<div className="skeleton-range" />
 			<div className="skeleton-content"><span /><span /><span /><span /></div>
+			<div className="skeleton-quota" />
 		</div>
 	);
 }

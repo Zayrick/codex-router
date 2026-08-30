@@ -23,6 +23,7 @@ use super::{
 const MAX_TRACKED_JSON_BYTES: usize = 16 * 1024 * 1024;
 const RECENT_EVENT_LIMIT: i64 = 50;
 const BREAKDOWN_LIMIT: i64 = 12;
+const ACTIVITY_BUCKET_COUNT: i64 = 7 * 24;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS usage_events (
@@ -921,19 +922,31 @@ fn query_series(
     prices: &BTreeMap<String, ModelPrice>,
 ) -> Result<Vec<UsageSeriesPoint>> {
     let bucket_ms = range.bucket_ms();
-    let aligned_start = if range == UsageRange::Cycle {
+    let fixed_activity_grid = range != UsageRange::All;
+    let aligned_start = if fixed_activity_grid {
         start_at
     } else {
         start_at - start_at.rem_euclid(bucket_ms)
     };
+    let range_duration = end_at.saturating_sub(start_at).max(1);
+    let bucket_scale = if fixed_activity_grid {
+        ACTIVITY_BUCKET_COUNT
+    } else {
+        1
+    };
+    let bucket_divisor = if fixed_activity_grid {
+        range_duration
+    } else {
+        bucket_ms
+    };
     let sql = format!(
         r#"
-        SELECT ((recorded_at_ms - ?1) / ?2), model, {TOTAL_COLUMNS},
+        SELECT (((recorded_at_ms - ?1) * ?2) / ?3), model, {TOTAL_COLUMNS},
                COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END), 0)
         FROM usage_events
-        WHERE recorded_at_ms >= ?3 AND recorded_at_ms < ?4
-          AND (?5 IS NULL OR (identity_type = ?5 AND identity_id = ?6))
+        WHERE recorded_at_ms >= ?4 AND recorded_at_ms < ?5
+          AND (?6 IS NULL OR (identity_type = ?6 AND identity_id = ?7))
         GROUP BY 1, model ORDER BY 1
         "#,
     );
@@ -942,7 +955,8 @@ fn query_series(
     let rows = statement.query_map(
         params![
             aligned_start,
-            bucket_ms,
+            bucket_scale,
+            bucket_divisor,
             start_at,
             end_at,
             identity_type,
@@ -968,18 +982,27 @@ fn query_series(
         point.successful_requests += successful_requests;
         point.failed_requests += failed_requests;
     }
-    let last_index = (end_at.saturating_sub(1) - aligned_start).div_euclid(bucket_ms);
-    let first_index = (start_at - aligned_start).div_euclid(bucket_ms);
-    let first_index = if range == UsageRange::All {
-        populated.keys().next().copied().unwrap_or(first_index)
+    let (first_index, last_index) = if fixed_activity_grid {
+        (0, ACTIVITY_BUCKET_COUNT - 1)
     } else {
-        first_index
+        let last = (end_at.saturating_sub(1) - aligned_start).div_euclid(bucket_ms);
+        let first = (start_at - aligned_start).div_euclid(bucket_ms);
+        (populated.keys().next().copied().unwrap_or(first), last)
     };
     Ok((first_index..=last_index)
         .map(|index| {
             let point = populated.remove(&index).unwrap_or_default();
+            let point_start = if fixed_activity_grid {
+                start_at.saturating_add(
+                    index
+                        .saturating_mul(range_duration)
+                        .div_euclid(ACTIVITY_BUCKET_COUNT),
+                )
+            } else {
+                aligned_start.saturating_add(index.saturating_mul(bucket_ms))
+            };
             UsageSeriesPoint {
-                start_at: aligned_start.saturating_add(index.saturating_mul(bucket_ms)),
+                start_at: point_start,
                 successful_requests: point.successful_requests,
                 failed_requests: point.failed_requests,
                 requests: point.totals.requests,
@@ -1357,6 +1380,25 @@ mod tests {
         assert!(dashboard.unpriced_models.is_empty());
 
         assert!(UsageBounds::cycle(start_at, end_at - 1, end_at).is_none());
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn finite_activity_ranges_are_always_seven_by_twenty_four_buckets() {
+        let (store, path) = temporary_store();
+        for range in [UsageRange::Day, UsageRange::Week, UsageRange::Month] {
+            let dashboard = store.dashboard(range, None).await.unwrap();
+            assert_eq!(dashboard.series.len(), ACTIVITY_BUCKET_COUNT as usize);
+            assert_eq!(dashboard.series[0].start_at, dashboard.start_at);
+            assert!(
+                dashboard
+                    .series
+                    .windows(2)
+                    .all(|points| points[0].start_at < points[1].start_at)
+            );
+            assert!(dashboard.series.last().unwrap().start_at < dashboard.end_at);
+        }
         drop(store);
         remove_temporary_store(&path);
     }

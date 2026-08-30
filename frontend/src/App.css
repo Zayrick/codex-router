@@ -2242,12 +2242,12 @@ td strong {
 }
 
 .activity-card-grid-stacked .activity-card-visual {
-	display: grid;
+	display: flex;
 	grid-column: 2;
 	grid-row: 1 / span 2;
-	grid-template-rows: minmax(0, 1fr);
-	align-content: stretch;
 	min-width: 0;
+	min-height: 0;
+	align-items: center;
 	padding-left: 1.25rem;
 	border-left: 1px solid var(--border);
 }
@@ -2261,7 +2261,8 @@ td strong {
 .activity-heatmap-scroll {
 	width: 100%;
 	overflow-x: auto;
-	padding: 0.2rem 0;
+	overflow-y: hidden;
+	padding: 0.35rem;
 }
 
 .activity-heatmap {
@@ -2271,28 +2272,30 @@ td strong {
 	grid-auto-flow: column;
 	gap: 3px;
 	width: 100%;
-	min-width: min(100%, 24rem);
+	min-width: max(100%, var(--activity-min-width, 24rem));
 	aspect-ratio: 24 / 7;
 }
 
 .activity-card-grid-stacked .activity-heatmap {
 	grid-template-columns: repeat(var(--activity-columns), minmax(0, 1fr));
 	grid-template-rows: repeat(7, minmax(0, 1fr));
-	width: auto;
-	min-width: 0;
-	height: 100%;
+	width: 100%;
+	min-width: max(100%, var(--activity-min-width, 24rem));
+	height: auto;
 	margin-inline: 0;
-	aspect-ratio: var(--activity-columns) / 7;
+	aspect-ratio: 24 / 7;
 }
 
 .activity-card-grid-stacked .activity-heatmap-scroll {
-	width: auto;
-	height: 100%;
-	overflow: visible;
-	padding: 0;
+	width: 100%;
+	height: auto;
+	overflow-x: auto;
+	overflow-y: hidden;
+	padding: 0.35rem;
 }
 
 .activity-cell {
+	position: relative;
 	display: block;
 	min-width: 0;
 	min-height: 0;
@@ -2754,8 +2757,10 @@ td strong {
 	}
 
 	.activity-cell:hover {
+		z-index: 2;
 		filter: brightness(1.08);
 		transform: scale(1.18);
+		box-shadow: 0 1px 5px rgb(45 42 38 / 0.18);
 	}
 }
 
@@ -3190,14 +3195,15 @@ td strong {
 		width: 100%;
 		height: auto;
 		overflow-x: auto;
-		padding: 0.2rem 0;
+		overflow-y: hidden;
+		padding: 0.35rem;
 	}
 
 	.activity-card-grid-stacked .activity-heatmap {
 		grid-template-columns: repeat(var(--activity-columns), minmax(5px, 1fr));
 		grid-template-rows: repeat(7, minmax(5px, 1fr));
 		width: 100%;
-		min-width: min(100%, 24rem);
+		min-width: max(100%, var(--activity-min-width, 24rem));
 		height: auto;
 		aspect-ratio: 24 / 7;
 	}
