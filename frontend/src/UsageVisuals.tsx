@@ -53,14 +53,14 @@ export function ActivityHeatmaps({
 	);
 }
 
-function TokenActivityCard({ now, usage }: { now: number; usage: UsageDashboard }) {
+export function TokenActivityCard({ now, usage }: { now: number; usage: UsageDashboard }) {
 	const levels = useMemo(
 		() => activityLevels(usage.series.map((point) => point.totalTokens)),
 		[usage.series],
 	);
 	return (
 		<ActivityCard
-			ariaLabel="周期 Token 活动图"
+			ariaLabel="Token 活动图"
 			className="token-activity-card"
 			getCell={(point, index, future) => ({
 				className: `activity-level-${future ? 0 : levels[index]}`,
@@ -76,10 +76,43 @@ function TokenActivityCard({ now, usage }: { now: number; usage: UsageDashboard 
 			)}
 			now={now}
 			series={usage.series}
-			subtitle="按周期时间格显示 Token 消耗，未来时间保持为空"
+			subtitle="按所选时间范围显示 Token 消耗，未来时间保持为空"
 			summary={formatTokens(usage.totals.totalTokens)}
 			summaryDetail={`输入 ${formatTokens(usage.totals.inputTokens)} · 输出 ${formatTokens(usage.totals.outputTokens)}`}
 			title="Token 活动"
+		/>
+	);
+}
+
+export function CostActivityCard({ now, usage }: { now: number; usage: UsageDashboard }) {
+	const levels = useMemo(
+		() => activityLevels(usage.series.map((point) => point.costUsd)),
+		[usage.series],
+	);
+	return (
+		<ActivityCard
+			ariaLabel="成本活动图"
+			className="cost-activity-card"
+			getCell={(point, index, future) => ({
+				className: `activity-level-${future ? 0 : levels[index]}`,
+				title: `${formatDateTime(point.startAt)} · ${formatCost(point.costUsd)} · ${formatCount(point.requests)} 次请求${future ? " · 尚未发生" : ""}`,
+			})}
+			legend={(
+				<>
+					<span>少</span>
+					<i className="activity-level-0" />
+					{[1, 2, 3, 4, 5].map((level) => <i className={`activity-level-${level}`} key={level} />)}
+					<span>多</span>
+				</>
+			)}
+			now={now}
+			series={usage.series}
+			subtitle="按所选时间范围显示已计价成本活动"
+			summary={formatCost(usage.totals.costUsd)}
+			summaryDetail={usage.unpricedModels.length > 0
+				? `${usage.unpricedModels.length} 个模型尚未计价`
+				: "已按模型价格计算"}
+			title="成本活动"
 		/>
 	);
 }
@@ -286,6 +319,17 @@ export function UsageBreakdownDonuts({ usage }: { usage: UsageDashboard }) {
 			<DonutBreakdownCard rows={modelRows(usage.models)} title="模型用量" />
 			<DonutBreakdownCard rows={identityRows(usage.identities)} title="身份用量" />
 		</div>
+	);
+}
+
+export function ModelTokenDonut({ usage }: { usage: UsageDashboard }) {
+	return (
+		<DonutBreakdownCard
+			fixedMetric="tokens"
+			rows={modelRows(usage.models)}
+			subtitle="各模型在所选范围总 Token 中的占比"
+			title="模型 Token 占比"
+		/>
 	);
 }
 

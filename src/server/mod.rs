@@ -1,5 +1,6 @@
 //! Native server adapters.
 
+mod account;
 mod admin;
 mod api;
 mod body;
@@ -14,7 +15,6 @@ mod response;
 mod router;
 mod scheduled;
 mod state;
-mod status;
 mod stream;
 mod usage;
 mod usage_store;

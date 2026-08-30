@@ -1,5 +1,5 @@
 import { useMemo, type CSSProperties } from "react";
-import "./StatusUsage.css";
+import "./QuotaTimeline.css";
 
 const HOUR_MS = 60 * 60 * 1_000;
 const DAY_MS = 24 * HOUR_MS;

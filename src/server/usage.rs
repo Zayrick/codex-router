@@ -1275,7 +1275,7 @@ mod tests {
     async fn persists_and_aggregates_usage_with_response_deduplication() {
         let (store, path) = temporary_store();
         let event = UsageEvent {
-            recorded_at_ms: current_time_ms(),
+            recorded_at_ms: current_time_ms().saturating_sub(1),
             identity_type: "api_key".into(),
             identity_id: "key-1".into(),
             identity_name: "laptop".into(),
@@ -1364,7 +1364,7 @@ mod tests {
     #[tokio::test]
     async fn filters_every_dashboard_view_by_identity() {
         let (store, path) = temporary_store();
-        let now = current_time_ms();
+        let now = current_time_ms().saturating_sub(1);
         for event in [
             UsageEvent {
                 recorded_at_ms: now,

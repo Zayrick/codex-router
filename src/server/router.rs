@@ -10,16 +10,16 @@ use url::Url;
 
 use crate::{
     application::{
-        AdminRoute, StatusRoute, is_admin_path_family, is_known_api_path, match_admin_route,
-        match_api_route, match_status_route,
+        AdminRoute, is_admin_path_family, is_known_api_path, match_admin_route, match_api_route,
+        match_public_account_route,
     },
     auth::{ApiKeyRepository, OAuthRepository, client_token},
     upstream::relay::is_backend_api_path,
 };
 
 use super::{
-    admin::handle_admin, api::handle_api, frontend, oauth::current_time_ms, relay::handle_relay,
-    response, state::AppState, status::usage_snapshot,
+    account::handle_public_account, admin::handle_admin, api::handle_api, frontend,
+    oauth::current_time_ms, relay::handle_relay, response, state::AppState,
 };
 
 pub fn build(state: AppState) -> Router {
@@ -82,13 +82,11 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
                 }
             }
         }
-    } else if let Some(route) = match_status_route(&method, &path) {
-        match route {
-            StatusRoute::Page => return frontend::application_page(),
-            StatusRoute::Usage => usage_snapshot(&state).await,
+    } else if let Some(matched) = match_public_account_route(&method, &path) {
+        match handle_public_account(matched, &client_url, &config, &state).await {
+            Some(output) => return output,
+            None => handle_relay(request, client_url, websocket, &config, &state).await,
         }
-    } else if matches!(path.as_str(), "/status/usage" | "/status/usage/data") {
-        response::empty(404)
     } else if method == "OPTIONS" && is_known_api_path(&path) {
         response::with_cors(response::empty(204), &config.server.cors_origin)
     } else if let Some(route) = match_api_route(&method, &client_url, has_websocket_upgrade) {
@@ -149,7 +147,7 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::auth::ClientApiKey;
+    use crate::auth::{AuthProxyAccount, ClientApiKey};
 
     use super::super::config::{
         AdminConfig, AppConfig, ConfigStore, NotificationConfig, PersistentState, ServerConfig,
@@ -195,6 +193,12 @@ mod tests {
                     id: "00000000-0000-4000-8000-000000000001".into(),
                     name: "test".into(),
                     key: "sk-test-value-123!".into(),
+                    enabled: true,
+                }],
+                auth_proxy_accounts: vec![AuthProxyAccount {
+                    id: "00000000-0000-4000-8000-000000000002".into(),
+                    name: "proxy-test".into(),
+                    account_id: "account-test".into(),
                     enabled: true,
                 }],
                 ..PersistentState::default()
@@ -261,7 +265,7 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(payload["input_tokens"].as_u64().is_some());
 
-        for page in ["/status/usage", "/secret/admin"] {
+        for page in ["/sk-test-value-123!", "/account-test", "/secret/admin"] {
             let response = app
                 .clone()
                 .oneshot(Request::builder().uri(page).body(Body::empty()).unwrap())
@@ -288,18 +292,25 @@ mod tests {
             );
         }
 
-        let status = app
+        let account_data = app
+            .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/status/usage/data")
+                    .uri("/sk-test-value-123!/data?range=7d")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(status.status(), StatusCode::OK);
+        assert_eq!(account_data.status(), StatusCode::OK);
+        let body = to_bytes(account_data.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(payload["account"].get("name").is_none());
+        assert_eq!(payload["account"]["identityType"], "api_key");
+        assert_eq!(payload["usage"]["range"], "7d");
 
-        drop(status);
         let _ = tokio::fs::remove_file(path).await;
         let _ = tokio::fs::remove_file(&usage_path).await;
         let _ = tokio::fs::remove_file(usage_path.with_extension("sqlite3-shm")).await;

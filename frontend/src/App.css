@@ -2206,6 +2206,16 @@ td strong {
 	color: #4f7cff;
 }
 
+.cost-activity-card .usage-activity-summary strong {
+	color: #0e9f6e;
+}
+
+.cost-activity-card .activity-level-1 { background: #d1fae5; }
+.cost-activity-card .activity-level-2 { background: #a7f3d0; }
+.cost-activity-card .activity-level-3 { background: #6ee7b7; }
+.cost-activity-card .activity-level-4 { background: #34d399; }
+.cost-activity-card .activity-level-5 { background: #059669; }
+
 .usage-activity-summary span {
 	color: var(--text-tertiary);
 	font-size: 0.59rem;

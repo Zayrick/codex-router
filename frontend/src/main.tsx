@@ -1,16 +1,16 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import AccountUsage from "./AccountUsage";
 import App from "./App";
-import StatusUsage from "./StatusUsage";
 import "./index.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing React root element.");
 
-// The Rust router intentionally serves the same shell at both exact page routes.
-const usageStatusPath = window.location.pathname === "/status/usage";
-if (usageStatusPath) document.title = "Codex 用量状态";
-const application = usageStatusPath ? <StatusUsage /> : <App />;
+// The Rust router serves one shell for the secret admin path and public account paths.
+const managementPath = /^\/[A-Za-z0-9_-]{1,128}\/admin\/?$/.test(window.location.pathname);
+if (!managementPath) document.title = "用量信息 · Codex Router";
+const application = managementPath ? <App /> : <AccountUsage />;
 
 createRoot(root).render(
 	<StrictMode>

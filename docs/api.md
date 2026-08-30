@@ -193,18 +193,21 @@ URL 或自定义子协议。
 服务不解析未注册路径和 `/backend-api/*` 的协议正文，也不保证 relay 对相应 action 的
 稳定性、可用性、鉴权方式或响应格式。UDP RTP/RTCP 等非 HTTP 能力不在转发范围内。
 
-## 11. 订阅额度状态
+## 11. 公开账户用量页
 
-后台维护任务按 `server.maintenance_interval_seconds` 周期采集用量，并把快照写回配置文件。
-浏览器请求路径不会实时访问 Codex 上游。
+`GET /<credential>` 返回与一个已启用 account id 或 API Key 对应的 React 账户页，页面不带管理
+侧栏。`credential` 是 URL path segment；包含 `/`、`?`、`#` 等字符时必须进行 percent encoding。
+该 URL 本身包含访问凭证，应按 bearer secret 对待，不应分享或写入不受信任的日志。
 
-`GET /status/usage/data` 返回公开快照字段：采样时间、订阅类型，以及每个窗口的 ID、
-类别、名称、周期类型、已用/剩余百分比、窗口秒数和重置时间。它不返回 OAuth、账户 ID、邮箱、
-API Key、Cookie、管理信息或内部告警投递状态。尚未完成首次采样时返回空快照；读取失败时返回
-`503`。该路径精确匹配且只接受 `GET`；其他方法返回空 `404`。
+页面从 `GET /<credential>/data?range=cycle` 读取对应身份的聚合数据。`range` 支持 `cycle`、`24h`、
+`7d`、`30d` 和 `all`，返回身份类型、请求次数、Token、成本、时间序列、模型占比与
+额度时间条。响应不会回显 account id、API Key、OAuth、邮箱、Cookie 或管理会话。
 
-`GET /status/usage` 返回公开 React 用量页面。该页面只读取上述公开快照接口，不读取或展示
-OAuth、API Key、管理配置或管理会话。页面路径同样精确匹配，其他方法返回空 `404`。
+API Key 页面使用主账户的后台额度快照；配置了独立 OAuth 的代理账户会读取自己的额度，未配置时
+沿用主账户额度。无法读取额度时仍返回 Token 用量，`quota` 为 `null`。无效或已停用的凭证不由
+本地账户页处理，而是继续进入透明 relay；如果 relay 返回 HTML，服务仍按透明响应策略移除页面
+正文。原 `/status/usage` 与 `/status/usage/data` 不再是本地页面或本地 JSON 接口，也按未注册路径
+处理。
 
 ## 12. Token 用量统计
 

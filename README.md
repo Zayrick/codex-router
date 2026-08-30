@@ -12,12 +12,12 @@ TOML 文件中，下游 Token 用量保存在 SQLite 中，React 管理界面随
 - `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket relay；
 - Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
 - OAuth 设备授权、下游 API Key、代理账户及代理账户独立 OAuth 的管理 JSON API；
-- React 管理页面与公开用量状态页面；
+- React 管理页面与按 account id / API Key 访问的公开账户用量页；
 - 按 API Key、代理账户、模型和 HTTP/WebSocket 统计实际 Codex Token 用量；
 - 后台 OAuth 刷新、用量采集、reset watch、Bark 与钉钉通知；
 - 原生流式正文和双向 WebSocket bridge。
 
-`GET /status/usage` 提供公开用量页面；管理页面只在精确的
+`GET /<account-id-or-api-key>` 提供对应调用身份的公开用量页面；管理页面只在精确的
 `/<admin.path>/admin` 路径提供，附近路径不会暴露页面。发行构建会把带指纹的 React 资源直接
 嵌入 Rust 二进制，部署时不需要 Node.js、pnpm 或 `frontend` 目录。完整契约见
 [API 文档](docs/api.md)，运行与持久化设置见[配置文档](docs/configuration.md)。
@@ -35,7 +35,7 @@ cargo run -- --config config.toml
 开发模式下这一个命令会同时启动 Vite 和 Rust 服务。修改 React/CSS 后浏览器通过 HMR 更新；修改
 Rust 源码后会自动执行增量编译，并在编译成功后重启后端。请通过 Rust 服务访问页面：
 
-- `http://127.0.0.1:8787/status/usage`
+- `http://127.0.0.1:8787/<account-id-or-api-key>`
 - `http://127.0.0.1:8787/<admin.path>/admin`
 
 Vite 的 `127.0.0.1:5173` 端口只提供开发资源。生产运行使用发行构建：
