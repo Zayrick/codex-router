@@ -27,6 +27,7 @@ use super::{
     oauth::{ReqwestOAuthHttpClient, SystemClock, current_time_ms},
     response,
     state::AppState,
+    usage::UsageRange,
 };
 
 const MAX_ADMIN_BODY_BYTES: usize = 16 * 1024;
@@ -130,6 +131,21 @@ async fn dispatch(
                 current_time_ms() as f64,
             )?;
             response::json(&json!({ "subscription": subscription }), 200)
+        }
+        AdminRoute::Usage => {
+            let range = client_url
+                .query_pairs()
+                .find(|(name, _)| name == "range")
+                .map(|(_, value)| value.into_owned());
+            let dashboard = state
+                .usage
+                .dashboard(UsageRange::parse(range.as_deref()))
+                .await
+                .map_err(|error| {
+                    tracing::warn!(event = "usage_dashboard", status = "failed", error = %error);
+                    usage_query_error()
+                })?;
+            response::json(&dashboard, 200)
         }
         AdminRoute::OAuthStart => {
             let clock = SystemClock;
@@ -386,4 +402,10 @@ fn invalid_admin_request() -> ApiError {
     ApiError::new(500, "The management request could not be completed.")
         .with_kind("internal_error")
         .with_code("admin_request_failed")
+}
+
+fn usage_query_error() -> ApiError {
+    ApiError::new(500, "The usage database could not be queried.")
+        .with_kind("internal_error")
+        .with_code("usage_query_failed")
 }

@@ -122,6 +122,7 @@ pub enum AdminRoute {
     Logout,
     State,
     Subscription,
+    Usage,
     OAuthStart,
     OAuthPoll,
     OAuthDelete,
@@ -175,6 +176,7 @@ pub fn match_admin_route(
         ("POST", "logout") => AdminRoute::Logout,
         ("GET", "state") => AdminRoute::State,
         ("GET", "subscription") => AdminRoute::Subscription,
+        ("GET", "usage") => AdminRoute::Usage,
         ("POST", "oauth/device") => AdminRoute::OAuthStart,
         ("POST", "oauth/device/poll") => AdminRoute::OAuthPoll,
         ("DELETE", "oauth") => AdminRoute::OAuthDelete,
@@ -251,6 +253,13 @@ mod tests {
             Some(MatchedAdminRoute {
                 base_path: "/secret/admin".into(),
                 route: AdminRoute::State,
+            })
+        );
+        assert_eq!(
+            match_admin_route("GET", "/secret/admin/usage", "secret"),
+            Some(MatchedAdminRoute {
+                base_path: "/secret/admin".into(),
+                route: AdminRoute::Usage,
             })
         );
         assert_eq!(match_admin_route("GET", "/secret/admin", "bad/path"), None);

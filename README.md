@@ -1,8 +1,8 @@
 # Codex Router
 
 Codex Router 是一个独立运行的 Rust API 网关，把 ChatGPT Codex 能力转换或映射为 OpenAI、
-Anthropic 与 Gemini 风格接口。服务使用 Tokio、Axum 和 Reqwest，配置与运行状态保存在本地
-TOML 文件中，React 管理界面随发行二进制一起提供。
+Anthropic 与 Gemini 风格接口。服务使用 Tokio、Axum 和 Reqwest，配置与账户状态保存在本地
+TOML 文件中，下游 Token 用量保存在 SQLite 中，React 管理界面随发行二进制一起提供。
 
 ## 当前能力
 
@@ -13,6 +13,7 @@ TOML 文件中，React 管理界面随发行二进制一起提供。
 - Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
 - OAuth 设备授权、下游 API Key、代理账户及代理账户独立 OAuth 的管理 JSON API；
 - React 管理页面与公开用量状态页面；
+- 按 API Key、代理账户、模型和 HTTP/WebSocket 统计实际 Codex Token 用量；
 - 后台 OAuth 刷新、用量采集、reset watch、Bark 与钉钉通知；
 - 原生流式正文和双向 WebSocket bridge。
 
@@ -54,6 +55,7 @@ cargo run --release -- --config config.toml
 - `admin.path`：隐藏管理 API 的 URL 段；
 - `admin.secret`：管理登录密钥；
 - `upstream.chatgpt_relay_url`：受信任的精确 HTTPS relay origin；
+- `usage_tracking.database_path`：Token 用量 SQLite 文件，默认位于配置文件旁的 `usage.sqlite3`；
 - `state.api_keys`：至少一个启用的下游 API Key，或启动后通过管理 API 创建。
 
 验证本地接口：
@@ -73,11 +75,17 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
 - 下游 Key 位于 `state.api_keys`；
 - 代理账户位于 `state.auth_proxy_accounts`；
 - 代理 OAuth 位于 `state.auth_proxy_oauth`；
-- 用量快照位于 `state.usage`。
+- 订阅额度快照位于 `state.usage`。
 
 这些字段直接保存在 `config.toml`。管理 API 和后台刷新写入状态时，会先写入权限为 `0600` 的
 临时文件，再原子替换原配置。成功写入会把 TOML 规范化，注释可能丢失；请保留单独的配置模板，
 不要在管理 API 写入期间同时手工编辑生产配置。手工修改静态设置后需要重启服务。
+
+下游请求的 Token 事件单独写入 `usage_tracking.database_path` 指定的 SQLite 数据库。相对路径以
+配置文件目录为基准，父目录和数据库会在启动时自动创建；数据库使用 WAL 模式，Unix 上数据库及
+sidecar 文件权限会收紧为 `0600`。记录包含身份 ID/名称、模型、传输方式、端点、状态和 Token
+数量，不保存 API Key、OAuth、提示词或模型输出。管理页提供 24 小时、7 天、30 天和全部范围的
+趋势、模型/身份拆分及最近请求明细。
 
 管理会话和 OAuth 设备轮询状态使用 HMAC-SHA256 签名。改变 `admin.secret` 会立即使已有管理会话
 与未完成的设备授权 state 失效。
@@ -91,6 +99,7 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
 - 反向代理需要允许 WebSocket Upgrade，并关闭 SSE 响应缓冲；
 - `config.toml` 包含明文 OAuth、API Key、Webhook 和管理密钥，不应提交到版本库、复制到日志或
   放入权限宽松的备份。
+- `usage.sqlite3` 及其 `-wal`/`-shm` 文件包含用量与身份元数据，也应按私有运行数据保护和备份。
 
 ## 开发检查
 

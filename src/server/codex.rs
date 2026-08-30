@@ -28,7 +28,7 @@ use crate::{
     },
 };
 
-use super::{body, oauth::current_time_ms, websocket};
+use super::{body, oauth::current_time_ms, usage::UsageTracker, websocket};
 
 const MAX_LIVE_BOOTSTRAP_BODY_BYTES: usize = 16 * 1024 * 1024;
 
@@ -130,6 +130,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         request: Request<Body>,
         client_url: &Url,
         route: CodexProxyRoute,
+        tracker: &UsageTracker,
     ) -> AppResult<reqwest::Response> {
         let credentials = self.credentials().await?;
         let (parts, body) = request.into_parts();
@@ -145,6 +146,9 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             source,
         )
         .await?;
+        if let Some(model) = prepared.requested_model.as_deref() {
+            tracker.set_requested_model(model);
+        }
         let headers = proxy_request_headers(&prepared.headers, &credentials, target.path(), false);
         self.send(&target, parts.method, headers, prepared.body, false)
             .await
@@ -157,6 +161,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         method: &Method,
         source_headers: &HeaderMap,
         route: CodexProxyRoute,
+        tracker: UsageTracker,
     ) -> AppResult<Response> {
         let credentials = self.credentials().await?;
         let source = header_bag(source_headers);
@@ -167,6 +172,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             target,
             headers,
             route == CodexProxyRoute::Responses,
+            Some(tracker),
         )
         .await
     }
@@ -222,6 +228,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
 struct PreparedProxyBody {
     headers: HeaderBag,
     body: Option<reqwest::Body>,
+    requested_model: Option<String>,
 }
 
 async fn prepare_proxy_body(
@@ -258,17 +265,26 @@ async fn adapt_json_body<'a>(
     let content_encoding = headers.get("content-encoding").map(str::to_owned);
     let encoded = body::read_limited_body(source_headers, body, body::MAX_JSON_BODY_BYTES).await?;
     let parsed = parse_json_body_with_source(encoded, content_encoding.as_deref())?;
+    let requested_model = parsed
+        .body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned);
     let adapted = adapt(&parsed.body);
     if matches!(adapted, Cow::Borrowed(_)) {
         return Ok(PreparedProxyBody {
             headers,
             body: Some(reqwest::Body::from(parsed.encoded_body)),
+            requested_model,
         });
     }
     let bytes = serde_json::to_vec(adapted.as_ref()).map_err(|_| json_serialization_error())?;
     Ok(PreparedProxyBody {
         headers: json_headers(&headers),
         body: Some(reqwest::Body::from(bytes)),
+        requested_model,
     })
 }
 
@@ -331,16 +347,27 @@ async fn adapt_live_bootstrap(
         payload.insert("session".into(), session);
     }
     let bytes = serde_json::to_vec(&payload).map_err(|_| json_serialization_error())?;
+    let requested_model = payload
+        .get("session")
+        .and_then(Value::as_object)
+        .and_then(|session| session.get("model"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     Ok(PreparedProxyBody {
         headers: json_headers(&headers),
         body: Some(reqwest::Body::from(bytes)),
+        requested_model,
     })
 }
 
 fn passthrough_body(body: Body, method: &Method, headers: HeaderBag) -> PreparedProxyBody {
     let body = (!matches!(*method, Method::GET | Method::HEAD))
         .then(|| reqwest::Body::wrap_stream(body.into_data_stream()));
-    PreparedProxyBody { headers, body }
+    PreparedProxyBody {
+        headers,
+        body,
+        requested_model: None,
+    }
 }
 
 fn is_live_multipart(pathname: &str, headers: &HeaderBag) -> bool {

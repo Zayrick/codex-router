@@ -68,6 +68,57 @@ export interface AdminState {
 	authProxyAccounts: AuthProxyAccount[];
 }
 
+export type UsageRange = "24h" | "7d" | "30d" | "all";
+
+export interface UsageTotals {
+	requests: number;
+	inputTokens: number;
+	cachedInputTokens: number;
+	cacheCreationInputTokens: number;
+	outputTokens: number;
+	reasoningOutputTokens: number;
+	totalTokens: number;
+}
+
+export interface UsageSeriesPoint {
+	startAt: number;
+	requests: number;
+	totalTokens: number;
+}
+
+export interface UsageModelRow extends UsageTotals {
+	model: string;
+}
+
+export interface UsageIdentityRow extends UsageTotals {
+	identityType: "api_key" | "auth_proxy";
+	identityId: string;
+	identityName: string;
+}
+
+export interface UsageEvent extends Omit<UsageTotals, "requests"> {
+	id: number;
+	recordedAt: number;
+	identityType: "api_key" | "auth_proxy";
+	identityId: string;
+	identityName: string;
+	model: string;
+	transport: "http" | "websocket";
+	endpoint: string;
+	status: "completed" | "incomplete" | "failed";
+}
+
+export interface UsageDashboard {
+	range: UsageRange;
+	startAt: number;
+	endAt: number;
+	totals: UsageTotals;
+	series: UsageSeriesPoint[];
+	models: UsageModelRow[];
+	identities: UsageIdentityRow[];
+	recentEvents: UsageEvent[];
+}
+
 export interface DeviceAuthorization {
 	verificationUri: string;
 	userCode: string;
@@ -135,6 +186,12 @@ export class AdminApiClient {
 			"/subscription",
 		);
 		return value.subscription;
+	}
+
+	getUsage(range: UsageRange): Promise<UsageDashboard> {
+		return this.requestJson<UsageDashboard>(
+			`/usage?range=${encodeURIComponent(range)}`,
+		);
 	}
 
 	startDeviceAuthorization(): Promise<DeviceAuthorization> {

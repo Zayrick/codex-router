@@ -19,6 +19,8 @@ import {
 	type QuotaWindow,
 	type SubscriptionInfo,
 	type SubscriptionMetadata,
+	type UsageDashboard,
+	type UsageRange,
 } from "./admin-api";
 import "./App.css";
 
@@ -28,6 +30,11 @@ const MAX_API_KEY_LENGTH = 512;
 const GENERATED_API_KEY_LENGTH = 20;
 const MAX_ACCOUNT_ID_LENGTH = 256;
 const API_KEY_INPUT_PATTERN = String.raw`(?=.*[A-Za-z])(?=.*[0-9])(?=.*[^A-Za-z0-9\s]).{${MIN_API_KEY_LENGTH},${MAX_API_KEY_LENGTH}}`;
+const INTEGER_FORMAT = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
+const COMPACT_NUMBER_FORMAT = new Intl.NumberFormat("zh-CN", {
+	notation: "compact",
+	maximumFractionDigits: 2,
+});
 
 type Screen = "loading" | "login" | "dashboard" | "invalid-path";
 type Notice = { tone: "success" | "error"; text: string };
@@ -52,6 +59,10 @@ function App() {
 	>(null);
 	const [subscriptionLoading, setSubscriptionLoading] = useState(false);
 	const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
+	const [usage, setUsage] = useState<UsageDashboard | null>(null);
+	const [usageRange, setUsageRange] = useState<UsageRange>("7d");
+	const [usageLoading, setUsageLoading] = useState(false);
+	const [usageError, setUsageError] = useState<string | null>(null);
 	const [apiKeys, setApiKeys] = useState<ClientApiKey[]>([]);
 	const [authProxyAccounts, setAuthProxyAccounts] = useState<AuthProxyAccount[]>([]);
 	const [authProxyRefreshing, setAuthProxyRefreshing] = useState(false);
@@ -95,6 +106,7 @@ function App() {
 	const authProxyTogglingRef = useRef<Set<string>>(new Set());
 	const pollTimerRef = useRef<number | null>(null);
 	const authProxyPollTimerRef = useRef<number | null>(null);
+	const usageRequestRef = useRef(0);
 	const initializeRef = useRef(initialize);
 
 	useEffect(() => {
@@ -152,6 +164,7 @@ function App() {
 			} else {
 				void beginDeviceLogin();
 			}
+			void refreshUsage("7d");
 		} catch (error) {
 			if (!mountedRef.current) return;
 			if (error instanceof AdminSessionExpiredError) {
@@ -212,6 +225,32 @@ function App() {
 		} finally {
 			if (mountedRef.current) setSubscriptionLoading(false);
 		}
+	}
+
+	async function refreshUsage(range = usageRange): Promise<void> {
+		if (!api) return;
+		const requestId = ++usageRequestRef.current;
+		setUsageLoading(true);
+		setUsageError(null);
+		try {
+			const next = await api.getUsage(range);
+			if (!mountedRef.current || requestId !== usageRequestRef.current) return;
+			setUsage(next);
+		} catch (error) {
+			if (!mountedRef.current || requestId !== usageRequestRef.current) return;
+			if (handleSessionFailure(error)) return;
+			setUsageError(errorMessage(error, "读取 Token 用量失败，请稍后重试。"));
+		} finally {
+			if (mountedRef.current && requestId === usageRequestRef.current) {
+				setUsageLoading(false);
+			}
+		}
+	}
+
+	function changeUsageRange(range: UsageRange): void {
+		if (range === usageRange) return;
+		setUsageRange(range);
+		void refreshUsage(range);
 	}
 
 	async function beginDeviceLogin(): Promise<void> {
@@ -629,6 +668,10 @@ function App() {
 		setScreen("login");
 		setOAuth(null);
 		setSubscription(null);
+		setUsage(null);
+		setUsageError(null);
+		setUsageLoading(false);
+		usageRequestRef.current += 1;
 		setApiKeys([]);
 		setAuthProxyAccounts([]);
 		keyTogglingRef.current = new Set();
@@ -698,6 +741,15 @@ function App() {
 					onRemove={() => void removeOAuth()}
 					onRetry={() => void beginDeviceLogin()}
 					subscription={subscription}
+				/>
+
+				<UsageCard
+					error={usageError}
+					loading={usageLoading}
+					onRangeChange={changeUsageRange}
+					onRefresh={() => void refreshUsage()}
+					range={usageRange}
+					usage={usage}
 				/>
 
 				<AuthProxyCard
@@ -1218,6 +1270,272 @@ function QuotaRingLegend({
 			<span className={`quota-ring-swatch quota-ring-swatch-${ring}`} aria-hidden="true" />
 			<strong>{label}</strong>
 			<span>{quotaCompactValue(window)}</span>
+		</div>
+	);
+}
+
+interface UsageCardProps {
+	usage: UsageDashboard | null;
+	range: UsageRange;
+	loading: boolean;
+	error: string | null;
+	onRangeChange: (range: UsageRange) => void;
+	onRefresh: () => void;
+}
+
+function UsageCard({
+	usage,
+	range,
+	loading,
+	error,
+	onRangeChange,
+	onRefresh,
+}: UsageCardProps) {
+	const totals = usage?.totals ?? null;
+	const maxSeriesTokens = Math.max(
+		1,
+		...(usage?.series.map((point) => point.totalTokens) ?? []),
+	);
+	const maxModelTokens = Math.max(
+		1,
+		...(usage?.models.map((row) => row.totalTokens) ?? []),
+	);
+	const maxIdentityTokens = Math.max(
+		1,
+		...(usage?.identities.map((row) => row.totalTokens) ?? []),
+	);
+	const empty = !loading && !error && (totals?.requests ?? 0) === 0;
+
+	return (
+		<section className="card usage-card" aria-labelledby="usage-card-title">
+			<CardHeader
+				id="usage-card-title"
+				action={
+					<div className="usage-card-actions">
+						<label className="usage-range-control">
+							<span>统计范围</span>
+							<select
+								aria-label="Token 用量统计范围"
+								disabled={loading}
+								onChange={(event) => onRangeChange(event.target.value as UsageRange)}
+								value={range}
+							>
+								<option value="24h">最近 24 小时</option>
+								<option value="7d">最近 7 天</option>
+								<option value="30d">最近 30 天</option>
+								<option value="all">全部</option>
+							</select>
+						</label>
+						<button
+							aria-label="刷新 Token 用量"
+							className="icon-button"
+							disabled={loading}
+							onClick={onRefresh}
+							title="刷新 Token 用量"
+							type="button"
+						>
+							<Icon name="refresh" spinning={loading} />
+						</button>
+					</div>
+				}
+				title="Token 用量"
+			/>
+
+			{error ? (
+				<div className="inline-alert error-alert usage-alert" role="alert">
+					<Icon name="alert" />
+					<span>{error}</span>
+				</div>
+			) : null}
+			{loading && !usage ? (
+				<div className="center-state usage-loading" role="status">
+					<span className="spinner" aria-hidden="true" />
+					<span>正在读取用量…</span>
+				</div>
+			) : null}
+			{empty ? (
+				<div className="empty-state usage-empty">
+					<strong>所选范围内暂无 Token 用量</strong>
+					<span>API Key 或代理账户完成首次 Codex 请求后会显示在这里。</span>
+				</div>
+			) : null}
+
+			{usage && totals && totals.requests > 0 ? (
+				<div className={loading ? "usage-content is-refreshing" : "usage-content"}>
+					<div className="usage-summary-grid">
+						<UsageMetric label="请求数" value={formatCount(totals.requests)} tone="blue" />
+						<UsageMetric label="总 Token" value={formatTokens(totals.totalTokens)} tone="violet" />
+						<UsageMetric
+							label="输入 Token"
+							value={formatTokens(totals.inputTokens)}
+							detail={`缓存命中 ${formatTokens(totals.cachedInputTokens)} · 缓存写入 ${formatTokens(totals.cacheCreationInputTokens)}`}
+							tone="teal"
+						/>
+						<UsageMetric
+							label="输出 Token"
+							value={formatTokens(totals.outputTokens)}
+							detail={`推理 ${formatTokens(totals.reasoningOutputTokens)}`}
+							tone="orange"
+						/>
+					</div>
+
+					<div className="usage-activity" aria-label="Token 用量趋势">
+						<div className="usage-section-heading">
+							<div>
+								<strong>Token 趋势</strong>
+								<span>{formatDate(usage.startAt)} 至 {formatDate(usage.endAt)}</span>
+							</div>
+							<span>{usage.series.length} 个时间段</span>
+						</div>
+						<div className="usage-bars" role="img" aria-label="各时间段 Token 用量柱状图">
+							{usage.series.map((point) => (
+								<div
+									className="usage-bar-slot"
+									key={point.startAt}
+									title={`${formatDate(point.startAt)} · ${formatTokens(point.totalTokens)} Token · ${formatCount(point.requests)} 次请求`}
+								>
+									<span
+										className="usage-bar"
+										style={{ height: `${Math.max(point.totalTokens > 0 ? 8 : 2, (point.totalTokens / maxSeriesTokens) * 100)}%` }}
+									/>
+								</div>
+							))}
+						</div>
+					</div>
+
+					<div className="usage-breakdown-grid">
+						<UsageBreakdown
+							emptyLabel="暂无模型数据"
+							maxTokens={maxModelTokens}
+							rows={usage.models.map((row) => ({
+								id: row.model,
+								label: row.model,
+								meta: `${formatCount(row.requests)} 次请求`,
+								tokens: row.totalTokens,
+							}))}
+							title="模型用量"
+						/>
+						<UsageBreakdown
+							emptyLabel="暂无身份数据"
+							maxTokens={maxIdentityTokens}
+							rows={usage.identities.map((row) => ({
+								id: `${row.identityType}:${row.identityId}`,
+								label: row.identityName,
+								meta: `${usageIdentityLabel(row.identityType)} · ${formatCount(row.requests)} 次请求`,
+								tokens: row.totalTokens,
+							}))}
+							title="身份用量"
+						/>
+					</div>
+
+					<div className="usage-events">
+						<div className="usage-section-heading">
+							<div>
+								<strong>最近请求</strong>
+								<span>最多显示 50 条已落库事件</span>
+							</div>
+						</div>
+						<div className="table-wrap usage-events-table-wrap">
+							<table className="usage-events-table">
+								<thead>
+									<tr>
+										<th scope="col">时间</th>
+										<th scope="col">身份</th>
+										<th scope="col">模型</th>
+										<th scope="col">传输</th>
+										<th scope="col">输入 / 缓存读 / 写</th>
+										<th scope="col">输出 / 推理</th>
+										<th scope="col">总量</th>
+									</tr>
+								</thead>
+								<tbody>
+									{usage.recentEvents.map((event) => (
+										<tr key={event.id}>
+											<td data-label="时间">
+												<time dateTime={isoDate(event.recordedAt)}>{formatCompactDate(event.recordedAt)}</time>
+											</td>
+											<td data-label="身份">
+												<strong>{event.identityName}</strong>
+												<small>{usageIdentityLabel(event.identityType)}</small>
+											</td>
+											<td data-label="模型"><code>{event.model}</code></td>
+											<td data-label="传输">
+												<span className={`usage-transport usage-transport-${event.transport}`}>
+													{event.transport === "websocket" ? "WS" : "HTTP"}
+												</span>
+											</td>
+											<td data-label="输入 / 缓存读 / 写">
+												{formatTokens(event.inputTokens)} / {formatTokens(event.cachedInputTokens)} / {formatTokens(event.cacheCreationInputTokens)}
+											</td>
+											<td data-label="输出 / 推理">
+												{formatTokens(event.outputTokens)} / {formatTokens(event.reasoningOutputTokens)}
+											</td>
+											<td data-label="总量">
+												<strong>{formatTokens(event.totalTokens)}</strong>
+												<span className={`usage-status usage-status-${event.status}`} title={usageStatusLabel(event.status)} />
+											</td>
+										</tr>
+									))}
+								</tbody>
+							</table>
+						</div>
+					</div>
+				</div>
+			) : null}
+		</section>
+	);
+}
+
+function UsageMetric({
+	label,
+	value,
+	detail,
+	tone,
+}: {
+	label: string;
+	value: string;
+	detail?: string;
+	tone: "blue" | "violet" | "teal" | "orange";
+}) {
+	return (
+		<div className={`usage-metric usage-metric-${tone}`}>
+			<span>{label}</span>
+			<strong>{value}</strong>
+			<small>{detail ?? "所选范围累计"}</small>
+		</div>
+	);
+}
+
+function UsageBreakdown({
+	title,
+	rows,
+	maxTokens,
+	emptyLabel,
+}: {
+	title: string;
+	rows: Array<{ id: string; label: string; meta: string; tokens: number }>;
+	maxTokens: number;
+	emptyLabel: string;
+}) {
+	return (
+		<div className="usage-breakdown">
+			<div className="usage-section-heading"><strong>{title}</strong></div>
+			{rows.length === 0 ? <p>{emptyLabel}</p> : (
+				<div className="usage-breakdown-list">
+					{rows.map((row) => (
+						<div className="usage-breakdown-row" key={row.id}>
+							<div>
+								<strong title={row.label}>{row.label}</strong>
+								<span>{row.meta}</span>
+							</div>
+							<b>{formatTokens(row.tokens)}</b>
+							<span className="usage-breakdown-track" aria-hidden="true">
+								<span style={{ width: `${Math.max(2, (row.tokens / maxTokens) * 100)}%` }} />
+							</span>
+						</div>
+					))}
+				</div>
+			)}
 		</div>
 	);
 }
@@ -2126,6 +2444,27 @@ function formatDate(value: number): string {
 		dateStyle: "medium",
 		timeStyle: "short",
 	}).format(new Date(value));
+}
+
+function formatCount(value: number): string {
+	return INTEGER_FORMAT.format(Math.max(0, Number.isFinite(value) ? value : 0));
+}
+
+function formatTokens(value: number): string {
+	const normalized = Math.max(0, Number.isFinite(value) ? value : 0);
+	return normalized < 10_000
+		? INTEGER_FORMAT.format(normalized)
+		: COMPACT_NUMBER_FORMAT.format(normalized);
+}
+
+function usageIdentityLabel(value: "api_key" | "auth_proxy"): string {
+	return value === "auth_proxy" ? "代理账户" : "API Key";
+}
+
+function usageStatusLabel(value: "completed" | "incomplete" | "failed"): string {
+	if (value === "completed") return "已完成";
+	if (value === "incomplete") return "未完整完成";
+	return "失败";
 }
 
 function formatPlanType(value: string | null | undefined): string {

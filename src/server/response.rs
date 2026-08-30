@@ -3,12 +3,15 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::Response,
 };
+use futures_util::StreamExt;
 use serde::Serialize;
 
 use crate::{
     core::{ApiError, AppResult},
     http::{self, HeadersDto, ResponseBodyDto, ResponseDto},
 };
+
+use super::usage::UsageTracker;
 
 pub fn empty(status: u16) -> Response {
     from_dto(http::empty_response(status)).unwrap_or_else(|_| internal_server_error())
@@ -36,6 +39,34 @@ pub fn upstream_error(response: reqwest::Response) -> Response {
 
 pub fn upstream_proxy(response: reqwest::Response) -> Response {
     upstream(response, http::upstream_proxy_response)
+}
+
+pub fn upstream_proxy_tracked(response: reqwest::Response, tracker: UsageTracker) -> Response {
+    let status = response.status().as_u16();
+    let headers = headers_dto(response.headers());
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let policy = http::upstream_proxy_response(ResponseDto {
+        status,
+        headers,
+        body: ResponseBodyDto::Passthrough,
+    });
+    let mut source = response.bytes_stream();
+    let mut observer = tracker.wire_observer(content_type.as_deref());
+    let output = async_stream::stream! {
+        while let Some(chunk) = source.next().await {
+            if let Ok(bytes) = &chunk {
+                observer.push(bytes);
+            }
+            yield chunk;
+        }
+        observer.finish();
+    };
+    build_response(policy.status, &policy.headers, Body::from_stream(output))
+        .unwrap_or_else(|_| internal_server_error())
 }
 
 pub fn suppress_html_body(response: Response) -> Response {

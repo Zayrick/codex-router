@@ -4,3 +4,4 @@
 /.pnpm-store/
 /frontend/dist/
 /frontend/node_modules/
+/usage.sqlite3*

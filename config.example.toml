@@ -16,6 +16,10 @@ secret = "change-this-admin-secret"
 chatgpt_relay_url = "https://relay.example.com"
 codex_resets_url = "https://codex-resets.com/api/v1/status"
 
+[usage_tracking]
+# Relative paths are resolved next to this configuration file.
+database_path = "usage.sqlite3"
+
 [notifications]
 # bark_push_url = "https://api.day.app/device-key"
 # dingtalk_webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=access-token"
@@ -29,5 +33,6 @@ name = "local"
 key = "sk-change-me-123!"
 enabled = true
 
-# OAuth, proxy accounts, proxy OAuth, and usage snapshots are written here by
-# the management API and maintenance task.
+# OAuth, proxy accounts, proxy OAuth, and subscription usage snapshots are
+# written here by the management API and maintenance task. Downstream token
+# events are stored in the SQLite database configured above.

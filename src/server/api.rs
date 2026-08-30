@@ -19,6 +19,7 @@ use super::{
     response,
     state::AppState,
     stream::{present_non_stream, present_stream},
+    usage::{UsageIdentity, UsageTracker},
 };
 
 pub async fn handle_api(
@@ -28,9 +29,20 @@ pub async fn handle_api(
     websocket: Option<WebSocketUpgrade>,
     config: &AppConfig,
     state: &AppState,
+    identity: UsageIdentity,
 ) -> Response {
     let family = route.family();
-    match dispatch(route, request, &client_url, websocket, config, state).await {
+    match dispatch(
+        route,
+        request,
+        &client_url,
+        websocket,
+        config,
+        state,
+        identity,
+    )
+    .await
+    {
         Ok(output) => response::with_cors(output, &config.server.cors_origin),
         Err(error)
             if error.status == 404
@@ -64,6 +76,7 @@ async fn dispatch(
     websocket: Option<WebSocketUpgrade>,
     config: &AppConfig,
     state: &AppState,
+    identity: UsageIdentity,
 ) -> AppResult<Response> {
     match &route {
         ApiRoute::MessageTokens => {
@@ -133,6 +146,8 @@ async fn dispatch(
                 _ => return Err(runtime_failure()),
             };
             if let Some(upgrade) = websocket {
+                let tracker =
+                    UsageTracker::websocket(state.usage.clone(), identity, client_url.path());
                 return client
                     .forward_websocket(
                         upgrade,
@@ -140,13 +155,15 @@ async fn dispatch(
                         request.method(),
                         request.headers(),
                         proxy_route,
+                        tracker,
                     )
                     .await;
             }
+            let tracker = UsageTracker::http(state.usage.clone(), identity, client_url.path());
             let upstream = client
-                .forward_proxy(request, client_url, proxy_route)
+                .forward_proxy(request, client_url, proxy_route, &tracker)
                 .await?;
-            Ok(response::upstream_proxy(upstream))
+            Ok(response::upstream_proxy_tracked(upstream, tracker))
         }
         ApiRoute::MessageTokens | ApiRoute::GeminiTokens { .. } => Err(runtime_failure()),
         route @ (ApiRoute::ChatCompletions
@@ -156,6 +173,10 @@ async fn dispatch(
             let (parts, body) = request.into_parts();
             let input = body::request_json(&parts.headers, body).await?;
             let adapted = route.adapter().ok_or_else(runtime_failure)?.adapt(&input)?;
+            let tracker = UsageTracker::http(state.usage.clone(), identity, client_url.path());
+            if let Some(model) = adapted.body.get("model").and_then(Value::as_str) {
+                tracker.set_requested_model(model);
+            }
             let upstream = client
                 .send_converted_responses(&adapted.body, &parts.headers)
                 .await?;
@@ -170,9 +191,9 @@ async fn dispatch(
             }
             let created = Value::from(current_time_ms() / 1_000);
             if adapted.stream {
-                return Ok(present_stream(upstream, adapted.response, created));
+                return Ok(present_stream(upstream, adapted.response, created, tracker));
             }
-            let output = present_non_stream(upstream, &adapted.response, created).await?;
+            let output = present_non_stream(upstream, &adapted.response, created, tracker).await?;
             response::json(&output, 200)
         }
     }

@@ -12,6 +12,7 @@ use crate::{
         matching_auth_proxy_account,
     },
     core::{ApiError, AppResult},
+    http::parse_json_body,
     upstream::{
         codex::CodexCredentials,
         relay::{ACCOUNT_ID_HEADER, is_backend_api_path, relay_request_headers, resolve_relay_url},
@@ -19,9 +20,20 @@ use crate::{
 };
 
 use super::{
-    codex::header_bag, config::AppConfig, oauth::current_time_ms, response, state::AppState,
+    body as server_body,
+    codex::header_bag,
+    config::AppConfig,
+    oauth::current_time_ms,
+    response,
+    state::AppState,
+    usage::{UsageIdentity, UsageTracker},
     websocket,
 };
+
+struct RelayReplacement {
+    credentials: CodexCredentials,
+    identity: UsageIdentity,
+}
 
 pub async fn handle_relay(
     request: Request<Body>,
@@ -67,7 +79,7 @@ async fn dispatch_relay(
 async fn replacement_credentials(
     incoming_account_id: Option<&str>,
     state: &AppState,
-) -> AppResult<Option<CodexCredentials>> {
+) -> AppResult<Option<RelayReplacement>> {
     let accounts = ApiKeyRepository::new(state.config.as_ref())
         .read_auth_proxy_accounts()
         .await?;
@@ -85,9 +97,12 @@ async fn replacement_credentials(
     {
         return Err(missing_oauth_account_id());
     }
-    Ok(Some(CodexCredentials {
-        token: stored.access_token,
-        account_id: stored.account_id,
+    Ok(Some(RelayReplacement {
+        credentials: CodexCredentials {
+            token: stored.access_token,
+            account_id: stored.account_id,
+        },
+        identity: account.into(),
     }))
 }
 
@@ -96,15 +111,35 @@ async fn forward_relay(
     client_url: &Url,
     upgrade: Option<WebSocketUpgrade>,
     relay_origin: &str,
-    credentials: Option<&CodexCredentials>,
+    replacement: Option<&RelayReplacement>,
     state: &AppState,
 ) -> AppResult<Response> {
     let (parts, body) = request.into_parts();
     let source = header_bag(&parts.headers);
-    let headers = relay_request_headers(&source, credentials);
+    let headers = relay_request_headers(
+        &source,
+        replacement.map(|replacement| &replacement.credentials),
+    );
     let target = resolve_relay_url(relay_origin, client_url)?;
+    let tracker = replacement
+        .filter(|_| is_codex_usage_path(client_url.path()))
+        .map(|replacement| {
+            if upgrade.is_some() {
+                UsageTracker::websocket(
+                    state.usage.clone(),
+                    replacement.identity.clone(),
+                    client_url.path(),
+                )
+            } else {
+                UsageTracker::http(
+                    state.usage.clone(),
+                    replacement.identity.clone(),
+                    client_url.path(),
+                )
+            }
+        });
     if let Some(upgrade) = upgrade {
-        return websocket::proxy(upgrade, target, headers, false).await;
+        return websocket::proxy(upgrade, target, headers, false, tracker).await;
     }
 
     let mut outgoing = state.client.request(parts.method.clone(), target.as_str());
@@ -112,10 +147,35 @@ async fn forward_relay(
         outgoing = outgoing.header(name, value);
     }
     if parts.method != Method::GET && parts.method != Method::HEAD {
-        outgoing = outgoing.body(reqwest::Body::wrap_stream(body.into_data_stream()));
+        if let Some(tracker) = tracker.as_ref() {
+            let content_encoding = parts
+                .headers
+                .get("content-encoding")
+                .and_then(|value| value.to_str().ok());
+            let encoded = server_body::read_limited_body(
+                &parts.headers,
+                body,
+                server_body::MAX_JSON_BODY_BYTES,
+            )
+            .await?;
+            if let Ok(parsed) = parse_json_body(&encoded, content_encoding) {
+                tracker.observe_request_value(&serde_json::Value::Object(parsed));
+            }
+            outgoing = outgoing.body(reqwest::Body::from(encoded));
+        } else {
+            outgoing = outgoing.body(reqwest::Body::wrap_stream(body.into_data_stream()));
+        }
     }
     let upstream = outgoing.send().await.map_err(relay_fetch_error)?;
-    Ok(response::upstream_proxy(upstream))
+    Ok(match tracker {
+        Some(tracker) => response::upstream_proxy_tracked(upstream, tracker),
+        None => response::upstream_proxy(upstream),
+    })
+}
+
+fn is_codex_usage_path(pathname: &str) -> bool {
+    pathname == "/backend-api/codex/responses"
+        || pathname.starts_with("/backend-api/codex/responses/")
 }
 
 fn relay_fetch_error(error: reqwest::Error) -> ApiError {

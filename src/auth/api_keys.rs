@@ -117,6 +117,11 @@ impl<'a> ApiKeyRepository<'a> {
         authenticate_token(token, &configured)
     }
 
+    pub async fn authenticate_key(&self, token: Option<&str>) -> AppResult<ClientApiKey> {
+        let configured = self.read().await?;
+        authenticated_key(token, &configured).cloned()
+    }
+
     pub async fn create(&self, value: &Value) -> AppResult<Vec<ClientApiKey>> {
         let candidate = validate_api_key_input(value)?;
         let current = self.read().await?;
@@ -231,21 +236,27 @@ impl<'a> ApiKeyRepository<'a> {
 }
 
 pub fn authenticate_token(token: Option<&str>, configured: &[ClientApiKey]) -> AppResult<()> {
+    authenticated_key(token, configured).map(|_| ())
+}
+
+fn authenticated_key<'a>(
+    token: Option<&str>,
+    configured: &'a [ClientApiKey],
+) -> AppResult<&'a ClientApiKey> {
     let Some(token) = token.filter(|token| utf16_len(token) <= MAX_API_KEY_LENGTH) else {
         return Err(invalid_api_key());
     };
     let token_digest = sha256(token);
-    let matched = configured
-        .iter()
-        .filter(|entry| entry.enabled)
-        .fold(false, |matched, candidate| {
-            matched | bool::from(token_digest.ct_eq(&sha256(&candidate.key)))
-        });
-    if matched {
-        Ok(())
-    } else {
-        Err(invalid_api_key())
+    let mut matched_index = None;
+    for (index, candidate) in configured.iter().enumerate() {
+        let matched = candidate.enabled && bool::from(token_digest.ct_eq(&sha256(&candidate.key)));
+        if matched && matched_index.is_none() {
+            matched_index = Some(index);
+        }
     }
+    matched_index
+        .and_then(|index| configured.get(index))
+        .ok_or_else(invalid_api_key)
 }
 
 /// Select a client credential with the same precedence as the public API.
@@ -558,6 +569,11 @@ mod tests {
         assert!(authenticate_token(Some("sk-ccccccccccccccccccc2"), &keys).is_ok());
         assert!(authenticate_token(Some("sk-bbbbbbbbbbbbbbbbbbb1"), &keys).is_err());
         assert!(authenticate_token(Some("wrong"), &[]).is_err());
+        assert_eq!(
+            authenticated_key(Some("sk-ccccccccccccccccccc2"), &keys)
+                .map(|entry| entry.name.as_str()),
+            Ok("enabled")
+        );
     }
 
     #[test]

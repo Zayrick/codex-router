@@ -15,6 +15,7 @@ mod scheduled;
 mod state;
 mod status;
 mod stream;
+mod usage;
 mod usage_store;
 mod websocket;
 
@@ -37,13 +38,19 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
         .map_err(|error| anyhow::anyhow!("failed to initialize tracing: {error}"))?;
 
     let bind = config.bind_address().await?;
-    let state = AppState::new(config.clone())?;
+    let state = AppState::new(config.clone()).await?;
+    let usage_database = state.usage.path().display().to_string();
     let maintenance = scheduled::spawn(state.clone(), snapshot.server.maintenance_interval_seconds);
     let app = router::build(state);
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("failed to bind {bind}"))?;
-    tracing::info!(event = "server_started", bind = %bind, config = %config.path().display());
+    tracing::info!(
+        event = "server_started",
+        bind = %bind,
+        config = %config.path().display(),
+        usage_database = %usage_database
+    );
     let result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await

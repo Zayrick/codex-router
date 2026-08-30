@@ -31,9 +31,25 @@ pub struct AppConfig {
     pub admin: AdminConfig,
     pub upstream: UpstreamConfig,
     #[serde(default)]
+    pub usage_tracking: UsageTrackingConfig,
+    #[serde(default)]
     pub notifications: NotificationConfig,
     #[serde(default)]
     pub state: PersistentState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageTrackingConfig {
+    #[serde(default = "default_usage_database_path")]
+    pub database_path: String,
+}
+
+impl Default for UsageTrackingConfig {
+    fn default() -> Self {
+        Self {
+            database_path: default_usage_database_path(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +159,18 @@ impl ConfigStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn resolve_path(&self, configured: &str) -> PathBuf {
+        let configured = PathBuf::from(configured);
+        if configured.is_absolute() {
+            configured
+        } else {
+            self.path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(configured)
+        }
     }
 
     async fn update(
@@ -262,6 +290,9 @@ fn validate_config(config: &AppConfig) -> Result<()> {
     }
     if config.server.maintenance_interval_seconds == 0 {
         bail!("server.maintenance_interval_seconds must be greater than zero");
+    }
+    if config.usage_tracking.database_path.trim().is_empty() {
+        bail!("usage_tracking.database_path must not be empty");
     }
     if !valid_admin_path(&config.admin.path) {
         bail!("admin.path must be 1-128 URL-safe characters");
@@ -384,6 +415,10 @@ fn default_log_filter() -> String {
     "codex_router=info,tower_http=info".into()
 }
 
+fn default_usage_database_path() -> String {
+    "usage.sqlite3".into()
+}
+
 fn default_codex_resets_url() -> String {
     "https://codex-resets.com/api/v1/status".into()
 }
@@ -403,6 +438,7 @@ mod tests {
                 chatgpt_relay_url: "https://relay.example".into(),
                 codex_resets_url: default_codex_resets_url(),
             },
+            usage_tracking: UsageTrackingConfig::default(),
             notifications: NotificationConfig::default(),
             state: PersistentState::default(),
         }

@@ -15,20 +15,23 @@ use crate::{
     protocol::{anthropic, gemini, openai},
 };
 
+use super::usage::UsageTracker;
+
 pub async fn present_non_stream(
     upstream: reqwest::Response,
     adapter: &ResponseAdapter,
     created: Value,
+    tracker: UsageTracker,
 ) -> AppResult<Value> {
     match adapter {
         ResponseAdapter::OpenAiChat { model, .. } => {
-            let state = decode_chat_state(upstream, model, created).await?;
+            let state = decode_chat_state(upstream, model, created, &tracker).await?;
             openai::chat::chat_completion_from_state(&state).map(Value::Object)
         }
         ResponseAdapter::OpenAiCompletion {
             model, echo_prefix, ..
         } => {
-            let state = decode_chat_state(upstream, model, created).await?;
+            let state = decode_chat_state(upstream, model, created, &tracker).await?;
             let chat = openai::chat::chat_completion_from_state(&state)?;
             Ok(Value::Object(openai::completions::completion_from_chat(
                 &chat,
@@ -39,7 +42,7 @@ pub async fn present_non_stream(
             model,
             reverse_tool_names,
         } => {
-            let terminal = decode_terminal_event(upstream).await?;
+            let terminal = decode_terminal_event(upstream, &tracker).await?;
             anthropic::message_from_event_values(terminal, model, reverse_tool_names)
                 .map(Value::Object)
         }
@@ -47,7 +50,7 @@ pub async fn present_non_stream(
             model,
             reverse_tool_names,
         } => {
-            let terminal = decode_terminal_event(upstream).await?;
+            let terminal = decode_terminal_event(upstream, &tracker).await?;
             gemini::gemini_response_from_events(terminal, model, reverse_tool_names)
         }
     }
@@ -57,25 +60,33 @@ pub fn present_stream(
     upstream: reqwest::Response,
     adapter: ResponseAdapter,
     created: Value,
+    tracker: UsageTracker,
 ) -> Response {
     match adapter {
         ResponseAdapter::OpenAiChat {
             model,
             include_usage,
-        } => chat_stream(upstream, model, include_usage, created),
+        } => chat_stream(upstream, model, include_usage, created, tracker),
         ResponseAdapter::OpenAiCompletion {
             model,
             include_usage,
             echo_prefix,
-        } => completion_stream(upstream, model, include_usage, echo_prefix, created),
+        } => completion_stream(
+            upstream,
+            model,
+            include_usage,
+            echo_prefix,
+            created,
+            tracker,
+        ),
         ResponseAdapter::AnthropicMessages {
             model,
             reverse_tool_names,
-        } => anthropic_stream(upstream, model, reverse_tool_names),
+        } => anthropic_stream(upstream, model, reverse_tool_names, tracker),
         ResponseAdapter::GeminiContent {
             model,
             reverse_tool_names,
-        } => gemini_stream(upstream, model, reverse_tool_names),
+        } => gemini_stream(upstream, model, reverse_tool_names, tracker),
     }
 }
 
@@ -83,9 +94,10 @@ async fn decode_chat_state(
     upstream: reqwest::Response,
     model: &str,
     created: Value,
+    tracker: &UsageTracker,
 ) -> AppResult<openai::chat::ChatState> {
     let mut state = openai::chat::create_chat_state(model, created);
-    consume_events(upstream, |event| {
+    consume_events(upstream, tracker, |event| {
         openai::chat::reduce_codex_event(&mut state, event)?;
         Ok(state.terminal.is_some())
     })
@@ -93,9 +105,12 @@ async fn decode_chat_state(
     Ok(state)
 }
 
-async fn decode_terminal_event(upstream: reqwest::Response) -> AppResult<Option<Value>> {
+async fn decode_terminal_event(
+    upstream: reqwest::Response,
+    tracker: &UsageTracker,
+) -> AppResult<Option<Value>> {
     let mut terminal = None;
-    consume_events(upstream, |event| {
+    consume_events(upstream, tracker, |event| {
         let done = event
             .get("type")
             .and_then(Value::as_str)
@@ -116,6 +131,7 @@ async fn decode_terminal_event(upstream: reqwest::Response) -> AppResult<Option<
 
 async fn consume_events(
     upstream: reqwest::Response,
+    tracker: &UsageTracker,
     mut consume: impl FnMut(&JsonObject) -> AppResult<bool>,
 ) -> AppResult<()> {
     let mut source = upstream.bytes_stream();
@@ -123,6 +139,7 @@ async fn consume_events(
     while let Some(chunk) = source.next().await {
         let chunk = chunk.map_err(|_| stream_failed())?;
         for event in decoder.push_bytes(&chunk)? {
+            tracker.observe_response_value(&Value::Object(event.clone()));
             if consume(&event)? {
                 drop(source);
                 return Ok(());
@@ -130,6 +147,7 @@ async fn consume_events(
         }
     }
     for event in decoder.finish()? {
+        tracker.observe_response_value(&Value::Object(event.clone()));
         if consume(&event)? {
             break;
         }
@@ -142,6 +160,7 @@ fn chat_stream(
     model: String,
     include_usage: bool,
     created: Value,
+    tracker: UsageTracker,
 ) -> Response {
     let headers = sse_headers(upstream.headers());
     let mut source = upstream.bytes_stream();
@@ -166,6 +185,7 @@ fn chat_stream(
                 }
             };
             for event in events {
+                tracker.observe_response_value(&Value::Object(event.clone()));
                 match presenter.push_event(&event) {
                     Ok(frames) => for frame in frames {
                         yield Ok::<_, Infallible>(frame.into_bytes());
@@ -194,6 +214,7 @@ fn chat_stream(
             let tail = decoder.finish().and_then(|events| {
                 let mut frames = Vec::new();
                 for event in events {
+                    tracker.observe_response_value(&Value::Object(event.clone()));
                     frames.extend(presenter.push_event(&event)?);
                 }
                 presenter.finish()?;
@@ -218,6 +239,7 @@ fn completion_stream(
     include_usage: bool,
     echo_prefix: String,
     created: Value,
+    tracker: UsageTracker,
 ) -> Response {
     let headers = sse_headers(upstream.headers());
     let mut source = upstream.bytes_stream();
@@ -243,6 +265,7 @@ fn completion_stream(
                 }
             };
             for event in events {
+                tracker.observe_response_value(&Value::Object(event.clone()));
                 match presenter.push_event(&event) {
                     Ok(frames) => for chat_frame in frames {
                         match completion.push_str(&chat_frame) {
@@ -282,6 +305,7 @@ fn completion_stream(
             let tail = decoder.finish().and_then(|events| {
                 let mut chat_frames = Vec::new();
                 for event in events {
+                    tracker.observe_response_value(&Value::Object(event.clone()));
                     chat_frames.extend(presenter.push_event(&event)?);
                 }
                 presenter.finish()?;
@@ -329,6 +353,7 @@ fn anthropic_stream(
     upstream: reqwest::Response,
     model: String,
     reverse_tool_names: std::collections::HashMap<String, String>,
+    tracker: UsageTracker,
 ) -> Response {
     let headers = sse_headers(upstream.headers());
     let mut source = upstream.bytes_stream();
@@ -344,6 +369,7 @@ fn anthropic_stream(
             };
             match events {
                 Ok(events) => for event in events {
+                    tracker.observe_response_value(&Value::Object(event.clone()));
                     for frame in presenter.push(Value::Object(event)) {
                         yield Ok::<_, Infallible>(render_anthropic(&frame).into_bytes());
                     }
@@ -365,6 +391,7 @@ fn anthropic_stream(
         if !failed && !finished {
             match decoder.finish() {
                 Ok(events) => for event in events {
+                    tracker.observe_response_value(&Value::Object(event.clone()));
                     for frame in presenter.push(Value::Object(event)) {
                         yield Ok::<_, Infallible>(render_anthropic(&frame).into_bytes());
                     }
@@ -388,6 +415,7 @@ fn gemini_stream(
     upstream: reqwest::Response,
     model: String,
     reverse_tool_names: std::collections::HashMap<String, String>,
+    tracker: UsageTracker,
 ) -> Response {
     let headers = sse_headers(upstream.headers());
     let mut source = upstream.bytes_stream();
@@ -406,6 +434,7 @@ fn gemini_stream(
             };
             match events {
                 Ok(events) => for event in events {
+                    tracker.observe_response_value(&Value::Object(event.clone()));
                     for frame in presenter.push(Value::Object(event)) {
                         yield Ok::<_, Infallible>(frame.render().into_bytes());
                     }
@@ -430,6 +459,7 @@ fn gemini_stream(
         if !failed && !finished {
             match decoder.finish() {
                 Ok(events) => for event in events {
+                    tracker.observe_response_value(&Value::Object(event.clone()));
                     for frame in presenter.push(Value::Object(event)) {
                         yield Ok::<_, Infallible>(frame.render().into_bytes());
                     }

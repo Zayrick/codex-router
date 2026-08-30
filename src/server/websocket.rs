@@ -23,13 +23,14 @@ use crate::{
     upstream::codex::HeaderBag,
 };
 
-use super::response;
+use super::{response, usage::UsageTracker};
 
 pub async fn proxy(
     upgrade: WebSocketUpgrade,
     mut target: Url,
     headers: HeaderBag,
     adapt_responses: bool,
+    tracker: Option<UsageTracker>,
 ) -> AppResult<Response> {
     match target.scheme() {
         "https" => target
@@ -71,7 +72,7 @@ pub async fn proxy(
     } else {
         upgrade
     };
-    Ok(upgrade.on_upgrade(move |client| bridge(client, upstream, adapt_responses)))
+    Ok(upgrade.on_upgrade(move |client| bridge(client, upstream, adapt_responses, tracker)))
 }
 
 async fn bridge(
@@ -80,16 +81,18 @@ async fn bridge(
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     adapt_responses: bool,
+    tracker: Option<UsageTracker>,
 ) {
     let (mut client_sender, mut client_receiver) = client.split();
     let (mut upstream_sender, mut upstream_receiver) = upstream.split();
 
+    let request_tracker = tracker.clone();
     let to_upstream = async {
         while let Some(message) = client_receiver.next().await {
             let Ok(message) = message else {
                 break;
             };
-            let message = client_message(message, adapt_responses);
+            let message = client_message(message, adapt_responses, request_tracker.as_ref());
             if upstream_sender.send(message).await.is_err() {
                 break;
             }
@@ -101,7 +104,7 @@ async fn bridge(
             let Ok(message) = message else {
                 break;
             };
-            let Some(message) = upstream_message(message) else {
+            let Some(message) = upstream_message(message, tracker.as_ref()) else {
                 continue;
             };
             if client_sender.send(message).await.is_err() {
@@ -116,9 +119,16 @@ async fn bridge(
     }
 }
 
-fn client_message(message: AxumMessage, adapt_responses: bool) -> UpstreamMessage {
+fn client_message(
+    message: AxumMessage,
+    adapt_responses: bool,
+    tracker: Option<&UsageTracker>,
+) -> UpstreamMessage {
     match message {
         AxumMessage::Text(text) => {
+            if let Some(tracker) = tracker {
+                tracker.observe_request_text(&text);
+            }
             let text = if adapt_responses {
                 adapt_responses_websocket_message(&text)
             } else {
@@ -126,7 +136,14 @@ fn client_message(message: AxumMessage, adapt_responses: bool) -> UpstreamMessag
             };
             UpstreamMessage::Text(text.into())
         }
-        AxumMessage::Binary(bytes) => UpstreamMessage::Binary(bytes),
+        AxumMessage::Binary(bytes) => {
+            if let Some(tracker) = tracker
+                && let Ok(text) = std::str::from_utf8(&bytes)
+            {
+                tracker.observe_request_text(text);
+            }
+            UpstreamMessage::Binary(bytes)
+        }
         AxumMessage::Ping(bytes) => UpstreamMessage::Ping(bytes),
         AxumMessage::Pong(bytes) => UpstreamMessage::Pong(bytes),
         AxumMessage::Close(frame) => {
@@ -138,10 +155,25 @@ fn client_message(message: AxumMessage, adapt_responses: bool) -> UpstreamMessag
     }
 }
 
-fn upstream_message(message: UpstreamMessage) -> Option<AxumMessage> {
+fn upstream_message(
+    message: UpstreamMessage,
+    tracker: Option<&UsageTracker>,
+) -> Option<AxumMessage> {
     match message {
-        UpstreamMessage::Text(text) => Some(AxumMessage::Text(text.to_string().into())),
-        UpstreamMessage::Binary(bytes) => Some(AxumMessage::Binary(bytes)),
+        UpstreamMessage::Text(text) => {
+            if let Some(tracker) = tracker {
+                tracker.observe_response_text(&text);
+            }
+            Some(AxumMessage::Text(text.to_string().into()))
+        }
+        UpstreamMessage::Binary(bytes) => {
+            if let Some(tracker) = tracker
+                && let Ok(text) = std::str::from_utf8(&bytes)
+            {
+                tracker.observe_response_text(text);
+            }
+            Some(AxumMessage::Binary(bytes))
+        }
         UpstreamMessage::Ping(bytes) => Some(AxumMessage::Ping(bytes)),
         UpstreamMessage::Pong(bytes) => Some(AxumMessage::Pong(bytes)),
         UpstreamMessage::Close(frame) => {

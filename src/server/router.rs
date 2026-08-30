@@ -109,10 +109,20 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
                 .and_then(|value| value.to_str().ok());
             let token = client_token(authorization, api_key, google_api_key);
             let keys = ApiKeyRepository::new(state.config.as_ref());
-            if keys.authenticate(token.as_deref()).await.is_err() {
-                response::empty(404)
-            } else {
-                handle_api(route, request, client_url, websocket, &config, &state).await
+            match keys.authenticate_key(token.as_deref()).await {
+                Ok(key) => {
+                    handle_api(
+                        route,
+                        request,
+                        client_url,
+                        websocket,
+                        &config,
+                        &state,
+                        (&key).into(),
+                    )
+                    .await
+                }
+                Err(_) => response::empty(404),
             }
         }
     } else if is_known_api_path(&path) {
@@ -161,6 +171,7 @@ mod tests {
     async fn serves_local_apis() {
         let path =
             std::env::temp_dir().join(format!("codex-router-test-{}.toml", uuid::Uuid::new_v4()));
+        let usage_path = path.with_extension("usage.sqlite3");
         let config = AppConfig {
             server: ServerConfig {
                 public_origin: "http://router.example".into(),
@@ -173,6 +184,9 @@ mod tests {
             upstream: UpstreamConfig {
                 chatgpt_relay_url: "https://relay.example".into(),
                 codex_resets_url: "https://codex-resets.com/api/v1/status".into(),
+            },
+            usage_tracking: super::super::config::UsageTrackingConfig {
+                database_path: usage_path.display().to_string(),
             },
             notifications: NotificationConfig::default(),
             state: PersistentState {
@@ -189,7 +203,7 @@ mod tests {
             .await
             .unwrap();
         let store = ConfigStore::load(path.clone()).await.unwrap();
-        let app = build(AppState::new(store).unwrap());
+        let app = build(AppState::new(store).await.unwrap());
 
         let preflight = app
             .clone()
@@ -284,6 +298,10 @@ mod tests {
             .unwrap();
         assert_eq!(status.status(), StatusCode::OK);
 
+        drop(status);
         let _ = tokio::fs::remove_file(path).await;
+        let _ = tokio::fs::remove_file(&usage_path).await;
+        let _ = tokio::fs::remove_file(usage_path.with_extension("sqlite3-shm")).await;
+        let _ = tokio::fs::remove_file(usage_path.with_extension("sqlite3-wal")).await;
     }
 }

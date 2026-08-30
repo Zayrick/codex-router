@@ -193,7 +193,7 @@ URL 或自定义子协议。
 服务不解析未注册路径和 `/backend-api/*` 的协议正文，也不保证 relay 对相应 action 的
 稳定性、可用性、鉴权方式或响应格式。UDP RTP/RTCP 等非 HTTP 能力不在转发范围内。
 
-## 11. 用量状态
+## 11. 订阅额度状态
 
 后台维护任务按 `server.maintenance_interval_seconds` 周期采集用量，并把快照写回配置文件。
 浏览器请求路径不会实时访问 Codex 上游。
@@ -206,7 +206,26 @@ API Key、Cookie、管理信息或内部告警投递状态。尚未完成首次�
 `GET /status/usage` 返回公开 React 用量页面。该页面只读取上述公开快照接口，不读取或展示
 OAuth、API Key、管理配置或管理会话。页面路径同样精确匹配，其他方法返回空 `404`。
 
-## 12. 管理 API
+## 12. Token 用量统计
+
+API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Responses 请求，会在收到上游
+终止 JSON/SSE/WebSocket 事件时把用量写入 SQLite。一个 WebSocket 连接可以记录多个 response，
+相同 response ID 只落库一次。模型优先取终止响应，缺失时使用对应请求中的模型。
+
+管理会话可读取 `GET /<admin.path>/admin/usage?range=7d`。`range` 支持 `24h`、`7d`、`30d` 和
+`all`，省略或传入未知值时使用 `7d`。返回 JSON 包含：
+
+- `startAt`、`endAt` 和所选 `range`；
+- `totals`：请求数以及输入、缓存命中、缓存创建、输出、推理和总 Token；
+- `series`：按小时或天填充的趋势时间桶；
+- `models`、`identities`：按模型及 API Key/代理账户聚合；
+- `recentEvents`：最多 50 条事件，包含模型、身份、端点、HTTP/WebSocket、状态与 Token 明细。
+
+缓存与推理 Token 分别是输入与输出 Token 的子集。该接口不返回 Key/OAuth，也不会记录或返回
+请求正文与模型输出。连接提前中断、未收到终止事件时不会生成统计；失败终止事件即使没有 usage
+也会以零 Token 事件记录，便于在明细中观察失败请求。
+
+## 13. 管理 API
 
 管理 JSON API 位于 `/<admin.path>/admin`。精确的 `GET /<admin.path>/admin` 返回 React 管理页面；
 错误方法、额外路径段和其他隐藏路径族请求返回空 `404`。页面与以下 JSON 端点共享管理契约：
@@ -217,6 +236,7 @@ OAuth、API Key、管理配置或管理会话。页面路径同样精确匹配�
 | `POST /logout` | 清除管理会话 |
 | `GET /state` | 读取 OAuth 摘要、订阅摘要、API Key 列表和 Backend API 代理设置 |
 | `GET /subscription` | 实时读取订阅与额度 |
+| `GET /usage?range=7d` | 读取 SQLite 中的下游 Token 用量聚合与最近事件 |
 | `POST /oauth/device` | 创建设备授权请求 |
 | `POST /oauth/device/poll` | 轮询设备授权结果 |
 | `DELETE /oauth` | 删除已保存的 OAuth 凭据 |
