@@ -22,6 +22,7 @@ import {
 	type UsageRange,
 } from "./admin-api";
 import QuotaTimeline from "./QuotaTimeline";
+import ManagementShell, { ProductMark } from "./ManagementShell";
 import "./App.css";
 
 const MANAGEMENT_PATH_PATTERN = /^\/[A-Za-z0-9_-]{1,128}\/admin\/?$/;
@@ -719,65 +720,89 @@ function App() {
 	}
 
 	return (
-		<div className="panel-shell">
-			<PanelHeader onLogout={() => void handleLogout()} />
-			<main className="panel-main">
-				<section className="welcome" aria-labelledby="dashboard-title">
-					<h1 id="dashboard-title">管理</h1>
-				</section>
-
-				<AccountCard
-					deviceAuthorization={deviceAuthorization}
-					deviceError={deviceError}
-					deviceLoading={deviceLoading}
-					error={subscriptionError}
-					loading={subscriptionLoading}
-					now={now}
-					oauth={oauth}
-					oauthRemoving={oauthRemoving}
-					onCopy={(value, label) => void copyText(value, label)}
-					onRefresh={() => void refreshSubscription()}
-					onRemove={() => void removeOAuth()}
-					onRetry={() => void beginDeviceLogin()}
-					subscription={subscription}
-				/>
-
-				{oauth ? (
-					<UsageCard
-						error={usageError}
-						loading={usageLoading}
-						onRangeChange={changeUsageRange}
-						onRefresh={() => void refreshUsage()}
-						range={usageRange}
-						usage={usage}
+		<ManagementShell
+			activeApiKeys={apiKeys.filter((entry) => entry.enabled).length}
+			activeProxyAccounts={authProxyAccounts.filter((entry) => entry.enabled).length}
+			mainAccountConnected={oauth !== null}
+			onLogout={() => void handleLogout()}
+			requestCount={usage?.totals.requests ?? null}
+			totalApiKeys={apiKeys.length}
+			totalProxyAccounts={authProxyAccounts.length}
+			usageRangeLabel={formatUsageRange(usageRange)}
+		>
+			<section className="dashboard-section" aria-labelledby="account-section-title">
+				<header className="dashboard-section-header">
+					<span>01</span>
+					<div>
+						<h2 id="account-section-title">账户与用量</h2>
+						<p>主账户授权、配额周期与实际 Token 消耗。</p>
+					</div>
+				</header>
+				<div className="dashboard-section-body">
+					<AccountCard
+						deviceAuthorization={deviceAuthorization}
+						deviceError={deviceError}
+						deviceLoading={deviceLoading}
+						error={subscriptionError}
+						loading={subscriptionLoading}
+						now={now}
+						oauth={oauth}
+						oauthRemoving={oauthRemoving}
+						onCopy={(value, label) => void copyText(value, label)}
+						onRefresh={() => void refreshSubscription()}
+						onRemove={() => void removeOAuth()}
+						onRetry={() => void beginDeviceLogin()}
+						subscription={subscription}
 					/>
-				) : null}
 
-				<AuthProxyCard
-					accounts={authProxyAccounts}
-					loading={authProxyRefreshing}
-					onAdd={() => setAuthProxyEditor("new")}
-					onDelete={setPendingAuthProxyDelete}
-					onEdit={setAuthProxyEditor}
-					onOAuth={(entry) => void handleAuthProxyOAuth(entry)}
-					onRefresh={() => void refreshAuthProxyAccounts()}
-					onToggle={(entry) => void toggleAuthProxyAccount(entry)}
-					oauthRemoving={authProxyOAuthRemoving}
-					togglingAccounts={authProxyToggling}
-				/>
+					{oauth ? (
+						<UsageCard
+							error={usageError}
+							loading={usageLoading}
+							onRangeChange={changeUsageRange}
+							onRefresh={() => void refreshUsage()}
+							range={usageRange}
+							usage={usage}
+						/>
+					) : null}
+				</div>
+			</section>
 
-				<ApiKeysCard
-					apiKeys={apiKeys}
-					loading={keysRefreshing}
-					onAdd={() => setKeyEditor("new")}
-					onCopy={(value) => void copyText(value, "API Key")}
-					onDelete={setPendingDelete}
-					onEdit={setKeyEditor}
-					onRefresh={() => void refreshApiKeys()}
-					onToggle={(entry) => void toggleApiKey(entry)}
-					togglingKeys={keysToggling}
-				/>
-			</main>
+			<section className="dashboard-section" aria-labelledby="identity-section-title">
+				<header className="dashboard-section-header">
+					<span>02</span>
+					<div>
+						<h2 id="identity-section-title">调用身份</h2>
+						<p>管理代理账户与下游客户端使用的 API Keys。</p>
+					</div>
+				</header>
+				<div className="dashboard-section-body">
+					<AuthProxyCard
+						accounts={authProxyAccounts}
+						loading={authProxyRefreshing}
+						onAdd={() => setAuthProxyEditor("new")}
+						onDelete={setPendingAuthProxyDelete}
+						onEdit={setAuthProxyEditor}
+						onOAuth={(entry) => void handleAuthProxyOAuth(entry)}
+						onRefresh={() => void refreshAuthProxyAccounts()}
+						onToggle={(entry) => void toggleAuthProxyAccount(entry)}
+						oauthRemoving={authProxyOAuthRemoving}
+						togglingAccounts={authProxyToggling}
+					/>
+
+					<ApiKeysCard
+						apiKeys={apiKeys}
+						loading={keysRefreshing}
+						onAdd={() => setKeyEditor("new")}
+						onCopy={(value) => void copyText(value, "API Key")}
+						onDelete={setPendingDelete}
+						onEdit={setKeyEditor}
+						onRefresh={() => void refreshApiKeys()}
+						onToggle={(entry) => void toggleApiKey(entry)}
+						togglingKeys={keysToggling}
+					/>
+				</div>
+			</section>
 
 			{notice ? (
 				<StatusToast notice={notice} onClose={() => setNotice(null)} />
@@ -825,7 +850,7 @@ function App() {
 					title={`删除“${pendingAuthProxyDelete.name}”？`}
 				/>
 			) : null}
-		</div>
+		</ManagementShell>
 	);
 }
 
@@ -833,8 +858,9 @@ function LoadingView() {
 	return (
 		<div className="auth-shell">
 			<div className="loading-card" role="status" aria-live="polite">
+				<ProductMark compact />
 				<span className="spinner" aria-hidden="true" />
-				<span>正在加载…</span>
+				<span>正在加载管理面板…</span>
 			</div>
 		</div>
 	);
@@ -844,7 +870,10 @@ function InvalidPathView() {
 	return (
 		<div className="auth-shell">
 			<main className="auth-card compact-card">
+				<ProductMark />
+				<p className="auth-eyebrow">CODEX ROUTER</p>
 				<h1>地址无效</h1>
+				<p className="auth-description">请检查管理页面地址后重试。</p>
 			</main>
 		</div>
 	);
@@ -868,64 +897,65 @@ function LoginView({ error, loading, onSubmit }: LoginViewProps) {
 
 	return (
 		<div className="auth-shell">
-			<main className="auth-card">
-				{error ? (
-					<div className="inline-alert error-alert" role="alert">
-						<Icon name="alert" />
-						<span>{error}</span>
-					</div>
-				) : null}
+			<aside className="auth-aside">
+				<div className="auth-brand">
+					<ProductMark />
+					<span><strong>Codex Router</strong><small>Management</small></span>
+				</div>
+				<div className="auth-aside-copy">
+					<p>ROUTING CONTROL</p>
+					<h1>把运行状态，<br />收进一个视野。</h1>
+					<span>账户、配额、用量与调用身份，都从这里开始。</span>
+				</div>
+			</aside>
 
-				<form className="auth-form" onSubmit={submit}>
-					<div className="input-with-action">
-						<input
-							id="admin-secret"
-							aria-label="管理密码"
-							autoComplete="current-password"
-							autoFocus
-							disabled={loading}
-							maxLength={512}
-							onChange={(event) => setSecret(event.target.value)}
-							placeholder="输入管理密码"
-							required
-							type={visible ? "text" : "password"}
-							value={secret}
-						/>
-						<button
-							className="input-action"
-							onClick={() => setVisible((value) => !value)}
-							type="button"
-							aria-label={visible ? "隐藏管理密码" : "显示管理密码"}
-						>
-							<Icon name={visible ? "eye-off" : "eye"} />
+			<div className="auth-main">
+				<main className="auth-card">
+					<div className="auth-mobile-brand"><ProductMark compact /><strong>Codex Router</strong></div>
+					<p className="auth-eyebrow">管理控制台</p>
+					<h1>欢迎回来</h1>
+					<p className="auth-description">输入管理密码以继续访问运行主页。</p>
+
+					{error ? (
+						<div className="inline-alert error-alert" role="alert">
+							<Icon name="alert" />
+							<span>{error}</span>
+						</div>
+					) : null}
+
+					<form className="auth-form" onSubmit={submit}>
+						<label htmlFor="admin-secret">管理密码</label>
+						<div className="input-with-action">
+							<input
+								id="admin-secret"
+								autoComplete="current-password"
+								autoFocus
+								disabled={loading}
+								maxLength={512}
+								onChange={(event) => setSecret(event.target.value)}
+								placeholder="输入管理密码"
+								required
+								type={visible ? "text" : "password"}
+								value={secret}
+							/>
+							<button
+								className="input-action"
+								onClick={() => setVisible((value) => !value)}
+								type="button"
+								aria-label={visible ? "隐藏管理密码" : "显示管理密码"}
+							>
+								<Icon name={visible ? "eye-off" : "eye"} />
+							</button>
+						</div>
+						<button className="button button-primary auth-submit" disabled={loading}>
+							{loading ? <span className="spinner" aria-hidden="true" /> : null}
+							{loading ? "登录中…" : "进入管理面板"}
 						</button>
-					</div>
-					<button className="button button-primary auth-submit" disabled={loading}>
-						{loading ? <span className="spinner" aria-hidden="true" /> : null}
-						{loading ? "登录中…" : "登录"}
-					</button>
-				</form>
-			</main>
+					</form>
+					<p className="auth-footnote">管理凭据仅用于当前服务会话</p>
+				</main>
+			</div>
 		</div>
-	);
-}
-
-function PanelHeader({ onLogout }: { onLogout: () => void }) {
-	return (
-		<header className="panel-header">
-			<a className="brand" href={window.location.pathname} aria-label="Codex Router 首页">
-				<strong>Codex Router</strong>
-			</a>
-			<button
-				aria-label="退出"
-				className="button button-ghost header-action"
-				onClick={onLogout}
-				title="退出"
-				type="button"
-			>
-				<Icon name="logout" />
-			</button>
-		</header>
 	);
 }
 
@@ -1361,7 +1391,9 @@ function UsageCard({
 											</td>
 											<td data-label="总量">
 												<strong>{formatTokens(event.totalTokens)}</strong>
-												<span className={`usage-status usage-status-${event.status}`} title={usageStatusLabel(event.status)} />
+												<small className={`usage-status-label usage-status-${event.status}`}>
+													{usageStatusLabel(event.status)}
+												</small>
 											</td>
 										</tr>
 									))}
@@ -2354,6 +2386,19 @@ function formatTokens(value: number): string {
 	return normalized < 10_000
 		? INTEGER_FORMAT.format(normalized)
 		: COMPACT_NUMBER_FORMAT.format(normalized);
+}
+
+function formatUsageRange(value: UsageRange): string {
+	switch (value) {
+		case "24h":
+			return "最近 24 小时";
+		case "7d":
+			return "最近 7 天";
+		case "30d":
+			return "最近 30 天";
+		case "all":
+			return "全部时间";
+	}
 }
 
 function usageIdentityLabel(value: "api_key" | "auth_proxy"): string {
