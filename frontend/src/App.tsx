@@ -16,12 +16,12 @@ import {
 	type ClientApiKeyInput,
 	type DeviceAuthorization,
 	type OAuthStatus,
-	type QuotaWindow,
 	type SubscriptionInfo,
 	type SubscriptionMetadata,
 	type UsageDashboard,
 	type UsageRange,
 } from "./admin-api";
+import QuotaTimeline from "./QuotaTimeline";
 import "./App.css";
 
 const MANAGEMENT_PATH_PATTERN = /^\/[A-Za-z0-9_-]{1,128}\/admin\/?$/;
@@ -160,10 +160,10 @@ function App() {
 			setLoginError(null);
 			if (state.oauth) {
 				void refreshSubscription(true);
+				void refreshUsage("7d");
 			} else {
 				void beginDeviceLogin();
 			}
-			void refreshUsage("7d");
 		} catch (error) {
 			if (!mountedRef.current) return;
 			if (error instanceof AdminSessionExpiredError) {
@@ -295,6 +295,7 @@ function App() {
 			setDeviceError(null);
 			showNotice("Codex 登录成功。", "success");
 			void refreshSubscription(true);
+			void refreshUsage("7d");
 		} catch (error) {
 			if (!mountedRef.current) return;
 			if (handleSessionFailure(error)) return;
@@ -312,6 +313,9 @@ function App() {
 			setOAuth(null);
 			setSubscription(null);
 			setSubscriptionError(null);
+			setUsage(null);
+			setUsageError(null);
+			setUsageLoading(false);
 			showNotice("已退出 Codex 登录。", "success");
 			void beginDeviceLogin();
 		} catch (error) {
@@ -738,14 +742,16 @@ function App() {
 					subscription={subscription}
 				/>
 
-				<UsageCard
-					error={usageError}
-					loading={usageLoading}
-					onRangeChange={changeUsageRange}
-					onRefresh={() => void refreshUsage()}
-					range={usageRange}
-					usage={usage}
-				/>
+				{oauth ? (
+					<UsageCard
+						error={usageError}
+						loading={usageLoading}
+						onRangeChange={changeUsageRange}
+						onRefresh={() => void refreshUsage()}
+						range={usageRange}
+						usage={usage}
+					/>
+				) : null}
 
 				<AuthProxyCard
 					accounts={authProxyAccounts}
@@ -966,42 +972,45 @@ function AccountCard({
 				: `${Math.max(0, availableCredits)} · 可用 ${Math.max(0, applicableCredits)}`;
 
 	return (
-		<section className="card account-card" aria-labelledby="account-title">
-			<CardHeader
-				id="account-title"
-				action={
-					oauth ? (
-						<div className="account-header-actions">
-							<button
-								className="button button-secondary account-header-button"
-								disabled={loading}
-								onClick={onRefresh}
-								type="button"
-							>
-								<Icon name="refresh" spinning={loading} />
-								{loading ? "刷新中…" : "刷新"}
-							</button>
-							<button
-								className="button button-danger-quiet account-header-button"
-								disabled={oauthRemoving}
-								onClick={onRemove}
-								type="button"
-							>
-								{oauthRemoving ? (
-									<span className="spinner" aria-hidden="true" />
-								) : (
-									<Icon name="logout" />
-								)}
-								{oauthRemoving ? "退出中…" : "退出登录"}
-							</button>
-						</div>
-					) : undefined
-				}
-				title="Codex 账户"
-			/>
+		<section
+			className={`card account-card ${oauth ? "account-card-connected" : "account-card-disconnected"}`}
+			aria-labelledby="account-title"
+		>
+			<div className="account-summary">
+				<CardHeader
+					id="account-title"
+					action={
+						oauth ? (
+							<div className="account-header-actions">
+								<button
+									className="button button-secondary account-header-button"
+									disabled={loading}
+									onClick={onRefresh}
+									type="button"
+								>
+									<Icon name="refresh" spinning={loading} />
+									{loading ? "刷新中…" : "刷新"}
+								</button>
+								<button
+									className="button button-danger-quiet account-header-button"
+									disabled={oauthRemoving}
+									onClick={onRemove}
+									type="button"
+								>
+									{oauthRemoving ? (
+										<span className="spinner" aria-hidden="true" />
+									) : (
+										<Icon name="logout" />
+									)}
+									{oauthRemoving ? "退出中…" : "退出登录"}
+								</button>
+							</div>
+						) : undefined
+					}
+					title="Codex 账户"
+				/>
 
-			{oauth ? (
-				<div className="account-body account-body-connected">
+				{oauth ? (
 					<div className="account-profile">
 						<div className="account-identity-row">
 							<strong className="account-email">{oauth.email ?? "未提供邮箱"}</strong>
@@ -1064,208 +1073,95 @@ function AccountCard({
 							)}
 						</p>
 					</div>
-
-					<div className="account-usage">
-						{loading ? (
-							<div className="loading-strip" role="status">
-								<span className="spinner" aria-hidden="true" />
-								正在刷新…
-							</div>
-						) : null}
-						{error ? (
-							<div className="inline-alert error-alert" role="alert">
-								<Icon name="alert" />
-								<span>{error}</span>
-							</div>
-						) : null}
-						{info && info.windows.length > 0 ? (
-							<QuotaRings now={now} windows={info.windows} />
-						) : !loading && !error ? (
-							<p className="muted-message">暂无额度数据</p>
-						) : null}
-					</div>
-				</div>
-			) : (
-				<div className="account-body account-body-disconnected">
-					<div className="account-device">
-						{deviceLoading ? (
-							<div className="center-state" role="status">
-								<span className="spinner" aria-hidden="true" />
-								<span>正在获取登录码…</span>
-							</div>
-						) : null}
-						{deviceAuthorization ? (
-							<>
-								<div className="device-code-inline">
-									<code>{deviceAuthorization.userCode}</code>
-									<button
-										className="button button-secondary device-copy-button"
-										onClick={() => onCopy(deviceAuthorization.userCode, "登录码")}
-										type="button"
-									>
-										<Icon name="copy" />
-										复制
-									</button>
+				) : (
+					<div className="account-connect">
+						<div className="account-device">
+							{deviceLoading ? (
+								<div className="center-state" role="status">
+									<span className="spinner" aria-hidden="true" />
+									<span>正在获取登录码…</span>
 								</div>
-								<small className="device-code-expiry">
-									设备码将在 {Math.max(1, Math.floor(deviceAuthorization.expiresIn / 60))} 分钟后失效
-								</small>
-							</>
-						) : null}
-						{deviceError ? (
-							<div className="inline-alert error-alert" role="alert">
-								<Icon name="alert" />
-								<span>{deviceError}</span>
-							</div>
-						) : null}
+							) : null}
+							{deviceAuthorization ? (
+								<>
+									<div className="device-code-inline">
+										<code>{deviceAuthorization.userCode}</code>
+										<button
+											className="button button-secondary device-copy-button"
+											onClick={() => onCopy(deviceAuthorization.userCode, "登录码")}
+											type="button"
+										>
+											<Icon name="copy" />
+											复制
+										</button>
+									</div>
+									<small className="device-code-expiry">
+										设备码将在 {Math.max(1, Math.floor(deviceAuthorization.expiresIn / 60))} 分钟后失效
+									</small>
+								</>
+							) : null}
+							{deviceError ? (
+								<div className="inline-alert error-alert" role="alert">
+									<Icon name="alert" />
+									<span>{deviceError}</span>
+								</div>
+							) : null}
+						</div>
+						<div className="account-login-action">
+							{deviceAuthorization ? (
+								<a
+									className="button button-primary"
+									href={deviceAuthorization.verificationUri}
+									rel="noopener noreferrer"
+									target="_blank"
+								>
+									打开登录页面
+									<Icon name="external" />
+								</a>
+							) : deviceError ? (
+								<button className="button button-secondary" onClick={onRetry} type="button">
+									<Icon name="refresh" />
+									重新获取设备码
+								</button>
+							) : (
+								<button className="button button-primary" disabled type="button">
+									<span className="spinner" aria-hidden="true" />
+									正在准备登录页面…
+								</button>
+							)}
+						</div>
 					</div>
-					<div className="account-login-action">
-						{deviceAuthorization ? (
-							<a
-								className="button button-primary"
-								href={deviceAuthorization.verificationUri}
-								rel="noopener noreferrer"
-								target="_blank"
-							>
-								打开登录页面
-								<Icon name="external" />
-							</a>
-						) : deviceError ? (
-							<button className="button button-secondary" onClick={onRetry} type="button">
-								<Icon name="refresh" />
-								重新获取设备码
-							</button>
-						) : (
-							<button className="button button-primary" disabled type="button">
-								<span className="spinner" aria-hidden="true" />
-								正在准备登录页面…
-							</button>
-						)}
-					</div>
-				</div>
-			)}
-		</section>
-	);
-}
-
-function QuotaRings({ now, windows }: { now: number; windows: QuotaWindow[] }) {
-	const codex =
-		windows.find(
-			(window) => window.category === "codex" && window.kind === "five_hour",
-		) ?? windows.find((window) => window.category === "codex") ?? null;
-	const spark =
-		windows.find(
-			(window) =>
-				window.category === "additional" &&
-				window.name.trim().toLowerCase() === "gpt-5.3-codex-spark",
-		) ?? null;
-	const codexPercent = quotaRemainingPercent(codex);
-	const sparkPercent = quotaRemainingPercent(spark);
-	const codexTimePercent = quotaRemainingTimePercent(codex, now);
-	const sparkTimePercent = quotaRemainingTimePercent(spark, now);
-	const otherWindows = windows.filter(
-		(window) => window !== codex && window !== spark,
-	);
-
-	return (
-		<>
-			<div className="quota-rings">
-				<div
-					aria-label={`Codex ${quotaRemainingLabel(codex)}，${quotaRemainingTimeLabel(codex, now)}；GPT-5.3-Codex-Spark ${quotaRemainingLabel(spark)}，${quotaRemainingTimeLabel(spark, now)}`}
-					className="quota-ring-chart"
-					role="img"
-				>
-					<svg aria-hidden="true" viewBox="0 0 140 140">
-						<circle className="quota-ring-track" cx="70" cy="70" r="54" strokeWidth="17" />
-						{codexPercent !== null ? (
-							<circle
-								className="quota-ring-value quota-ring-codex"
-								cx="70"
-								cy="70"
-								pathLength="100"
-								r="54"
-								strokeDasharray="100 100"
-								strokeDashoffset={100 - codexPercent}
-								strokeWidth="17"
-								transform="rotate(-90 70 70)"
-							/>
-						) : null}
-						<circle className="quota-ring-track" cx="70" cy="70" r="32" strokeWidth="17" />
-						{sparkPercent !== null ? (
-							<circle
-								className="quota-ring-value quota-ring-spark"
-								cx="70"
-								cy="70"
-								pathLength="100"
-								r="32"
-								strokeDasharray="100 100"
-								strokeDashoffset={100 - sparkPercent}
-								strokeWidth="17"
-								transform="rotate(-90 70 70)"
-							/>
-						) : null}
-						{codexTimePercent !== null ? (
-							<circle
-								className="quota-time-marker"
-								cx="70"
-								cy="16"
-								r="5"
-								transform={`rotate(${codexTimePercent * 3.6} 70 70)`}
-							/>
-						) : null}
-						{sparkTimePercent !== null ? (
-							<circle
-								className="quota-time-marker"
-								cx="70"
-								cy="38"
-								r="4.75"
-								transform={`rotate(${sparkTimePercent * 3.6} 70 70)`}
-							/>
-						) : null}
-					</svg>
-				</div>
-
-				<div className="quota-ring-legend">
-					<QuotaRingLegend label="Codex" ring="codex" window={codex} />
-					<QuotaRingLegend
-						label="GPT-5.3-Codex-Spark"
-						ring="spark"
-						window={spark}
-					/>
-				</div>
+				)}
 			</div>
 
-			{otherWindows.length > 0 ? (
-				<div className="quota-extra-list">
-					{otherWindows.map((window) => (
-						<div className="quota-extra-item" key={window.id}>
-							<span>{quotaWindowLabel(window)}</span>
-							<strong className={window.limitReached ? "danger-text" : undefined}>
-								{quotaRemainingLabel(window)}
-							</strong>
+			{oauth ? (
+				<div className="account-quota-section" aria-label="账户配额">
+					{loading && !info ? (
+						<div className="center-state account-quota-loading" role="status">
+							<span className="spinner" aria-hidden="true" />
+							<span>正在读取配额时间轴…</span>
 						</div>
-					))}
+					) : null}
+					{error ? (
+						<div className="inline-alert error-alert account-quota-alert" role="alert">
+							<Icon name="alert" />
+							<span>{error}</span>
+						</div>
+					) : null}
+					{info && info.windows.length > 0 ? (
+						<QuotaTimeline
+							className={loading ? "account-quota-timeline is-refreshing" : "account-quota-timeline"}
+							now={now}
+							planType={subscription?.planType}
+							sampledAt={info.fetchedAt}
+							windows={info.windows}
+						/>
+					) : !loading && !error ? (
+						<p className="muted-message account-quota-empty">暂无额度数据</p>
+					) : null}
 				</div>
 			) : null}
-		</>
-	);
-}
-
-function QuotaRingLegend({
-	label,
-	ring,
-	window,
-}: {
-	label: string;
-	ring: "codex" | "spark";
-	window: QuotaWindow | null;
-}) {
-	return (
-		<div className="quota-ring-legend-item">
-			<span className={`quota-ring-swatch quota-ring-swatch-${ring}`} aria-hidden="true" />
-			<strong>{label}</strong>
-			<span>{quotaCompactValue(window)}</span>
-		</div>
+		</section>
 	);
 }
 
@@ -2439,6 +2335,16 @@ function formatDate(value: number): string {
 	}).format(new Date(value));
 }
 
+function formatCompactDate(value: number): string {
+	return new Intl.DateTimeFormat("zh-CN", {
+		month: "numeric",
+		day: "numeric",
+		hour: "2-digit",
+		minute: "2-digit",
+		hour12: false,
+	}).format(new Date(value));
+}
+
 function formatCount(value: number): string {
 	return INTEGER_FORMAT.format(Math.max(0, Number.isFinite(value) ? value : 0));
 }
@@ -2478,76 +2384,6 @@ function formatPlanType(value: string | null | undefined): string {
 		default:
 			return value || "未知";
 	}
-}
-
-function quotaWindowLabel(window: QuotaWindow): string {
-	const name = window.category === "code_review" ? "代码审查" : window.name || "Codex";
-	return `${name} · ${quotaWindowPeriodLabel(window.kind)}`;
-}
-
-function quotaWindowPeriodLabel(kind: QuotaWindow["kind"]): string {
-	const labels: Record<QuotaWindow["kind"], string> = {
-		five_hour: "5 小时",
-		weekly: "7 天",
-		monthly: "月度",
-		primary: "主要额度",
-		secondary: "次要额度",
-	};
-	return labels[kind];
-}
-
-function quotaRemainingPercent(window: QuotaWindow | null): number | null {
-	return window?.remainingPercent === null || window?.remainingPercent === undefined
-		? null
-		: clampPercent(window.remainingPercent);
-}
-
-function quotaRemainingLabel(window: QuotaWindow | null): string {
-	const percent = quotaRemainingPercent(window);
-	return percent === null ? "暂无数据" : `剩余 ${Math.round(percent)}%`;
-}
-
-function quotaRemainingTimePercent(
-	window: QuotaWindow | null,
-	now: number,
-): number | null {
-	if (
-		!window ||
-		!validTimestamp(window.resetAt) ||
-		window.limitWindowSeconds === null ||
-		window.limitWindowSeconds <= 0
-	) {
-		return null;
-	}
-	const duration = window.limitWindowSeconds * 1_000;
-	return clampPercent(((window.resetAt - now) / duration) * 100);
-}
-
-function quotaRemainingTimeLabel(window: QuotaWindow | null, now: number): string {
-	const percent = quotaRemainingTimePercent(window, now);
-	return percent === null ? "时间暂无数据" : `剩余时间 ${Math.round(percent)}%`;
-}
-
-function quotaCompactValue(window: QuotaWindow | null): string {
-	const percent = quotaRemainingPercent(window);
-	const value = percent === null ? "—" : `${Math.round(percent)}%`;
-	return window && validTimestamp(window.resetAt)
-		? `${value} · ${formatCompactDate(window.resetAt)}`
-		: value;
-}
-
-function formatCompactDate(value: number): string {
-	return new Intl.DateTimeFormat("zh-CN", {
-		month: "numeric",
-		day: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-		hour12: false,
-	}).format(new Date(value));
-}
-
-function clampPercent(value: number): number {
-	return Math.max(0, Math.min(100, value));
 }
 
 function validAccountId(value: string): boolean {
