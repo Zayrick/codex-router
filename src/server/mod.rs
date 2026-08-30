@@ -7,6 +7,7 @@ mod codex;
 pub mod config;
 mod frontend;
 mod oauth;
+mod pricing;
 mod provider_error;
 mod relay;
 mod response;

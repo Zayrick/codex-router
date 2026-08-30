@@ -15,7 +15,10 @@ use crate::{
     protocol::openai,
 };
 
-use super::oauth::current_time_ms;
+use super::{
+    oauth::current_time_ms,
+    pricing::{ModelPrice, calculate_cost, price_index},
+};
 
 const MAX_TRACKED_JSON_BYTES: usize = 16 * 1024 * 1024;
 const RECENT_EVENT_LIMIT: i64 = 50;
@@ -247,18 +250,45 @@ impl UsageStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub async fn dashboard(
         &self,
         range: UsageRange,
         identity: Option<UsageIdentityFilter>,
     ) -> Result<UsageDashboard> {
+        self.dashboard_with_options(range, identity, None, &[])
+            .await
+    }
+
+    pub async fn dashboard_with_options(
+        &self,
+        range: UsageRange,
+        identity: Option<UsageIdentityFilter>,
+        bounds: Option<UsageBounds>,
+        prices: &[ModelPrice],
+    ) -> Result<UsageDashboard> {
         let connection = self.connection.clone();
+        let prices = prices.to_vec();
         tokio::task::spawn_blocking(move || {
             let connection = connection.lock().expect("usage database lock poisoned");
-            query_dashboard(&connection, range, identity.as_ref())
+            query_dashboard(&connection, range, identity.as_ref(), bounds, &prices)
         })
         .await
         .context("usage database query task failed")?
+    }
+
+    pub async fn used_models(&self) -> Result<Vec<String>> {
+        let connection = self.connection.clone();
+        tokio::task::spawn_blocking(move || {
+            let connection = connection.lock().expect("usage database lock poisoned");
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT model FROM usage_events WHERE model <> '' ORDER BY model",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+        .context("usage model query task failed")?
     }
 }
 
@@ -570,6 +600,7 @@ fn token(object: &Map<String, Value>, key: &str) -> Option<i64> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageRange {
+    Cycle,
     Day,
     Week,
     Month,
@@ -579,6 +610,7 @@ pub enum UsageRange {
 impl UsageRange {
     pub fn parse(value: Option<&str>) -> Option<Self> {
         match value {
+            Some("cycle") => Some(Self::Cycle),
             Some("24h") => Some(Self::Day),
             None | Some("7d") => Some(Self::Week),
             Some("30d") => Some(Self::Month),
@@ -589,6 +621,7 @@ impl UsageRange {
 
     const fn label(self) -> &'static str {
         match self {
+            Self::Cycle => "cycle",
             Self::Day => "24h",
             Self::Week => "7d",
             Self::Month => "30d",
@@ -599,6 +632,7 @@ impl UsageRange {
     const fn duration_ms(self) -> Option<i64> {
         const DAY: i64 = 86_400_000;
         match self {
+            Self::Cycle => None,
             Self::Day => Some(DAY),
             Self::Week => Some(7 * DAY),
             Self::Month => Some(30 * DAY),
@@ -607,7 +641,7 @@ impl UsageRange {
     }
 
     const fn bucket_ms(self) -> i64 {
-        if matches!(self, Self::Day) {
+        if matches!(self, Self::Day | Self::Cycle) {
             3_600_000
         } else {
             86_400_000
@@ -615,7 +649,24 @@ impl UsageRange {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageBounds {
+    pub start_at: i64,
+    pub end_at: i64,
+}
+
+impl UsageBounds {
+    pub fn cycle(start_at: i64, end_at: i64, now: i64) -> Option<Self> {
+        const DAY: i64 = 86_400_000;
+        let duration = end_at.checked_sub(start_at)?;
+        if duration != 7 * DAY || start_at < 0 || end_at > now.saturating_add(7 * DAY) {
+            return None;
+        }
+        Some(Self { start_at, end_at })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageDashboard {
     pub range: String,
@@ -626,9 +677,10 @@ pub struct UsageDashboard {
     pub models: Vec<UsageBreakdownRow>,
     pub identities: Vec<UsageIdentityRow>,
     pub recent_events: Vec<UsageEventRow>,
+    pub unpriced_models: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageTotals {
     pub requests: i64,
@@ -638,17 +690,26 @@ pub struct UsageTotals {
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
+    pub cost_usd: f64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSeriesPoint {
     pub start_at: i64,
+    pub successful_requests: i64,
+    pub failed_requests: i64,
     pub requests: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_creation_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
+    pub cost_usd: f64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageBreakdownRow {
     pub model: String,
@@ -656,7 +717,7 @@ pub struct UsageBreakdownRow {
     pub totals: UsageTotals,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageIdentityRow {
     pub identity_type: String,
@@ -666,7 +727,7 @@ pub struct UsageIdentityRow {
     pub totals: UsageTotals,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageEventRow {
     pub id: i64,
@@ -684,14 +745,17 @@ pub struct UsageEventRow {
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
+    pub cost_usd: f64,
 }
 
 fn query_dashboard(
     connection: &Connection,
     range: UsageRange,
     identity: Option<&UsageIdentityFilter>,
+    bounds: Option<UsageBounds>,
+    prices: &[ModelPrice],
 ) -> Result<UsageDashboard> {
-    let end_at = current_time_ms();
+    let now = current_time_ms();
     let (identity_type, identity_id) = identity_parameters(identity);
     let earliest = connection.query_row(
         "SELECT MIN(recorded_at_ms) FROM usage_events \
@@ -699,16 +763,40 @@ fn query_dashboard(
         params![identity_type, identity_id],
         |row| row.get::<_, Option<i64>>(0),
     )?;
-    let start_at = range
-        .duration_ms()
-        .map(|duration| end_at.saturating_sub(duration))
-        .or(earliest)
-        .unwrap_or(end_at);
-    let totals = query_totals(connection, start_at, end_at, identity)?;
-    let series = query_series(connection, range, start_at, end_at, identity)?;
-    let models = query_models(connection, start_at, end_at, identity)?;
-    let identities = query_identities(connection, start_at, end_at, identity)?;
-    let recent_events = query_recent_events(connection, start_at, end_at, identity)?;
+    let (start_at, end_at) = if range == UsageRange::Cycle {
+        bounds
+            .map(|bounds| (bounds.start_at, bounds.end_at))
+            .unwrap_or((now.saturating_sub(7 * 86_400_000), now))
+    } else {
+        let start_at = range
+            .duration_ms()
+            .map(|duration| now.saturating_sub(duration))
+            .or(earliest)
+            .unwrap_or(now);
+        (start_at, now)
+    };
+    let prices = price_index(prices);
+    let mut totals = query_totals(connection, start_at, end_at, identity)?;
+    totals.cost_usd = query_total_cost(connection, start_at, end_at, identity, &prices)?;
+    let series = query_series(connection, range, start_at, end_at, identity, &prices)?;
+    let mut models = query_models(connection, start_at, end_at, identity)?;
+    for row in &mut models {
+        row.totals.cost_usd = cost_for_model(&row.model, &row.totals, &prices);
+    }
+    let mut identities = query_identities(connection, start_at, end_at, identity)?;
+    apply_identity_costs(
+        connection,
+        start_at,
+        end_at,
+        identity,
+        &prices,
+        &mut identities,
+    )?;
+    let mut recent_events = query_recent_events(connection, start_at, end_at, identity)?;
+    for event in &mut recent_events {
+        event.cost_usd = event_cost(event, &prices);
+    }
+    let unpriced_models = query_unpriced_models(connection, start_at, end_at, identity, &prices)?;
     Ok(UsageDashboard {
         range: range.label().into(),
         start_at,
@@ -718,6 +806,7 @@ fn query_dashboard(
         models,
         identities,
         recent_events,
+        unpriced_models,
     })
 }
 
@@ -745,7 +834,7 @@ fn query_totals(
 ) -> Result<UsageTotals> {
     let sql = format!(
         "SELECT {TOTAL_COLUMNS} FROM usage_events \
-         WHERE recorded_at_ms >= ?1 AND recorded_at_ms <= ?2 \
+         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
          AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4))"
     );
     let (identity_type, identity_id) = identity_parameters(identity);
@@ -764,7 +853,7 @@ fn query_models(
 ) -> Result<Vec<UsageBreakdownRow>> {
     let sql = format!(
         "SELECT model, {TOTAL_COLUMNS} FROM usage_events \
-         WHERE recorded_at_ms >= ?1 AND recorded_at_ms <= ?2 \
+         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
          AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) \
          GROUP BY model ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, model LIMIT ?5"
     );
@@ -796,7 +885,7 @@ fn query_identities(
 ) -> Result<Vec<UsageIdentityRow>> {
     let sql = format!(
         "SELECT identity_type, identity_id, identity_name, {TOTAL_COLUMNS} FROM usage_events \
-         WHERE recorded_at_ms >= ?1 AND recorded_at_ms <= ?2 \
+         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
          AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) \
          GROUP BY identity_type, identity_id, identity_name \
          ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, identity_name LIMIT ?5"
@@ -829,18 +918,26 @@ fn query_series(
     start_at: i64,
     end_at: i64,
     identity: Option<&UsageIdentityFilter>,
+    prices: &BTreeMap<String, ModelPrice>,
 ) -> Result<Vec<UsageSeriesPoint>> {
     let bucket_ms = range.bucket_ms();
-    let aligned_start = start_at - start_at.rem_euclid(bucket_ms);
-    let mut statement = connection.prepare(
+    let aligned_start = if range == UsageRange::Cycle {
+        start_at
+    } else {
+        start_at - start_at.rem_euclid(bucket_ms)
+    };
+    let sql = format!(
         r#"
-        SELECT ((recorded_at_ms - ?1) / ?2), COUNT(*), COALESCE(SUM(total_tokens), 0)
+        SELECT ((recorded_at_ms - ?1) / ?2), model, {TOTAL_COLUMNS},
+               COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END), 0)
         FROM usage_events
-        WHERE recorded_at_ms >= ?3 AND recorded_at_ms <= ?4
+        WHERE recorded_at_ms >= ?3 AND recorded_at_ms < ?4
           AND (?5 IS NULL OR (identity_type = ?5 AND identity_id = ?6))
-        GROUP BY 1 ORDER BY 1
+        GROUP BY 1, model ORDER BY 1
         "#,
-    )?;
+    );
+    let mut statement = connection.prepare(&sql)?;
     let (identity_type, identity_id) = identity_parameters(identity);
     let rows = statement.query_map(
         params![
@@ -854,15 +951,24 @@ fn query_series(
         |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
+                row.get::<_, String>(1)?,
+                totals_from_row_at(row, 2)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, i64>(10)?,
             ))
         },
     )?;
-    let populated = rows
-        .map(|row| row.map(|(index, requests, tokens)| (index, (requests, tokens))))
-        .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
-    let last_index = (end_at - aligned_start).div_euclid(bucket_ms);
+    let mut populated = BTreeMap::<i64, SeriesAccumulator>::new();
+    for row in rows {
+        let (index, model, totals, successful_requests, failed_requests) = row?;
+        let cost = cost_for_model(&model, &totals, prices);
+        let point = populated.entry(index).or_default();
+        add_totals(&mut point.totals, &totals);
+        point.totals.cost_usd += cost;
+        point.successful_requests += successful_requests;
+        point.failed_requests += failed_requests;
+    }
+    let last_index = (end_at.saturating_sub(1) - aligned_start).div_euclid(bucket_ms);
     let first_index = (start_at - aligned_start).div_euclid(bucket_ms);
     let first_index = if range == UsageRange::All {
         populated.keys().next().copied().unwrap_or(first_index)
@@ -871,14 +977,157 @@ fn query_series(
     };
     Ok((first_index..=last_index)
         .map(|index| {
-            let (requests, total_tokens) = populated.get(&index).copied().unwrap_or_default();
+            let point = populated.remove(&index).unwrap_or_default();
             UsageSeriesPoint {
                 start_at: aligned_start.saturating_add(index.saturating_mul(bucket_ms)),
-                requests,
-                total_tokens,
+                successful_requests: point.successful_requests,
+                failed_requests: point.failed_requests,
+                requests: point.totals.requests,
+                input_tokens: point.totals.input_tokens,
+                cached_input_tokens: point.totals.cached_input_tokens,
+                cache_creation_input_tokens: point.totals.cache_creation_input_tokens,
+                output_tokens: point.totals.output_tokens,
+                reasoning_output_tokens: point.totals.reasoning_output_tokens,
+                total_tokens: point.totals.total_tokens,
+                cost_usd: point.totals.cost_usd,
             }
         })
         .collect())
+}
+
+#[derive(Default)]
+struct SeriesAccumulator {
+    successful_requests: i64,
+    failed_requests: i64,
+    totals: UsageTotals,
+}
+
+fn add_totals(target: &mut UsageTotals, source: &UsageTotals) {
+    target.requests += source.requests;
+    target.input_tokens += source.input_tokens;
+    target.cached_input_tokens += source.cached_input_tokens;
+    target.cache_creation_input_tokens += source.cache_creation_input_tokens;
+    target.output_tokens += source.output_tokens;
+    target.reasoning_output_tokens += source.reasoning_output_tokens;
+    target.total_tokens += source.total_tokens;
+}
+
+fn cost_for_model(model: &str, totals: &UsageTotals, prices: &BTreeMap<String, ModelPrice>) -> f64 {
+    let Some(price) = prices.get(&model.trim().to_ascii_lowercase()) else {
+        return 0.0;
+    };
+    calculate_cost(
+        totals.input_tokens,
+        totals.output_tokens,
+        totals.cached_input_tokens,
+        totals.cache_creation_input_tokens,
+        price,
+    )
+}
+
+fn query_total_cost(
+    connection: &Connection,
+    start_at: i64,
+    end_at: i64,
+    identity: Option<&UsageIdentityFilter>,
+    prices: &BTreeMap<String, ModelPrice>,
+) -> Result<f64> {
+    let sql = format!(
+        "SELECT model, {TOTAL_COLUMNS} FROM usage_events \
+         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
+         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) \
+         GROUP BY model"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let (identity_type, identity_id) = identity_parameters(identity);
+    let rows = statement.query_map(
+        params![start_at, end_at, identity_type, identity_id],
+        |row| Ok((row.get::<_, String>(0)?, totals_from_row_at(row, 1)?)),
+    )?;
+    let mut cost = 0.0;
+    for row in rows {
+        let (model, totals) = row?;
+        cost += cost_for_model(&model, &totals, prices);
+    }
+    Ok(cost)
+}
+
+fn apply_identity_costs(
+    connection: &Connection,
+    start_at: i64,
+    end_at: i64,
+    identity: Option<&UsageIdentityFilter>,
+    prices: &BTreeMap<String, ModelPrice>,
+    identities: &mut [UsageIdentityRow],
+) -> Result<()> {
+    let sql = format!(
+        "SELECT identity_type, identity_id, model, {TOTAL_COLUMNS} FROM usage_events \
+         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
+         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) \
+         GROUP BY identity_type, identity_id, model"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let (identity_type, identity_id) = identity_parameters(identity);
+    let rows = statement.query_map(
+        params![start_at, end_at, identity_type, identity_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                totals_from_row_at(row, 3)?,
+            ))
+        },
+    )?;
+    let mut costs = BTreeMap::<(String, String), f64>::new();
+    for row in rows {
+        let (kind, id, model, totals) = row?;
+        *costs.entry((kind, id)).or_default() += cost_for_model(&model, &totals, prices);
+    }
+    for row in identities {
+        row.totals.cost_usd = costs
+            .get(&(row.identity_type.clone(), row.identity_id.clone()))
+            .copied()
+            .unwrap_or_default();
+    }
+    Ok(())
+}
+
+fn query_unpriced_models(
+    connection: &Connection,
+    start_at: i64,
+    end_at: i64,
+    identity: Option<&UsageIdentityFilter>,
+    prices: &BTreeMap<String, ModelPrice>,
+) -> Result<Vec<String>> {
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT model FROM usage_events \
+         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 AND total_tokens > 0 \
+         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) ORDER BY model",
+    )?;
+    let (identity_type, identity_id) = identity_parameters(identity);
+    let rows = statement.query_map(
+        params![start_at, end_at, identity_type, identity_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    Ok(rows
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|model| !prices.contains_key(&model.trim().to_ascii_lowercase()))
+        .collect())
+}
+
+fn event_cost(event: &UsageEventRow, prices: &BTreeMap<String, ModelPrice>) -> f64 {
+    let Some(price) = prices.get(&event.model.trim().to_ascii_lowercase()) else {
+        return 0.0;
+    };
+    calculate_cost(
+        event.input_tokens,
+        event.output_tokens,
+        event.cached_input_tokens,
+        event.cache_creation_input_tokens,
+        price,
+    )
 }
 
 fn query_recent_events(
@@ -893,7 +1142,7 @@ fn query_recent_events(
                model, transport, endpoint, status, input_tokens, cached_input_tokens,
                cache_creation_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
         FROM usage_events
-        WHERE recorded_at_ms >= ?1 AND recorded_at_ms <= ?2
+        WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2
           AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4))
         ORDER BY recorded_at_ms DESC, id DESC LIMIT ?5
         "#,
@@ -924,6 +1173,7 @@ fn query_recent_events(
                 output_tokens: row.get(12)?,
                 reasoning_output_tokens: row.get(13)?,
                 total_tokens: row.get(14)?,
+                cost_usd: 0.0,
             })
         },
     )?;
@@ -943,6 +1193,7 @@ fn totals_from_row_at(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Resul
         output_tokens: row.get(offset + 4)?,
         reasoning_output_tokens: row.get(offset + 5)?,
         total_tokens: row.get(offset + 6)?,
+        cost_usd: 0.0,
     })
 }
 
@@ -1048,6 +1299,64 @@ mod tests {
         assert_eq!(dashboard.models[0].model, "gpt-5.6-sol");
         assert_eq!(dashboard.identities[0].identity_name, "laptop");
         assert_eq!(dashboard.recent_events[0].transport, "http");
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn cycle_is_seven_days_half_open_and_calculates_cost() {
+        const WEEK_MS: i64 = 7 * 86_400_000;
+        let (store, path) = temporary_store();
+        let end_at = current_time_ms();
+        let start_at = end_at - WEEK_MS;
+        for (recorded_at_ms, response_id) in
+            [(start_at, "resp_cycle_start"), (end_at, "resp_next_cycle")]
+        {
+            store
+                .insert(UsageEvent {
+                    recorded_at_ms,
+                    identity_type: "api_key".into(),
+                    identity_id: "key-1".into(),
+                    identity_name: "laptop".into(),
+                    model: "gpt-test".into(),
+                    transport: "http".into(),
+                    endpoint: "/v1/responses".into(),
+                    status: "completed".into(),
+                    response_id: response_id.into(),
+                    input_tokens: 1_000_000,
+                    cached_input_tokens: 400_000,
+                    cache_creation_input_tokens: 100_000,
+                    output_tokens: 100_000,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 1_100_000,
+                })
+                .await
+                .unwrap();
+        }
+        let price = ModelPrice {
+            model: "gpt-test".into(),
+            input: 2.0,
+            output: 10.0,
+            cache_read: 0.5,
+            cache_write: 1.5,
+            multiplier: 2.0,
+        };
+        let bounds = UsageBounds::cycle(start_at, end_at, end_at).unwrap();
+        let dashboard = store
+            .dashboard_with_options(UsageRange::Cycle, None, Some(bounds), &[price])
+            .await
+            .unwrap();
+
+        assert_eq!(dashboard.start_at, start_at);
+        assert_eq!(dashboard.end_at, end_at);
+        assert_eq!(dashboard.series.len(), 7 * 24);
+        assert_eq!(dashboard.totals.requests, 1);
+        assert_eq!(dashboard.recent_events[0].recorded_at, start_at);
+        assert!((dashboard.totals.cost_usd - 4.7).abs() < 0.000_001);
+        assert!((dashboard.models[0].totals.cost_usd - 4.7).abs() < 0.000_001);
+        assert!(dashboard.unpriced_models.is_empty());
+
+        assert!(UsageBounds::cycle(start_at, end_at - 1, end_at).is_none());
         drop(store);
         remove_temporary_store(&path);
     }

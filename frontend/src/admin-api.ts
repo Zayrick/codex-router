@@ -68,7 +68,12 @@ export interface AdminState {
 	authProxyAccounts: AuthProxyAccount[];
 }
 
-export type UsageRange = "24h" | "7d" | "30d" | "all";
+export type UsageRange = "cycle" | "24h" | "7d" | "30d" | "all";
+
+export interface UsageCycleBounds {
+	startAt: number;
+	endAt: number;
+}
 
 export type UsageIdentityType = "api_key" | "auth_proxy";
 
@@ -85,12 +90,13 @@ export interface UsageTotals {
 	outputTokens: number;
 	reasoningOutputTokens: number;
 	totalTokens: number;
+	costUsd: number;
 }
 
-export interface UsageSeriesPoint {
+export interface UsageSeriesPoint extends UsageTotals {
 	startAt: number;
-	requests: number;
-	totalTokens: number;
+	successfulRequests: number;
+	failedRequests: number;
 }
 
 export interface UsageModelRow extends UsageTotals {
@@ -124,6 +130,29 @@ export interface UsageDashboard {
 	models: UsageModelRow[];
 	identities: UsageIdentityRow[];
 	recentEvents: UsageEvent[];
+	unpricedModels: string[];
+}
+
+export interface ModelPrice {
+	model: string;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	multiplier: number;
+}
+
+export interface PricingResponse {
+	prices: ModelPrice[];
+	usedModels: string[];
+}
+
+export interface PricingSyncResult {
+	source: string;
+	sourceUrl: string;
+	prices: ModelPrice[];
+	matchedModels: string[];
+	unmatchedModels: string[];
 }
 
 export interface DeviceAuthorization {
@@ -198,13 +227,36 @@ export class AdminApiClient {
 	getUsage(
 		range: UsageRange,
 		identity: UsageIdentityFilter | null = null,
+		bounds: UsageCycleBounds | null = null,
 	): Promise<UsageDashboard> {
 		const query = new URLSearchParams({ range });
+		if (range === "cycle" && bounds) {
+			query.set("startAt", String(Math.round(bounds.startAt)));
+			query.set("endAt", String(Math.round(bounds.endAt)));
+		}
 		if (identity) {
 			query.set("identityType", identity.identityType);
 			query.set("identityId", identity.identityId);
 		}
 		return this.requestJson<UsageDashboard>(`/usage?${query.toString()}`);
+	}
+
+	getPricing(): Promise<PricingResponse> {
+		return this.requestJson<PricingResponse>("/pricing");
+	}
+
+	async replacePricing(prices: ModelPrice[]): Promise<ModelPrice[]> {
+		const result = await this.requestJson<{ prices: ModelPrice[] }>(
+			"/pricing",
+			jsonRequest("PUT", { prices }),
+		);
+		return result.prices;
+	}
+
+	syncPricing(): Promise<PricingSyncResult> {
+		return this.requestJson<PricingSyncResult>("/pricing/sync", {
+			method: "POST",
+		});
 	}
 
 	startDeviceAuthorization(): Promise<DeviceAuthorization> {

@@ -20,6 +20,16 @@ codex_resets_url = "https://codex-resets.com/api/v1/status"
 # Relative paths are resolved next to this configuration file.
 database_path = "usage.sqlite3"
 
+# Model prices are stored here by the management page. Values are USD per
+# one million tokens. The optional multiplier defaults to 1.
+# [[usage_tracking.model_prices]]
+# model = "gpt-5.4"
+# input = 2.5
+# output = 15.0
+# cacheRead = 0.25
+# cacheWrite = 0.0
+# multiplier = 1.0
+
 [notifications]
 # bark_push_url = "https://api.day.app/device-key"
 # dingtalk_webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=access-token"

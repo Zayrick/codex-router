@@ -15,14 +15,24 @@ import {
 	type ClientApiKey,
 	type ClientApiKeyInput,
 	type DeviceAuthorization,
+	type ModelPrice,
 	type OAuthStatus,
 	type SubscriptionInfo,
 	type SubscriptionMetadata,
 	type UsageDashboard,
+	type UsageCycleBounds,
 	type UsageIdentityFilter,
 	type UsageRange,
 } from "./admin-api";
+import ModelPricingCard from "./ModelPricingCard";
 import QuotaTimeline from "./QuotaTimeline";
+import {
+	ActivityHeatmaps,
+	DownstreamCostDonut,
+	UsageBreakdownDonuts,
+	UsageLineCharts,
+} from "./UsageVisuals";
+import { formatCost } from "./usage-format";
 import ManagementShell, {
 	ProductMark,
 	type ManagementPage,
@@ -66,11 +76,17 @@ function App() {
 	const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
 	const [usage, setUsage] = useState<UsageDashboard | null>(null);
 	const [overviewUsage, setOverviewUsage] = useState<UsageDashboard | null>(null);
-	const [usageRange, setUsageRange] = useState<UsageRange>("7d");
+	const [usageRange, setUsageRange] = useState<UsageRange>("cycle");
 	const [usageIdentity, setUsageIdentity] =
 		useState<UsageIdentityFilter | null>(null);
 	const [usageLoading, setUsageLoading] = useState(false);
 	const [usageError, setUsageError] = useState<string | null>(null);
+	const [modelPrices, setModelPrices] = useState<ModelPrice[]>([]);
+	const [usedModels, setUsedModels] = useState<string[]>([]);
+	const [pricingLoading, setPricingLoading] = useState(false);
+	const [pricingSaving, setPricingSaving] = useState(false);
+	const [pricingSyncing, setPricingSyncing] = useState(false);
+	const [pricingError, setPricingError] = useState<string | null>(null);
 	const [activePage, setActivePage] = useState<ManagementPage>(() =>
 		managementPageFromSearch(window.location.search),
 	);
@@ -188,7 +204,9 @@ function App() {
 			} else {
 				void beginDeviceLogin();
 			}
-			void refreshUsage("7d", null);
+			void refreshUsage("cycle", null, null);
+			void refreshOverviewUsage(null);
+			void refreshPricing();
 		} catch (error) {
 			if (!mountedRef.current) return;
 			if (error instanceof AdminSessionExpiredError) {
@@ -240,6 +258,11 @@ function App() {
 			if (!mountedRef.current) return;
 			setSubscription(next);
 			setNow(Date.now());
+			const bounds = codexCycleBounds(next);
+			void refreshOverviewUsage(bounds);
+			if (usageRange === "cycle") {
+				void refreshUsage("cycle", usageIdentity, bounds);
+			}
 		} catch (error) {
 			if (!mountedRef.current) return;
 			if (handleSessionFailure(error)) return;
@@ -254,15 +277,18 @@ function App() {
 	async function refreshUsage(
 		range = usageRange,
 		identity = usageIdentity,
+		boundsOverride: UsageCycleBounds | null | undefined = undefined,
 	): Promise<void> {
 		if (!api) return;
 		const requestId = ++usageRequestRef.current;
 		setUsageLoading(true);
 		setUsageError(null);
 		try {
-			const next = await api.getUsage(range, identity);
+			const bounds = range === "cycle"
+				? boundsOverride === undefined ? codexCycleBounds(subscription) : boundsOverride
+				: null;
+			const next = await api.getUsage(range, identity, bounds);
 			if (!mountedRef.current) return;
-			if (!identity) setOverviewUsage(next);
 			if (requestId !== usageRequestRef.current) return;
 			setUsage(next);
 		} catch (error) {
@@ -273,6 +299,84 @@ function App() {
 			if (mountedRef.current && requestId === usageRequestRef.current) {
 				setUsageLoading(false);
 			}
+		}
+	}
+
+	async function refreshOverviewUsage(
+		boundsOverride: UsageCycleBounds | null | undefined = undefined,
+	): Promise<void> {
+		if (!api) return;
+		try {
+			const bounds = boundsOverride === undefined
+				? codexCycleBounds(subscription)
+				: boundsOverride;
+			const next = await api.getUsage("cycle", null, bounds);
+			if (mountedRef.current) setOverviewUsage(next);
+		} catch (error) {
+			if (mountedRef.current) handleSessionFailure(error);
+		}
+	}
+
+	async function refreshPricing(): Promise<void> {
+		if (!api || pricingLoading) return;
+		setPricingLoading(true);
+		setPricingError(null);
+		try {
+			const next = await api.getPricing();
+			if (!mountedRef.current) return;
+			setModelPrices(next.prices);
+			setUsedModels(next.usedModels);
+		} catch (error) {
+			if (!mountedRef.current || handleSessionFailure(error)) return;
+			setPricingError(errorMessage(error, "读取模型价格失败。"));
+		} finally {
+			if (mountedRef.current) setPricingLoading(false);
+		}
+	}
+
+	async function savePricing(prices: ModelPrice[]): Promise<void> {
+		if (!api || pricingSaving) return;
+		setPricingSaving(true);
+		setPricingError(null);
+		try {
+			const next = await api.replacePricing(prices);
+			if (!mountedRef.current) return;
+			setModelPrices(next);
+			showNotice("模型价格已保存到服务器配置。", "success");
+			void refreshOverviewUsage();
+			void refreshUsage();
+		} catch (error) {
+			if (!handleSessionFailure(error)) {
+				setPricingError(errorMessage(error, "保存模型价格失败。"));
+			}
+		} finally {
+			if (mountedRef.current) setPricingSaving(false);
+		}
+	}
+
+	async function syncPricing(): Promise<void> {
+		if (!api || pricingSyncing) return;
+		setPricingSyncing(true);
+		setPricingError(null);
+		try {
+			const result = await api.syncPricing();
+			if (!mountedRef.current) return;
+			setModelPrices(result.prices);
+			const unmatched = result.unmatchedModels.length;
+			showNotice(
+				unmatched > 0
+					? `已匹配 ${result.matchedModels.length} 个模型，${unmatched} 个未匹配。`
+					: `已从 ${result.source} 获取 ${result.matchedModels.length} 个模型价格。`,
+				unmatched > 0 ? "error" : "success",
+			);
+			void refreshOverviewUsage();
+			void refreshUsage();
+		} catch (error) {
+			if (!handleSessionFailure(error)) {
+				setPricingError(errorMessage(error, "从 Models.dev 获取价格失败。"));
+			}
+		} finally {
+			if (mountedRef.current) setPricingSyncing(false);
 		}
 	}
 
@@ -343,7 +447,7 @@ function App() {
 			setDeviceError(null);
 			showNotice("Codex 登录成功。", "success");
 			void refreshSubscription(true);
-			void refreshUsage("7d");
+			void refreshUsage("cycle", usageIdentity);
 		} catch (error) {
 			if (!mountedRef.current) return;
 			if (handleSessionFailure(error)) return;
@@ -719,6 +823,12 @@ function App() {
 		usageRequestRef.current += 1;
 		setUsageError(null);
 		setUsageLoading(false);
+		setModelPrices([]);
+		setUsedModels([]);
+		setPricingError(null);
+		setPricingLoading(false);
+		setPricingSaving(false);
+		setPricingSyncing(false);
 		setApiKeys([]);
 		setAuthProxyAccounts([]);
 		keyTogglingRef.current = new Set();
@@ -768,29 +878,20 @@ function App() {
 
 	return (
 		<ManagementShell
-			activeApiKeys={apiKeys.filter((entry) => entry.enabled).length}
 			activePage={activePage}
-			activeProxyAccounts={authProxyAccounts.filter((entry) => entry.enabled).length}
 			basePath={basePath ?? ""}
 			mainAccount={oauth}
 			mainAccountSubscription={subscription}
 			now={now}
 			onLogout={() => void handleLogout()}
 			onNavigate={navigateManagementPage}
-			requestCount={overviewUsage?.totals.requests ?? null}
-			totalApiKeys={apiKeys.length}
-			totalProxyAccounts={authProxyAccounts.length}
-			usageRangeLabel={formatUsageRange(overviewUsage?.range ?? "7d")}
 		>
 			{activePage === "overview" ? (
 				<OverviewPage
 					activeApiKeys={apiKeys.filter((entry) => entry.enabled).length}
 					activeProxyAccounts={authProxyAccounts.filter((entry) => entry.enabled).length}
-					mainAccountConnected={oauth !== null}
+					now={now}
 					onNavigate={navigateManagementPage}
-					planType={subscription?.planType ?? null}
-					totalApiKeys={apiKeys.length}
-					totalProxyAccounts={authProxyAccounts.length}
 					usage={overviewUsage}
 				/>
 			) : null}
@@ -802,6 +903,7 @@ function App() {
 					error={usageError}
 					identity={usageIdentity}
 					loading={usageLoading}
+					now={now}
 					onIdentityChange={changeUsageIdentity}
 					onRangeChange={changeUsageRange}
 					onRefresh={() => void refreshUsage()}
@@ -840,21 +942,34 @@ function App() {
 			) : null}
 
 			{activePage === "account" ? (
-				<AccountCard
-					deviceAuthorization={deviceAuthorization}
-					deviceError={deviceError}
-					deviceLoading={deviceLoading}
-					error={subscriptionError}
-					loading={subscriptionLoading}
-					now={now}
-					oauth={oauth}
-					oauthRemoving={oauthRemoving}
-					onCopy={(value, label) => void copyText(value, label)}
-					onRefresh={() => void refreshSubscription()}
-					onRemove={() => void removeOAuth()}
-					onRetry={() => void beginDeviceLogin()}
-					subscription={subscription}
-				/>
+				<>
+					<AccountCard
+						deviceAuthorization={deviceAuthorization}
+						deviceError={deviceError}
+						deviceLoading={deviceLoading}
+						error={subscriptionError}
+						loading={subscriptionLoading}
+						now={now}
+						oauth={oauth}
+						oauthRemoving={oauthRemoving}
+						onCopy={(value, label) => void copyText(value, label)}
+						onRefresh={() => void refreshSubscription()}
+						onRemove={() => void removeOAuth()}
+						onRetry={() => void beginDeviceLogin()}
+						subscription={subscription}
+					/>
+					<ModelPricingCard
+						error={pricingError}
+						key={modelPrices.map((price) => `${price.model}:${price.input}:${price.output}:${price.cacheRead}:${price.cacheWrite}:${price.multiplier}`).join("|")}
+						loading={pricingLoading}
+						onSave={(prices) => void savePricing(prices)}
+						onSync={() => void syncPricing()}
+						prices={modelPrices}
+						saving={pricingSaving}
+						syncing={pricingSyncing}
+						usedModels={usedModels}
+					/>
+				</>
 			) : null}
 
 			{notice ? (
@@ -910,127 +1025,62 @@ function App() {
 function OverviewPage({
 	activeApiKeys,
 	activeProxyAccounts,
-	mainAccountConnected,
+	now,
 	onNavigate,
-	planType,
-	totalApiKeys,
-	totalProxyAccounts,
 	usage,
 }: {
 	activeApiKeys: number;
 	activeProxyAccounts: number;
-	mainAccountConnected: boolean;
+	now: number;
 	onNavigate: (page: ManagementPage) => void;
-	planType: string | null;
-	totalApiKeys: number;
-	totalProxyAccounts: number;
 	usage: UsageDashboard | null;
 }) {
+	const enabledDownstreams = activeApiKeys + activeProxyAccounts;
 	return (
-		<div className="overview-layout">
-			<section className="card overview-health" aria-labelledby="overview-health-title">
-				<CardHeader id="overview-health-title" title="配置状态" />
-				<div className="overview-status-list">
-					<OverviewStatusRow
-						detail={mainAccountConnected ? `${formatPlanType(planType)} 计划` : "需要完成设备授权"}
-						label="主账户"
-						onClick={() => onNavigate("account")}
-						ready={mainAccountConnected}
-						value={mainAccountConnected ? "连接正常" : "等待登录"}
-					/>
-					<OverviewStatusRow
-						detail={`共配置 ${totalApiKeys} 个`}
-						label="API Keys"
-						onClick={() => onNavigate("api-keys")}
-						ready={activeApiKeys > 0}
-						value={`${activeApiKeys} 个启用`}
-					/>
-					<OverviewStatusRow
-						detail={`共配置 ${totalProxyAccounts} 个`}
-						label="下游账户"
-						onClick={() => onNavigate("accounts")}
-						ready={activeProxyAccounts > 0}
-						value={`${activeProxyAccounts} 个启用`}
-					/>
-				</div>
-			</section>
-
-			<section className="card overview-recent" aria-labelledby="overview-recent-title">
-				<CardHeader
-					id="overview-recent-title"
-					action={(
-						<button className="button button-ghost overview-view-all" onClick={() => onNavigate("usage")} type="button">
-							查看用量
-						</button>
-					)}
-					title="最近请求"
+		<div className="overview-cycle-layout">
+			<aside className="overview-metrics-column" aria-label="当前周期摘要">
+				<OverviewMetricCard
+					detail={`Account ID ${activeProxyAccounts} · API Key ${activeApiKeys}`}
+					label="下游账户"
+					onClick={() => onNavigate("accounts")}
+					value={formatCount(enabledDownstreams)}
 				/>
-				{usage && usage.recentEvents.length > 0 ? (
-					<div className="overview-event-list">
-						{usage.recentEvents.slice(0, 5).map((event) => (
-							<div className="overview-event" key={event.id}>
-								<span className={`overview-event-status usage-status-${event.status}`} aria-hidden="true" />
-								<div>
-									<strong>{event.identityName}</strong>
-									<span>{event.model} · {usageIdentityLabel(event.identityType)}</span>
-								</div>
-								<div>
-									<strong>{formatTokens(event.totalTokens)}</strong>
-									<time dateTime={isoDate(event.recordedAt)}>{formatCompactDate(event.recordedAt)}</time>
-								</div>
-							</div>
-						))}
-					</div>
-				) : (
-					<div className="empty-state overview-empty">
-						<strong>暂无请求记录</strong>
-						<p>完成首次 Codex 请求后，最近活动会显示在这里。</p>
-					</div>
-				)}
-			</section>
-
-			<section className="card overview-usage-snapshot" aria-labelledby="overview-usage-title">
-				<div>
-					<span>{usage ? formatUsageRange(usage.range) : "最近 7 天"}</span>
-					<h2 id="overview-usage-title">Token 用量</h2>
-					<p>快速查看当前统计区间的累计消耗，或进入用量页按身份进一步筛选。</p>
-				</div>
-				<div className="overview-usage-value">
-					<strong>{usage ? formatTokens(usage.totals.totalTokens) : "—"}</strong>
-					<span>{usage ? `${formatCount(usage.totals.requests)} 次请求` : "正在等待用量数据"}</span>
-				</div>
-				<button className="button button-primary" onClick={() => onNavigate("usage")} type="button">
-					打开用量分析
-				</button>
+				<OverviewMetricCard detail="Codex 周额度周期累计" label="周期内请求数" onClick={() => onNavigate("usage")} value={usage ? formatCount(usage.totals.requests) : "—"} />
+				<OverviewMetricCard detail="包含输入、输出与缓存 Token" label="周期内 Token 用量" onClick={() => onNavigate("usage")} value={usage ? formatTokens(usage.totals.totalTokens) : "—"} />
+				<OverviewMetricCard detail={usage?.unpricedModels.length ? `${usage.unpricedModels.length} 个模型尚未计价` : "按模型价格配置计算"} label="周期内成本" onClick={() => onNavigate("account")} value={usage ? formatCost(usage.totals.costUsd) : "—"} />
+			</aside>
+			<section className="overview-visuals-column" aria-label="当前周期活动与成本分布">
+				{usage ? (
+					<>
+						<div className="overview-activity-heading">
+							<div><h2>最近活动</h2><p>{formatDate(usage.startAt)} 至 {formatDate(usage.endAt)}</p></div>
+							<button className="button button-ghost overview-view-all" onClick={() => onNavigate("usage")} type="button">查看分析</button>
+						</div>
+						<ActivityHeatmaps now={now} stacked usage={usage} />
+						<DownstreamCostDonut usage={usage} />
+					</>
+				) : <div className="card center-state overview-visual-loading"><span className="spinner" aria-hidden="true" />正在读取当前周期…</div>}
 			</section>
 		</div>
 	);
 }
 
-function OverviewStatusRow({
+function OverviewMetricCard({
 	detail,
 	label,
 	onClick,
-	ready,
 	value,
 }: {
 	detail: string;
 	label: string;
 	onClick: () => void;
-	ready: boolean;
 	value: string;
 }) {
 	return (
-		<button className="overview-status-row" onClick={onClick} type="button">
-			<span className={`overview-status-indicator${ready ? " ready" : ""}`} aria-hidden="true" />
-			<span>
-				<strong>{label}</strong>
-				<small>{detail}</small>
-			</span>
-			<span>
-				<strong>{value}</strong>
-				<small>进入管理</small>
-			</span>
+		<button className="overview-metric-card" onClick={onClick} type="button">
+			<span>{label}</span>
+			<strong>{value}</strong>
+			<small>{detail}</small>
 		</button>
 	);
 }
@@ -1296,6 +1346,7 @@ interface UsageCardProps {
 	identity: UsageIdentityFilter | null;
 	range: UsageRange;
 	loading: boolean;
+	now: number;
 	error: string | null;
 	onIdentityChange: (identity: UsageIdentityFilter | null) => void;
 	onRangeChange: (range: UsageRange) => void;
@@ -1309,25 +1360,13 @@ function UsageCard({
 	identity,
 	range,
 	loading,
+	now,
 	error,
 	onIdentityChange,
 	onRangeChange,
 	onRefresh,
 }: UsageCardProps) {
 	const totals = usage?.totals ?? null;
-	const maxSeriesTokens = Math.max(
-		1,
-		...(usage?.series.map((point) => point.totalTokens) ?? []),
-	);
-	const maxModelTokens = Math.max(
-		1,
-		...(usage?.models.map((row) => row.totalTokens) ?? []),
-	);
-	const maxIdentityTokens = Math.max(
-		1,
-		...(usage?.identities.map((row) => row.totalTokens) ?? []),
-	);
-	const empty = !loading && !error && (totals?.requests ?? 0) === 0;
 
 	return (
 		<section className="card usage-card" aria-labelledby="usage-card-title">
@@ -1372,6 +1411,7 @@ function UsageCard({
 								onChange={(event) => onRangeChange(event.target.value as UsageRange)}
 								value={range}
 							>
+								<option value="cycle">当前周期</option>
 								<option value="24h">最近 24 小时</option>
 								<option value="7d">最近 7 天</option>
 								<option value="30d">最近 30 天</option>
@@ -1390,7 +1430,7 @@ function UsageCard({
 						</button>
 					</div>
 				}
-				title="用量明细"
+				title="时间范围分析"
 			/>
 
 			{error ? (
@@ -1405,80 +1445,32 @@ function UsageCard({
 					<span>正在读取用量…</span>
 				</div>
 			) : null}
-			{empty ? (
-				<div className="empty-state usage-empty">
-					<strong>所选范围内暂无 Token 用量</strong>
-					<span>{identity ? "当前身份在该时间范围内没有已落库请求。" : "API Key 或下游账户完成首次 Codex 请求后会显示在这里。"}</span>
-				</div>
-			) : null}
-
-			{usage && totals && totals.requests > 0 ? (
+			{usage && totals ? (
 				<div className={loading ? "usage-content is-refreshing" : "usage-content"}>
 					<div className="usage-summary-grid">
 						<UsageMetric label="请求数" value={formatCount(totals.requests)} tone="blue" />
-						<UsageMetric label="总 Token" value={formatTokens(totals.totalTokens)} tone="violet" />
 						<UsageMetric
 							label="输入 Token"
 							value={formatTokens(totals.inputTokens)}
 							detail={`缓存命中 ${formatTokens(totals.cachedInputTokens)} · 缓存写入 ${formatTokens(totals.cacheCreationInputTokens)}`}
 							tone="teal"
 						/>
+						<UsageMetric label="总 Token" value={formatTokens(totals.totalTokens)} tone="violet" />
 						<UsageMetric
-							label="输出 Token"
-							value={formatTokens(totals.outputTokens)}
-							detail={`推理 ${formatTokens(totals.reasoningOutputTokens)}`}
+							label="总成本"
+							value={formatCost(totals.costUsd)}
+							detail={usage.unpricedModels.length > 0 ? `${usage.unpricedModels.length} 个模型尚未计价` : "已按模型价格计算"}
 							tone="orange"
 						/>
 					</div>
 
-					<div className="usage-activity" aria-label="Token 用量趋势">
-						<div className="usage-section-heading">
-							<div>
-								<strong>Token 趋势</strong>
-								<span>{formatDate(usage.startAt)} 至 {formatDate(usage.endAt)}</span>
-							</div>
-							<span>{usage.series.length} 个时间段</span>
-						</div>
-						<div className="usage-bars" role="img" aria-label="各时间段 Token 用量柱状图">
-							{usage.series.map((point) => (
-								<div
-									className="usage-bar-slot"
-									key={point.startAt}
-									title={`${formatDate(point.startAt)} · ${formatTokens(point.totalTokens)} Token · ${formatCount(point.requests)} 次请求`}
-								>
-									<span
-										className="usage-bar"
-										style={{ height: `${Math.max(point.totalTokens > 0 ? 8 : 2, (point.totalTokens / maxSeriesTokens) * 100)}%` }}
-									/>
-								</div>
-							))}
-						</div>
+					<div className="usage-range-caption">
+						<strong>{formatUsageRange(usage.range)}</strong>
+						<span>{formatDate(usage.startAt)} 至 {formatDate(usage.endAt)} · 未来时间保留为空</span>
 					</div>
-
-					<div className="usage-breakdown-grid">
-						<UsageBreakdown
-							emptyLabel="暂无模型数据"
-							maxTokens={maxModelTokens}
-							rows={usage.models.map((row) => ({
-								id: row.model,
-								label: row.model,
-								meta: `${formatCount(row.requests)} 次请求`,
-								tokens: row.totalTokens,
-							}))}
-							title="模型用量"
-						/>
-						<UsageBreakdown
-							emptyLabel="暂无身份数据"
-							maxTokens={maxIdentityTokens}
-							rows={usage.identities.map((row) => ({
-								id: `${row.identityType}:${row.identityId}`,
-								label: row.identityName,
-								meta: `${usageIdentityLabel(row.identityType)} · ${formatCount(row.requests)} 次请求`,
-								tokens: row.totalTokens,
-							}))}
-							title="身份用量"
-						/>
-					</div>
+					<ActivityHeatmaps now={now} usage={usage} />
+					<UsageLineCharts now={now} usage={usage} />
+					<UsageBreakdownDonuts usage={usage} />
 
 					<div className="usage-events">
 						<div className="usage-section-heading">
@@ -1497,6 +1489,7 @@ function UsageCard({
 										<th scope="col">传输</th>
 										<th scope="col">请求路径</th>
 										<th scope="col">总量</th>
+										<th scope="col">成本</th>
 									</tr>
 								</thead>
 								<tbody>
@@ -1526,6 +1519,7 @@ function UsageCard({
 													{usageStatusLabel(event.status)}
 												</small>
 											</td>
+											<td data-label="成本"><strong>{formatCost(event.costUsd)}</strong></td>
 										</tr>
 									))}
 								</tbody>
@@ -1554,40 +1548,6 @@ function UsageMetric({
 			<span>{label}</span>
 			<strong>{value}</strong>
 			<small>{detail ?? "所选范围累计"}</small>
-		</div>
-	);
-}
-
-function UsageBreakdown({
-	title,
-	rows,
-	maxTokens,
-	emptyLabel,
-}: {
-	title: string;
-	rows: Array<{ id: string; label: string; meta: string; tokens: number }>;
-	maxTokens: number;
-	emptyLabel: string;
-}) {
-	return (
-		<div className="usage-breakdown">
-			<div className="usage-section-heading"><strong>{title}</strong></div>
-			{rows.length === 0 ? <p>{emptyLabel}</p> : (
-				<div className="usage-breakdown-list">
-					{rows.map((row) => (
-						<div className="usage-breakdown-row" key={row.id}>
-							<div>
-								<strong title={row.label}>{row.label}</strong>
-								<span>{row.meta}</span>
-							</div>
-							<b>{formatTokens(row.tokens)}</b>
-							<span className="usage-breakdown-track" aria-hidden="true">
-								<span style={{ width: `${Math.max(2, (row.tokens / maxTokens) * 100)}%` }} />
-							</span>
-						</div>
-					))}
-				</div>
-			)}
 		</div>
 	);
 }
@@ -2579,6 +2539,8 @@ function formatTokens(value: number): string {
 
 function formatUsageRange(value: UsageRange): string {
 	switch (value) {
+		case "cycle":
+			return "当前周期";
 		case "24h":
 			return "最近 24 小时";
 		case "7d":
@@ -2590,6 +2552,29 @@ function formatUsageRange(value: UsageRange): string {
 	}
 }
 
+function codexCycleBounds(
+	subscription: SubscriptionInfo | SubscriptionMetadata | null,
+): UsageCycleBounds | null {
+	if (!isSubscriptionInfo(subscription)) return null;
+	const weekMs = 7 * 24 * 60 * 60 * 1_000;
+	const weekly = subscription.windows.find((window) =>
+		window.category === "codex" && window.kind === "weekly" && validTimestamp(window.resetAt),
+	);
+	if (!weekly || !validTimestamp(weekly.resetAt)) return null;
+	let endAt = weekly.resetAt;
+	let startAt = endAt - weekMs;
+	const now = Date.now();
+	while (endAt <= now) {
+		startAt += weekMs;
+		endAt += weekMs;
+	}
+	while (startAt > now) {
+		startAt -= weekMs;
+		endAt -= weekMs;
+	}
+	return { startAt: Math.round(startAt), endAt: Math.round(startAt + weekMs) };
+}
+
 function usageIdentityLabel(value: "api_key" | "auth_proxy"): string {
 	return value === "auth_proxy" ? "代理账户" : "API Key";
 }
@@ -2598,26 +2583,6 @@ function usageStatusLabel(value: "completed" | "incomplete" | "failed"): string 
 	if (value === "completed") return "已完成";
 	if (value === "incomplete") return "未完整完成";
 	return "失败";
-}
-
-function formatPlanType(value: string | null | undefined): string {
-	const normalized = value?.trim().toLowerCase() ?? "";
-	switch (normalized) {
-		case "pro":
-			return "Pro";
-		case "prolite":
-		case "pro-lite":
-		case "pro_lite":
-			return "Pro Lite";
-		case "plus":
-			return "Plus";
-		case "team":
-			return "Team";
-		case "free":
-			return "Free";
-		default:
-			return value || "未知";
-	}
 }
 
 function validAccountId(value: string): boolean {

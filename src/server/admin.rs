@@ -4,7 +4,7 @@ use axum::{
     response::Response,
 };
 use futures_util::{StreamExt, TryStreamExt, stream};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use url::Url;
 
@@ -25,9 +25,10 @@ use super::{
     codex::CodexClient,
     config::AppConfig,
     oauth::{ReqwestOAuthHttpClient, SystemClock, current_time_ms},
+    pricing::{ModelPrice, sync_model_prices},
     response,
     state::AppState,
-    usage::{UsageIdentityFilter, UsageRange},
+    usage::{UsageBounds, UsageIdentityFilter, UsageRange},
 };
 
 const MAX_ADMIN_BODY_BYTES: usize = 16 * 1024;
@@ -138,6 +139,20 @@ async fn dispatch(
                 .find(|(name, _)| name == "range")
                 .map(|(_, value)| value.into_owned());
             let range = UsageRange::parse(range.as_deref()).ok_or_else(invalid_usage_range)?;
+            let bounds = if range == UsageRange::Cycle {
+                let start_at = query_i64(client_url, "startAt")?;
+                let end_at = query_i64(client_url, "endAt")?;
+                match (start_at, end_at) {
+                    (None, None) => None,
+                    (Some(start_at), Some(end_at)) => Some(
+                        UsageBounds::cycle(start_at, end_at, now_ms)
+                            .ok_or_else(invalid_usage_range)?,
+                    ),
+                    _ => return Err(invalid_usage_range()),
+                }
+            } else {
+                None
+            };
             let identity_type = client_url
                 .query_pairs()
                 .find(|(name, _)| name == "identityType")
@@ -156,13 +171,60 @@ async fn dispatch(
             };
             let dashboard = state
                 .usage
-                .dashboard(range, identity)
+                .dashboard_with_options(
+                    range,
+                    identity,
+                    bounds,
+                    &config.usage_tracking.model_prices,
+                )
                 .await
                 .map_err(|error| {
                     tracing::warn!(event = "usage_dashboard", status = "failed", error = %error);
                     usage_query_error()
                 })?;
             response::json(&dashboard, 200)
+        }
+        AdminRoute::PricingGet => {
+            let used_models = state.usage.used_models().await.map_err(|error| {
+                tracing::warn!(event = "pricing_models", status = "failed", error = %error);
+                usage_query_error()
+            })?;
+            response::json(
+                &json!({
+                    "prices": config.usage_tracking.model_prices,
+                    "usedModels": used_models,
+                }),
+                200,
+            )
+        }
+        AdminRoute::PricingUpdate => {
+            let input = serde_json::from_value::<PricingUpdateInput>(Value::Object(
+                admin_json(request).await?,
+            ))
+            .map_err(|_| invalid_model_prices())?;
+            let prices = state.config.replace_model_prices(input.prices).await?;
+            response::json(&json!({ "prices": prices }), 200)
+        }
+        AdminRoute::PricingSync => {
+            let used_models = state.usage.used_models().await.map_err(|error| {
+                tracing::warn!(event = "pricing_models", status = "failed", error = %error);
+                usage_query_error()
+            })?;
+            let result = sync_model_prices(
+                &state.client,
+                &used_models,
+                &config.usage_tracking.model_prices,
+            )
+            .await
+            .map_err(|error| {
+                tracing::warn!(event = "pricing_sync", status = "failed", error = %error);
+                pricing_sync_error()
+            })?;
+            state
+                .config
+                .replace_model_prices(result.prices.clone())
+                .await?;
+            response::json(&result, 200)
         }
         AdminRoute::OAuthStart => {
             let clock = SystemClock;
@@ -294,6 +356,22 @@ async fn dispatch(
         }
         AdminRoute::Page | AdminRoute::Login | AdminRoute::Logout => Err(invalid_admin_request()),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PricingUpdateInput {
+    prices: Vec<ModelPrice>,
+}
+
+fn query_i64(url: &Url, name: &str) -> AppResult<Option<i64>> {
+    let Some((_, value)) = url.query_pairs().find(|(key, _)| key == name) else {
+        return Ok(None);
+    };
+    value
+        .parse::<i64>()
+        .map(Some)
+        .map_err(|_| invalid_usage_range())
 }
 
 #[derive(Serialize)]
@@ -431,6 +509,18 @@ fn invalid_usage_range() -> ApiError {
     ApiError::new(400, "The usage range is invalid.")
         .with_kind("invalid_request_error")
         .with_code("invalid_usage_range")
+}
+
+fn invalid_model_prices() -> ApiError {
+    ApiError::new(400, "The model pricing configuration is invalid.")
+        .with_kind("invalid_request_error")
+        .with_code("invalid_model_prices")
+}
+
+fn pricing_sync_error() -> ApiError {
+    ApiError::new(502, "Model prices could not be fetched from Models.dev.")
+        .with_kind("upstream_error")
+        .with_code("pricing_sync_failed")
 }
 
 fn invalid_usage_identity_filter() -> ApiError {

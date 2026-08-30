@@ -187,6 +187,7 @@ mod tests {
             },
             usage_tracking: super::super::config::UsageTrackingConfig {
                 database_path: usage_path.display().to_string(),
+                ..Default::default()
             },
             notifications: NotificationConfig::default(),
             state: PersistentState {

@@ -28,9 +28,7 @@ type ShellIconName =
 	| "menu";
 
 interface ManagementShellProps {
-	activeApiKeys: number;
 	activePage: ManagementPage;
-	activeProxyAccounts: number;
 	basePath: string;
 	children: ReactNode;
 	mainAccount: OAuthStatus | null;
@@ -38,10 +36,6 @@ interface ManagementShellProps {
 	now: number;
 	onLogout: () => void;
 	onNavigate: (page: ManagementPage) => void;
-	requestCount: number | null;
-	totalApiKeys: number;
-	totalProxyAccounts: number;
-	usageRangeLabel: string;
 }
 
 const PAGE_COPY: Record<ManagementPage, { title: string; description: string }> = {
@@ -68,9 +62,7 @@ const PAGE_COPY: Record<ManagementPage, { title: string; description: string }> 
 };
 
 export default function ManagementShell({
-	activeApiKeys,
 	activePage,
-	activeProxyAccounts,
 	basePath,
 	children,
 	mainAccount,
@@ -78,14 +70,9 @@ export default function ManagementShell({
 	now,
 	onLogout,
 	onNavigate,
-	requestCount,
-	totalApiKeys,
-	totalProxyAccounts,
-	usageRangeLabel,
 }: ManagementShellProps) {
 	const [mobileOpen, setMobileOpen] = useState(false);
 	const pageCopy = PAGE_COPY[activePage];
-	const mainAccountConnected = mainAccount !== null;
 
 	useEffect(() => {
 		if (!mobileOpen) return;
@@ -202,15 +189,6 @@ export default function ManagementShell({
 							</div>
 						</div>
 					</section>
-
-					{activePage === "overview" ? (
-						<section className="dashboard-summary" aria-label="运行摘要">
-							<SummaryCard detail={mainAccountConnected ? "OAuth 凭据可用" : "需要完成设备授权"} label="主账户" value={mainAccountConnected ? "已连接" : "待登录"} />
-							<SummaryCard detail={`共 ${totalApiKeys} 个本地密钥`} label="可用 API Keys" value={String(activeApiKeys)} />
-							<SummaryCard detail={`共 ${totalProxyAccounts} 个下游账户`} label="启用下游账户" value={String(activeProxyAccounts)} />
-							<SummaryCard detail={`${usageRangeLabel}累计请求`} label="请求数" value={requestCount === null ? "—" : requestCount.toLocaleString("zh-CN")} />
-						</section>
-					) : null}
 
 					<div className={`dashboard-content page-${activePage}`}>{children}</div>
 				</main>
@@ -331,16 +309,6 @@ function NavItem({
 			<span className="sidebar-nav-icon"><ShellIcon name={icon} /></span>
 			<span className="sidebar-nav-label">{label}</span>
 		</a>
-	);
-}
-
-function SummaryCard({ detail, label, value }: { detail: string; label: string; value: string }) {
-	return (
-		<article className="summary-card">
-			<div className="summary-card-topline"><span>{label}</span></div>
-			<strong>{value}</strong>
-			<small>{detail}</small>
-		</article>
 	);
 }
 

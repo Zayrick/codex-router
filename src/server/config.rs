@@ -19,6 +19,8 @@ use crate::{
     upstream::{bark::parse_bark_push_url, dingtalk::signed_dingtalk_webhook},
 };
 
+use super::pricing::{ModelPrice, normalized_model_prices, validate_model_prices};
+
 const OAUTH_KEY: &str = "oauth";
 const API_KEYS_KEY: &str = "API_KEYS";
 const CODEX_USAGE_KEY: &str = "CODEX_USAGE";
@@ -42,12 +44,15 @@ pub struct AppConfig {
 pub struct UsageTrackingConfig {
     #[serde(default = "default_usage_database_path")]
     pub database_path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_prices: Vec<ModelPrice>,
 }
 
 impl Default for UsageTrackingConfig {
     fn default() -> Self {
         Self {
             database_path: default_usage_database_path(),
+            model_prices: Vec::new(),
         }
     }
 }
@@ -173,6 +178,20 @@ impl ConfigStore {
         }
     }
 
+    pub async fn replace_model_prices(
+        &self,
+        prices: Vec<ModelPrice>,
+    ) -> AppResult<Vec<ModelPrice>> {
+        let prices = normalized_model_prices(prices).map_err(|_| invalid_model_prices())?;
+        let stored = prices.clone();
+        self.update(move |config| {
+            config.usage_tracking.model_prices = stored;
+            Ok(())
+        })
+        .await?;
+        Ok(prices)
+    }
+
     async fn update(
         &self,
         operation: impl FnOnce(&mut AppConfig) -> AppResult<()>,
@@ -294,6 +313,8 @@ fn validate_config(config: &AppConfig) -> Result<()> {
     if config.usage_tracking.database_path.trim().is_empty() {
         bail!("usage_tracking.database_path must not be empty");
     }
+    validate_model_prices(&config.usage_tracking.model_prices)
+        .context("usage_tracking.model_prices is invalid")?;
     if !valid_admin_path(&config.admin.path) {
         bail!("admin.path must be 1-128 URL-safe characters");
     }
@@ -393,6 +414,12 @@ fn config_write_error() -> ApiError {
     ApiError::new(500, "The configuration file could not be updated.")
         .with_kind("configuration_error")
         .with_code("configuration_write_failed")
+}
+
+fn invalid_model_prices() -> ApiError {
+    ApiError::new(400, "The model pricing configuration is invalid.")
+        .with_kind("invalid_request_error")
+        .with_code("invalid_model_prices")
 }
 
 fn default_bind() -> String {
