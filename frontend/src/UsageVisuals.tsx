@@ -154,29 +154,31 @@ function ActivityCard({
 					<span>{summaryDetail}</span>
 				</div>
 			</header>
-			{series.length > 0 ? (
-				<div className="activity-heatmap-scroll">
-					<div
-						aria-label={ariaLabel}
-						className="activity-heatmap"
-						role="img"
-						style={{ "--activity-columns": columns } as CSSProperties}
-					>
-						{series.map((point, index) => {
-							const future = point.startAt > now;
-							const cell = getCell(point, index, future);
-							return (
-								<span
-									aria-label={cell.title}
-									className={`activity-cell ${cell.className}${future ? " activity-cell-future" : ""}`}
-									key={point.startAt}
-									title={cell.title}
-								/>
-							);
-						})}
+			<div className="activity-card-visual">
+				{series.length > 0 ? (
+					<div className="activity-heatmap-scroll">
+						<div
+							aria-label={ariaLabel}
+							className="activity-heatmap"
+							role="img"
+							style={{ "--activity-columns": columns } as CSSProperties}
+						>
+							{series.map((point, index) => {
+								const future = point.startAt > now;
+								const cell = getCell(point, index, future);
+								return (
+									<span
+										aria-label={cell.title}
+										className={`activity-cell ${cell.className}${future ? " activity-cell-future" : ""}`}
+										key={point.startAt}
+										title={cell.title}
+									/>
+								);
+							})}
+						</div>
 					</div>
-				</div>
-			) : <div className="visual-empty">当前范围暂无活动数据</div>}
+				) : <div className="visual-empty">当前范围暂无活动数据</div>}
+			</div>
 			<div className="activity-legend">{legend}</div>
 		</article>
 	);

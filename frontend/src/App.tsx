@@ -1052,10 +1052,6 @@ function OverviewPage({
 			<section className="overview-visuals-column" aria-label="当前周期活动与成本分布">
 				{usage ? (
 					<>
-						<div className="overview-activity-heading">
-							<div><h2>最近活动</h2><p>{formatDate(usage.startAt)} 至 {formatDate(usage.endAt)}</p></div>
-							<button className="button button-ghost overview-view-all" onClick={() => onNavigate("usage")} type="button">查看分析</button>
-						</div>
 						<ActivityHeatmaps now={now} stacked usage={usage} />
 						<DownstreamCostDonut usage={usage} />
 					</>
