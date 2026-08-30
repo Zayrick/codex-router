@@ -11,7 +11,6 @@ use super::{StateStore, oauth_ports::OAuthCredentialsStore};
 const OAUTH_KEY: &str = "oauth";
 const AUTH_PROXY_OAUTH_KEY_PREFIX: &str = "oauth:auth-proxy:";
 const DEFAULT_TOKEN_LIFETIME_MS: i64 = 55 * 60 * 1_000;
-const MAX_OAUTH_CONFIG_CHARS: usize = 128 * 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,9 +59,6 @@ impl<'a> OAuthRepository<'a> {
         let Some(serialized) = self.store.get(&self.storage_key).await? else {
             return Ok(None);
         };
-        if serialized.len() > MAX_OAUTH_CONFIG_CHARS {
-            return Err(invalid_stored_credentials());
-        }
         let value = serde_json::from_str(&serialized).map_err(|_| invalid_stored_credentials())?;
         validate_stored_credentials(value).map(Some)
     }

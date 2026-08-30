@@ -19,7 +19,6 @@ use super::{
 const API_KEYS_KEY: &str = "API_KEYS";
 const CURRENT_API_KEYS_VERSION: u8 = 2;
 const IDLESS_API_KEYS_VERSION: u8 = 1;
-const MAX_API_KEYS_CONFIG_CHARS: usize = 128 * 1_024;
 const MAX_API_KEYS: usize = 100;
 const MAX_API_KEY_NAME_LENGTH: usize = 100;
 const MIN_API_KEY_LENGTH: usize = 11;
@@ -69,9 +68,6 @@ impl<'a> ApiKeyRepository<'a> {
         let Some(serialized) = self.store.get(API_KEYS_KEY).await? else {
             return Ok(ApiKeyState::default());
         };
-        if serialized.len() > MAX_API_KEYS_CONFIG_CHARS {
-            return Err(invalid_stored_api_keys());
-        }
         let value = serde_json::from_str(&serialized).map_err(|_| invalid_stored_api_keys())?;
         let (state, needs_upgrade) = validate_stored_api_keys(value)?;
         if needs_upgrade && persist_upgrade {

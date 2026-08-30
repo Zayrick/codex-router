@@ -18,7 +18,6 @@ use url::Url;
 
 use crate::{
     core::{ApiError, AppResult},
-    http::{HeadersDto, ResponseBodyDto, ResponseDto, upstream_proxy_response},
     protocol::openai::responses::adapt_responses_websocket_message,
     upstream::codex::HeaderBag,
 };
@@ -176,22 +175,9 @@ fn rejection_response(
     rejection: tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>,
 ) -> Response {
     let (parts, body) = rejection.into_parts();
-    let headers = HeadersDto::from_pairs(parts.headers.iter().filter_map(|(name, value)| {
-        value
-            .to_str()
-            .ok()
-            .map(|value| (name.as_str().to_owned(), value.to_owned()))
-    }));
-    let policy = upstream_proxy_response(ResponseDto {
-        status: parts.status.as_u16(),
-        headers,
-        body: ResponseBodyDto::Passthrough,
-    });
     let mut output = Response::new(Body::from(body.unwrap_or_default()));
     *output.status_mut() = parts.status;
-    if let Ok(headers) = response::header_map(&policy.headers) {
-        *output.headers_mut() = headers;
-    }
+    *output.headers_mut() = response::proxy_headers(&parts.headers);
     output
 }
 

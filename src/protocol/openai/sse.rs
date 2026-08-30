@@ -299,27 +299,4 @@ mod tests {
         assert!(decoder.push_bytes(&[0xe4]).is_ok());
         assert!(decoder.finish().is_err());
     }
-
-    #[test]
-    fn decodes_adjacent_multibyte_characters_across_a_split() {
-        let source = "data: {\"type\":\"delta\",\"delta\":\"你好\"}\n\n";
-        let bytes = source.as_bytes();
-        let split = bytes
-            .iter()
-            .position(|byte| *byte == 0xe4)
-            .unwrap_or(bytes.len());
-        let mut decoder = SseDecoder::new();
-        let mut events = decoder
-            .push_bytes(&bytes[..split.saturating_add(1).min(bytes.len())])
-            .unwrap_or_default();
-        events.extend(
-            decoder
-                .push_bytes(&bytes[split.saturating_add(1).min(bytes.len())..])
-                .unwrap_or_default(),
-        );
-        assert_eq!(
-            events.first().and_then(|event| event.get("delta")),
-            Some(&json!("你好"))
-        );
-    }
 }

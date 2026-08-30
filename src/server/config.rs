@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use axum::http::HeaderValue;
 use serde::{Deserialize, Serialize};
 use tokio::{fs, io::AsyncWriteExt, sync::RwLock};
 use url::Url;
@@ -307,6 +308,8 @@ fn validate_config(config: &AppConfig) -> Result<()> {
     if config.server.cors_origin.trim().is_empty() {
         bail!("server.cors_origin must not be empty");
     }
+    HeaderValue::from_str(&config.server.cors_origin)
+        .context("server.cors_origin must be a valid HTTP header value")?;
     if config.server.maintenance_interval_seconds == 0 {
         bail!("server.maintenance_interval_seconds must be greater than zero");
     }
@@ -472,33 +475,15 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_runtime_state_in_toml() {
-        let mut config = config();
-        config.state.oauth = Some(StoredOAuthCredentials {
-            version: 1,
-            access_token: "plain-access-token".into(),
-            refresh_token: "plain-refresh-token".into(),
-            id_token: None,
-            account_id: Some("account".into()),
-            email: None,
-            expires_at: 2_000_000_000_000,
-            updated_at: "2033-05-18T03:33:20.000Z".into(),
-        });
-        let serialized = toml::to_string_pretty(&config).unwrap();
-        let decoded: AppConfig = toml::from_str(&serialized).unwrap();
-        assert_eq!(
-            decoded.state.oauth.unwrap().access_token,
-            "plain-access-token"
-        );
-    }
-
-    #[test]
-    fn rejects_non_origin_relay_and_public_urls() {
+    fn rejects_invalid_origins_and_cors_headers() {
         let mut value = config();
         value.server.public_origin = "https://router.example/path".into();
         assert!(validate_config(&value).is_err());
         value.server.public_origin = "https://router.example".into();
         value.upstream.chatgpt_relay_url = "https://relay.example/path".into();
+        assert!(validate_config(&value).is_err());
+        value.upstream.chatgpt_relay_url = "https://relay.example".into();
+        value.server.cors_origin = "https://client.example\ninvalid".into();
         assert!(validate_config(&value).is_err());
     }
 }

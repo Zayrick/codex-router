@@ -1,29 +1,8 @@
-# 配置与迁移
+# 配置
 
-## Worker 配置映射
-
-| 原 Worker 项目 | 当前配置 |
-| --- | --- |
-| `CORS_ORIGIN` | `server.cors_origin` |
-| `ADMIN_PATH` | `admin.path` |
-| `ADMIN_SECRET` | `admin.secret` |
-| `CHATGPT_RELAY_URL` | `upstream.chatgpt_relay_url` |
-| `BARK_PUSH_URL` | `notifications.bark_push_url` |
-| `DINGTALK_WEBHOOK_URL` | `notifications.dingtalk_webhook_url` |
-| `DINGTALK_SECRET` | `notifications.dingtalk_secret` |
-| `DATA_ENCRYPTION_KEY` | 已删除 |
-| `AUTH_KV` 的主 OAuth | `state.oauth`，明文 |
-| `AUTH_KV` 的 API Key | `state.api_keys`，明文 |
-| `AUTH_KV` 的代理账户 | `state.auth_proxy_accounts`，明文 |
-| `AUTH_KV` 的代理 OAuth | `state.auth_proxy_oauth`，明文 |
-| `AUTH_KV` 的用量快照 | `state.usage`，明文 |
-| Cron Trigger | 进程内定时任务，周期为 `server.maintenance_interval_seconds` |
-| `ASSETS` binding | 已删除；React 资源在发行构建时嵌入 Rust 二进制 |
-
-旧 KV 中的数据是 AES-GCM 密文，当前服务不会读取 KV 或旧 envelope。迁移时可通过当前管理 API
-重新完成 OAuth 设备授权并重新创建 API Key/代理账户，也可以在可信离线环境中解密旧数据后，按
-`config.example.toml` 的结构手工写入 `state`。不要把旧 `DATA_ENCRYPTION_KEY` 放入新配置；当前
-程序没有该字段，也不会使用它。
+Codex Router 从 `config.toml` 读取运行设置和持久状态。可复制 `config.example.toml` 作为起点；
+`server`、`admin`、`upstream`、`usage_tracking` 与 `notifications` 是运行设置，`state` 由管理 API
+和后台任务维护。配置文件包含凭据，应使用严格的文件权限并避免提交到版本库。
 
 ## 静态设置
 

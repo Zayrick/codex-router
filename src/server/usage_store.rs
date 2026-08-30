@@ -5,7 +5,6 @@ use crate::{
 };
 
 const CODEX_USAGE_KEY: &str = "CODEX_USAGE";
-const MAX_CODEX_USAGE_CONFIG_CHARS: usize = 256 * 1024;
 
 pub struct CodexUsageStateRepository<'a> {
     store: &'a dyn StateStore,
@@ -20,18 +19,12 @@ impl<'a> CodexUsageStateRepository<'a> {
         let Some(serialized) = self.store.get(CODEX_USAGE_KEY).await? else {
             return Ok(None);
         };
-        if serialized.len() > MAX_CODEX_USAGE_CONFIG_CHARS {
-            return Err(invalid_stored_usage_state());
-        }
         let value = serde_json::from_str(&serialized).map_err(|_| invalid_stored_usage_state())?;
         validate_codex_usage_monitor_state(value).map(Some)
     }
 
     pub async fn store(&self, state: &CodexUsageMonitorState) -> AppResult<()> {
         let serialized = serde_json::to_string(state).map_err(|_| invalid_stored_usage_state())?;
-        if serialized.len() > MAX_CODEX_USAGE_CONFIG_CHARS {
-            return Err(invalid_stored_usage_state());
-        }
         self.store.put(CODEX_USAGE_KEY, &serialized).await
     }
 }

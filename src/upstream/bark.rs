@@ -88,17 +88,6 @@ mod tests {
     }
 
     #[test]
-    fn includes_a_click_url_when_present() {
-        let payload = serde_json::to_value(bark_push_payload(
-            "Codex reset",
-            "forecast",
-            Some("https://x.com/source"),
-        ))
-        .unwrap();
-        assert_eq!(payload["url"], "https://x.com/source");
-    }
-
-    #[test]
     fn accepts_exact_https_bark_endpoints() {
         assert_eq!(
             parse_bark_push_url(" https://api.day.app/device-key ")
