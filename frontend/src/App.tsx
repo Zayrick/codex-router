@@ -106,7 +106,6 @@ function App() {
 	const authProxyTogglingRef = useRef<Set<string>>(new Set());
 	const pollTimerRef = useRef<number | null>(null);
 	const authProxyPollTimerRef = useRef<number | null>(null);
-	const usageRequestRef = useRef(0);
 	const initializeRef = useRef(initialize);
 
 	useEffect(() => {
@@ -228,22 +227,19 @@ function App() {
 	}
 
 	async function refreshUsage(range = usageRange): Promise<void> {
-		if (!api) return;
-		const requestId = ++usageRequestRef.current;
+		if (!api || usageLoading) return;
 		setUsageLoading(true);
 		setUsageError(null);
 		try {
 			const next = await api.getUsage(range);
-			if (!mountedRef.current || requestId !== usageRequestRef.current) return;
+			if (!mountedRef.current) return;
 			setUsage(next);
 		} catch (error) {
-			if (!mountedRef.current || requestId !== usageRequestRef.current) return;
+			if (!mountedRef.current) return;
 			if (handleSessionFailure(error)) return;
 			setUsageError(errorMessage(error, "读取 Token 用量失败，请稍后重试。"));
 		} finally {
-			if (mountedRef.current && requestId === usageRequestRef.current) {
-				setUsageLoading(false);
-			}
+			if (mountedRef.current) setUsageLoading(false);
 		}
 	}
 
@@ -671,7 +667,6 @@ function App() {
 		setUsage(null);
 		setUsageError(null);
 		setUsageLoading(false);
-		usageRequestRef.current += 1;
 		setApiKeys([]);
 		setAuthProxyAccounts([]);
 		keyTogglingRef.current = new Set();

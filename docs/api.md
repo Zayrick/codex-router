@@ -208,12 +208,12 @@ OAuth、API Key、管理配置或管理会话。页面路径同样精确匹配�
 
 ## 12. Token 用量统计
 
-API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Responses 请求，会在收到上游
-终止 JSON/SSE/WebSocket 事件时把用量写入 SQLite。一个 WebSocket 连接可以记录多个 response，
-相同 response ID 只落库一次。模型优先取终止响应，缺失时使用对应请求中的模型。
+API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Responses 请求，会在收到包含
+usage 的上游终止 JSON/SSE/WebSocket 事件时把用量写入 SQLite。一个 WebSocket 连接可以记录多个
+response，相同 response ID 只落库一次。模型优先取终止响应，缺失且请求模型可用时使用请求模型。
 
 管理会话可读取 `GET /<admin.path>/admin/usage?range=7d`。`range` 支持 `24h`、`7d`、`30d` 和
-`all`，省略或传入未知值时使用 `7d`。返回 JSON 包含：
+`all`，省略时使用 `7d`，其他值返回 `400`。返回 JSON 包含：
 
 - `startAt`、`endAt` 和所选 `range`；
 - `totals`：请求数以及输入、缓存命中、缓存创建、输出、推理和总 Token；
@@ -222,8 +222,7 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 - `recentEvents`：最多 50 条事件，包含模型、身份、端点、HTTP/WebSocket、状态与 Token 明细。
 
 缓存与推理 Token 分别是输入与输出 Token 的子集。该接口不返回 Key/OAuth，也不会记录或返回
-请求正文与模型输出。连接提前中断、未收到终止事件时不会生成统计；失败终止事件即使没有 usage
-也会以零 Token 事件记录，便于在明细中观察失败请求。
+请求正文与模型输出；未收到 usage 的请求不会生成统计。
 
 ## 13. 管理 API
 

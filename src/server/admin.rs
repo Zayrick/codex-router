@@ -137,14 +137,11 @@ async fn dispatch(
                 .query_pairs()
                 .find(|(name, _)| name == "range")
                 .map(|(_, value)| value.into_owned());
-            let dashboard = state
-                .usage
-                .dashboard(UsageRange::parse(range.as_deref()))
-                .await
-                .map_err(|error| {
-                    tracing::warn!(event = "usage_dashboard", status = "failed", error = %error);
-                    usage_query_error()
-                })?;
+            let range = UsageRange::parse(range.as_deref()).ok_or_else(invalid_usage_range)?;
+            let dashboard = state.usage.dashboard(range).await.map_err(|error| {
+                tracing::warn!(event = "usage_dashboard", status = "failed", error = %error);
+                usage_query_error()
+            })?;
             response::json(&dashboard, 200)
         }
         AdminRoute::OAuthStart => {
@@ -408,4 +405,10 @@ fn usage_query_error() -> ApiError {
     ApiError::new(500, "The usage database could not be queried.")
         .with_kind("internal_error")
         .with_code("usage_query_failed")
+}
+
+fn invalid_usage_range() -> ApiError {
+    ApiError::new(400, "The usage range is invalid.")
+        .with_kind("invalid_request_error")
+        .with_code("invalid_usage_range")
 }

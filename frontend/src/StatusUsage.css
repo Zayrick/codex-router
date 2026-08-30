@@ -6,7 +6,7 @@
 }
 
 .usage-shell {
-	width: min(var(--app-page-max-width), 100%);
+	width: min(1440px, 100%);
 	margin: 0 auto;
 }
 

@@ -136,14 +136,7 @@ fn client_message(
             };
             UpstreamMessage::Text(text.into())
         }
-        AxumMessage::Binary(bytes) => {
-            if let Some(tracker) = tracker
-                && let Ok(text) = std::str::from_utf8(&bytes)
-            {
-                tracker.observe_request_text(text);
-            }
-            UpstreamMessage::Binary(bytes)
-        }
+        AxumMessage::Binary(bytes) => UpstreamMessage::Binary(bytes),
         AxumMessage::Ping(bytes) => UpstreamMessage::Ping(bytes),
         AxumMessage::Pong(bytes) => UpstreamMessage::Pong(bytes),
         AxumMessage::Close(frame) => {
@@ -166,14 +159,7 @@ fn upstream_message(
             }
             Some(AxumMessage::Text(text.to_string().into()))
         }
-        UpstreamMessage::Binary(bytes) => {
-            if let Some(tracker) = tracker
-                && let Ok(text) = std::str::from_utf8(&bytes)
-            {
-                tracker.observe_response_text(text);
-            }
-            Some(AxumMessage::Binary(bytes))
-        }
+        UpstreamMessage::Binary(bytes) => Some(AxumMessage::Binary(bytes)),
         UpstreamMessage::Ping(bytes) => Some(AxumMessage::Ping(bytes)),
         UpstreamMessage::Pong(bytes) => Some(AxumMessage::Pong(bytes)),
         UpstreamMessage::Close(frame) => {

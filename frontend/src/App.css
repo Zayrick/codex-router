@@ -253,6 +253,8 @@
 }
 
 .panel-shell {
+	--panel-page-max-width: clamp(1245px, 86vw, 1600px);
+
 	min-height: 100vh;
 	min-height: 100svh;
 	background: var(--page);
@@ -266,7 +268,7 @@
 	height: 3.75rem;
 	align-items: center;
 	justify-content: space-between;
-	padding: 0 max(1.25rem, calc((100vw - var(--app-page-max-width)) / 2));
+	padding: 0 max(1.25rem, calc((100vw - var(--panel-page-max-width)) / 2));
 	border-bottom: 1px solid var(--border);
 }
 
@@ -288,7 +290,7 @@
 }
 
 .panel-main {
-	width: min(100% - 2.5rem, var(--app-page-max-width));
+	width: min(100% - 2.5rem, var(--panel-page-max-width));
 	margin: 0 auto;
 	padding: 2rem 0 3rem;
 }
@@ -1547,7 +1549,7 @@ td strong {
 	}
 
 	.panel-main {
-		width: min(100% - 1.5rem, var(--app-page-max-width));
+		width: min(100% - 1.5rem, var(--panel-page-max-width));
 		padding-top: 1.5rem;
 	}
 

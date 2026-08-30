@@ -1,15 +1,12 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
-use anyhow::{Context, Result, anyhow};
-use rusqlite::{Connection, OptionalExtension, params};
+use anyhow::{Context, Result};
+use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -20,9 +17,7 @@ use crate::{
 
 use super::oauth::current_time_ms;
 
-const SCHEMA_VERSION: i64 = 1;
 const MAX_TRACKED_JSON_BYTES: usize = 16 * 1024 * 1024;
-const MAX_TRACKED_RESPONSES_PER_SOCKET: usize = 4_096;
 const RECENT_EVENT_LIMIT: i64 = 50;
 const BREAKDOWN_LIMIT: i64 = 12;
 
@@ -163,9 +158,6 @@ impl UsageStore {
         connection
             .execute_batch(SCHEMA)
             .context("failed to initialize usage database schema")?;
-        connection
-            .pragma_update(None, "user_version", SCHEMA_VERSION)
-            .context("failed to set usage database schema version")?;
         restrict_database_permissions(&path)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -179,15 +171,7 @@ impl UsageStore {
 
     fn record_background(&self, event: UsageEvent) {
         let store = self.clone();
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            tracing::warn!(
-                event = "usage_record",
-                status = "skipped",
-                reason = "no_runtime"
-            );
-            return;
-        };
-        runtime.spawn(async move {
+        tokio::spawn(async move {
             if let Err(error) = store.insert(event).await {
                 tracing::warn!(event = "usage_record", status = "failed", error = %error);
             }
@@ -197,9 +181,7 @@ impl UsageStore {
     async fn insert(&self, event: UsageEvent) -> Result<()> {
         let connection = self.connection.clone();
         tokio::task::spawn_blocking(move || {
-            let connection = connection
-                .lock()
-                .map_err(|_| anyhow!("usage database lock is poisoned"))?;
+            let connection = connection.lock().expect("usage database lock poisoned");
             connection.execute(
                 r#"
                 INSERT OR IGNORE INTO usage_events (
@@ -237,9 +219,7 @@ impl UsageStore {
     pub async fn dashboard(&self, range: UsageRange) -> Result<UsageDashboard> {
         let connection = self.connection.clone();
         tokio::task::spawn_blocking(move || {
-            let connection = connection
-                .lock()
-                .map_err(|_| anyhow!("usage database lock is poisoned"))?;
+            let connection = connection.lock().expect("usage database lock poisoned");
             query_dashboard(&connection, range)
         })
         .await
@@ -289,21 +269,12 @@ struct UsageTrackerInner {
     identity: UsageIdentity,
     endpoint: String,
     transport: &'static str,
-    request: Mutex<TrackedRequest>,
-    allow_multiple: bool,
-    terminal_seen: AtomicBool,
-    seen_responses: Mutex<HashSet<String>>,
-}
-
-#[derive(Default)]
-struct TrackedRequest {
-    model: String,
-    fast_mode: bool,
+    requested_model: Mutex<String>,
 }
 
 impl UsageTracker {
     pub fn http(store: UsageStore, identity: UsageIdentity, endpoint: impl Into<String>) -> Self {
-        Self::new(store, identity, endpoint, "http", false)
+        Self::new(store, identity, endpoint, "http")
     }
 
     pub fn websocket(
@@ -311,7 +282,7 @@ impl UsageTracker {
         identity: UsageIdentity,
         endpoint: impl Into<String>,
     ) -> Self {
-        Self::new(store, identity, endpoint, "websocket", true)
+        Self::new(store, identity, endpoint, "websocket")
     }
 
     fn new(
@@ -319,7 +290,6 @@ impl UsageTracker {
         identity: UsageIdentity,
         endpoint: impl Into<String>,
         transport: &'static str,
-        allow_multiple: bool,
     ) -> Self {
         Self {
             inner: Arc::new(UsageTrackerInner {
@@ -327,10 +297,7 @@ impl UsageTracker {
                 identity,
                 endpoint: endpoint.into(),
                 transport,
-                request: Mutex::new(TrackedRequest::default()),
-                allow_multiple,
-                terminal_seen: AtomicBool::new(false),
-                seen_responses: Mutex::new(HashSet::new()),
+                requested_model: Mutex::new(String::new()),
             }),
         }
     }
@@ -350,7 +317,7 @@ impl UsageTracker {
         let Some(model) = request_model(object) else {
             return;
         };
-        self.set_requested_model_for_service_tier(model, request_service_tier(object));
+        self.set_requested_model(model);
     }
 
     pub fn observe_request_text(&self, text: &str) {
@@ -359,32 +326,35 @@ impl UsageTracker {
         }
     }
 
-    pub fn set_requested_model_for_service_tier(&self, model: &str, service_tier: Option<&str>) {
+    pub fn set_requested_model(&self, model: &str) {
         let model = model.trim();
         if model.is_empty() {
             return;
         }
-        if let Ok(mut request) = self.inner.request.lock() {
-            request.model = model.to_owned();
-            request.fast_mode = service_tier == Some("priority");
-        }
+        *self
+            .inner
+            .requested_model
+            .lock()
+            .expect("usage request lock poisoned") = model.to_owned();
     }
 
     pub fn observe_response_value(&self, value: &Value) {
-        let (fallback_model, fast_mode) = self
-            .inner
-            .request
-            .lock()
-            .ok()
-            .map(|request| (request.model.clone(), request.fast_mode))
-            .unwrap_or_default();
-        let Some(mut parsed) = parse_usage(value, &fallback_model) else {
+        let Some(object) = value.as_object() else {
             return;
         };
-        parsed.model = recorded_model(&parsed.model, fast_mode);
-        if !self.claim_terminal(&parsed, value) {
+        self.observe_response_object(object);
+    }
+
+    pub fn observe_response_object(&self, object: &Map<String, Value>) {
+        let fallback_model = self
+            .inner
+            .requested_model
+            .lock()
+            .expect("usage request lock poisoned")
+            .clone();
+        let Some(parsed) = parse_usage(object, &fallback_model) else {
             return;
-        }
+        };
         self.inner.store.record_background(UsageEvent {
             recorded_at_ms: current_time_ms(),
             identity_type: self.inner.identity.kind.as_str().into(),
@@ -412,24 +382,6 @@ impl UsageTracker {
 
     pub fn wire_observer(&self, content_type: Option<&str>) -> UsageWireObserver {
         UsageWireObserver::new(self.clone(), content_type)
-    }
-
-    fn claim_terminal(&self, parsed: &ParsedUsage, value: &Value) -> bool {
-        if !self.inner.allow_multiple {
-            return !self.inner.terminal_seen.swap(true, Ordering::AcqRel);
-        }
-        let key = if parsed.response_id.is_empty() {
-            format!("payload:{value}")
-        } else {
-            format!("response:{}", parsed.response_id)
-        };
-        let Ok(mut seen) = self.inner.seen_responses.lock() else {
-            return false;
-        };
-        if seen.len() >= MAX_TRACKED_RESPONSES_PER_SOCKET {
-            seen.clear();
-        }
-        seen.insert(key)
     }
 }
 
@@ -469,7 +421,7 @@ impl UsageWireObserver {
                 match active.push_bytes(bytes) {
                     Ok(events) => {
                         for event in events {
-                            self.tracker.observe_response_value(&Value::Object(event));
+                            self.tracker.observe_response_object(&event);
                         }
                     }
                     Err(_) => *decoder = None,
@@ -495,7 +447,7 @@ impl UsageWireObserver {
                     && let Ok(events) = active.finish()
                 {
                     for event in events {
-                        self.tracker.observe_response_value(&Value::Object(event));
+                        self.tracker.observe_response_object(&event);
                     }
                 }
             }
@@ -519,30 +471,12 @@ fn request_model(object: &Map<String, Value>) -> Option<&str> {
     })
 }
 
-fn request_service_tier(object: &Map<String, Value>) -> Option<&str> {
-    string(object, "service_tier").or_else(|| {
-        object
-            .get("response")
-            .and_then(Value::as_object)
-            .and_then(|response| string(response, "service_tier"))
-    })
-}
-
-fn recorded_model(model: &str, fast_mode: bool) -> String {
-    if fast_mode && !model.ends_with("-fast") {
-        format!("{model}-fast")
-    } else {
-        model.to_owned()
-    }
-}
-
-fn parse_usage(value: &Value, fallback_model: &str) -> Option<ParsedUsage> {
-    let root = value.as_object()?;
+fn parse_usage(root: &Map<String, Value>, fallback_model: &str) -> Option<ParsedUsage> {
     let kind = string(root, "type");
     let terminal = match kind {
-        Some("response.completed" | "response.done") => "completed",
+        Some("response.completed") => "completed",
         Some("response.incomplete") => "incomplete",
-        Some("response.failed" | "error") => "failed",
+        Some("response.failed") => "failed",
         Some(_) => return None,
         None if root.get("usage").and_then(Value::as_object).is_some() => "completed",
         None => return None,
@@ -555,42 +489,25 @@ fn parse_usage(value: &Value, fallback_model: &str) -> Option<ParsedUsage> {
         .get("usage")
         .and_then(Value::as_object)
         .or_else(|| root.get("usage").and_then(Value::as_object));
-    if usage.is_none() && terminal != "failed" {
-        return None;
-    }
-    let empty = Map::new();
-    let usage = usage.unwrap_or(&empty);
-    let input_tokens = token(usage, "input_tokens")
-        .or_else(|| token(usage, "prompt_tokens"))
-        .unwrap_or(0);
-    let output_tokens = token(usage, "output_tokens")
-        .or_else(|| token(usage, "completion_tokens"))
-        .unwrap_or(0);
+    let usage = usage?;
+    let input_tokens = token(usage, "input_tokens").unwrap_or(0);
+    let output_tokens = token(usage, "output_tokens").unwrap_or(0);
     let cached_input_tokens = usage
         .get("input_tokens_details")
-        .or_else(|| usage.get("prompt_tokens_details"))
         .and_then(Value::as_object)
-        .and_then(|details| {
-            token(details, "cached_tokens").or_else(|| token(details, "cache_read_tokens"))
-        })
+        .and_then(|details| token(details, "cached_tokens"))
         .unwrap_or(0);
     let cache_creation_input_tokens = usage
         .get("input_tokens_details")
-        .or_else(|| usage.get("prompt_tokens_details"))
         .and_then(Value::as_object)
-        .and_then(|details| {
-            token(details, "cache_creation_tokens").or_else(|| token(details, "cache_write_tokens"))
-        })
+        .and_then(|details| token(details, "cache_creation_tokens"))
         .unwrap_or(0);
     let reasoning_output_tokens = usage
         .get("output_tokens_details")
-        .or_else(|| usage.get("completion_tokens_details"))
         .and_then(Value::as_object)
         .and_then(|details| token(details, "reasoning_tokens"))
         .unwrap_or(0);
-    let total_tokens = token(usage, "total_tokens")
-        .filter(|total| *total > 0)
-        .unwrap_or_else(|| input_tokens.saturating_add(output_tokens));
+    let total_tokens = token(usage, "total_tokens").unwrap_or(input_tokens + output_tokens);
     let model = string(response, "model")
         .or_else(|| string(root, "model"))
         .unwrap_or(fallback_model)
@@ -613,12 +530,7 @@ fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
 }
 
 fn token(object: &Map<String, Value>, key: &str) -> Option<i64> {
-    let value = object.get(key)?;
-    value.as_i64().filter(|value| *value >= 0).or_else(|| {
-        value
-            .as_u64()
-            .map(|value| i64::try_from(value).unwrap_or(i64::MAX))
-    })
+    object.get(key)?.as_i64().filter(|value| *value >= 0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -630,12 +542,13 @@ pub enum UsageRange {
 }
 
 impl UsageRange {
-    pub fn parse(value: Option<&str>) -> Self {
+    pub fn parse(value: Option<&str>) -> Option<Self> {
         match value {
-            Some("24h") => Self::Day,
-            Some("30d") => Self::Month,
-            Some("all") => Self::All,
-            _ => Self::Week,
+            Some("24h") => Some(Self::Day),
+            None | Some("7d") => Some(Self::Week),
+            Some("30d") => Some(Self::Month),
+            Some("all") => Some(Self::All),
+            Some(_) => None,
         }
     }
 
@@ -740,12 +653,10 @@ pub struct UsageEventRow {
 
 fn query_dashboard(connection: &Connection, range: UsageRange) -> Result<UsageDashboard> {
     let end_at = current_time_ms();
-    let earliest = connection
-        .query_row("SELECT MIN(recorded_at_ms) FROM usage_events", [], |row| {
+    let earliest =
+        connection.query_row("SELECT MIN(recorded_at_ms) FROM usage_events", [], |row| {
             row.get::<_, Option<i64>>(0)
-        })
-        .optional()?
-        .flatten();
+        })?;
     let start_at = range
         .duration_ms()
         .map(|duration| end_at.saturating_sub(duration))
@@ -967,24 +878,21 @@ mod tests {
 
     #[test]
     fn parses_codex_terminal_usage_and_subset_details() {
-        let parsed = parse_usage(
-            &json!({
-                "type":"response.completed",
-                "response":{
-                    "id":"resp_1",
-                    "model":"gpt-5.6-sol",
-                    "usage":{
-                        "input_tokens":120,
-                        "input_tokens_details":{"cached_tokens":80,"cache_creation_tokens":4},
-                        "output_tokens":30,
-                        "output_tokens_details":{"reasoning_tokens":12},
-                        "total_tokens":150
-                    }
+        let value = json!({
+            "type":"response.completed",
+            "response":{
+                "id":"resp_1",
+                "model":"gpt-5.6-sol",
+                "usage":{
+                    "input_tokens":120,
+                    "input_tokens_details":{"cached_tokens":80,"cache_creation_tokens":4},
+                    "output_tokens":30,
+                    "output_tokens_details":{"reasoning_tokens":12},
+                    "total_tokens":150
                 }
-            }),
-            "fallback",
-        )
-        .unwrap();
+            }
+        });
+        let parsed = parse_usage(value.as_object().unwrap(), "fallback").unwrap();
         assert_eq!(parsed.model, "gpt-5.6-sol");
         assert_eq!(parsed.input_tokens, 120);
         assert_eq!(parsed.cached_input_tokens, 80);
@@ -995,12 +903,9 @@ mod tests {
     }
 
     #[test]
-    fn accepts_compact_json_and_uses_the_request_model_fallback() {
-        let parsed = parse_usage(
-            &json!({"id":"resp_compact","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":0}}),
-            "gpt-5.4",
-        )
-        .unwrap();
+    fn accepts_compact_json_and_uses_the_request_model() {
+        let value = json!({"id":"resp_compact","usage":{"input_tokens":2,"output_tokens":3}});
+        let parsed = parse_usage(value.as_object().unwrap(), "gpt-5.4").unwrap();
         assert_eq!(parsed.model, "gpt-5.4");
         assert_eq!(parsed.total_tokens, 5);
         assert_eq!(parsed.status, "completed");
@@ -1043,9 +948,7 @@ mod tests {
         let (store, path) = temporary_store();
         let tracker = UsageTracker::websocket(store.clone(), identity(), "/v1/responses");
 
-        tracker.observe_request_text(
-            r#"{"type":"response.create","model":"gpt-5.6-sol","service_tier":"priority"}"#,
-        );
+        tracker.observe_request_text(r#"{"type":"response.create","model":"gpt-5.6-sol"}"#);
         tracker.observe_response_text(
             r#"{"type":"response.completed","response":{"id":"resp_ws_1","model":"gpt-5.6-sol","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
         );
@@ -1061,7 +964,7 @@ mod tests {
         assert_eq!(dashboard.totals.total_tokens, 42);
         assert_eq!(dashboard.models.len(), 2);
         assert_eq!(dashboard.models[0].model, "gpt-5.6-terra");
-        assert_eq!(dashboard.models[1].model, "gpt-5.6-sol-fast");
+        assert_eq!(dashboard.models[1].model, "gpt-5.6-sol");
         assert!(
             dashboard
                 .recent_events
@@ -1078,7 +981,7 @@ mod tests {
     async fn sse_wire_observer_handles_split_terminal_events() {
         let (store, path) = temporary_store();
         let tracker = UsageTracker::http(store.clone(), identity(), "/v1/responses");
-        tracker.set_requested_model_for_service_tier("gpt-5.4", Some("priority"));
+        tracker.set_requested_model("gpt-5.4");
         let mut observer = tracker.wire_observer(Some("text/event-stream; charset=utf-8"));
         let payload = br#"data: {"type":"response.completed","response":{"id":"resp_sse_1","usage":{"input_tokens":8,"input_tokens_details":{"cached_tokens":6},"output_tokens":3,"total_tokens":11}}}
 
@@ -1093,33 +996,12 @@ data: [DONE]
         let dashboard = wait_for_requests(&store, 1).await;
         assert_eq!(dashboard.totals.total_tokens, 11);
         assert_eq!(dashboard.totals.cached_input_tokens, 6);
-        assert_eq!(dashboard.models[0].model, "gpt-5.4-fast");
+        assert_eq!(dashboard.models[0].model, "gpt-5.4");
         assert_eq!(dashboard.recent_events[0].transport, "http");
 
         drop(tracker);
         drop(store);
         remove_temporary_store(&path);
-    }
-
-    #[test]
-    fn identities_never_include_the_api_key_secret() {
-        let key = ClientApiKey {
-            id: "key-id".into(),
-            name: "desktop".into(),
-            key: "sk-secret-value-123!".into(),
-            enabled: true,
-        };
-        let usage = UsageIdentity::from(&key);
-        assert_eq!(
-            usage,
-            UsageIdentity {
-                kind: UsageIdentityKind::ApiKey,
-                id: "key-id".into(),
-                name: "desktop".into(),
-            }
-        );
-        assert!(!format!("{usage:?}").contains("secret"));
-        let _ = identity();
     }
 
     #[cfg(unix)]

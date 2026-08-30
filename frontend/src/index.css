@@ -11,7 +11,6 @@
 	color-scheme: light;
 
 	--page: #f4f6f8;
-	--app-page-max-width: clamp(1245px, 86vw, 1600px);
 	--surface: #ffffff;
 	--surface-raised: #ffffff;
 	--surface-subtle: #f7f8fa;

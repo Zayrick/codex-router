@@ -12,7 +12,6 @@ use crate::{
         matching_auth_proxy_account,
     },
     core::{ApiError, AppResult},
-    http::parse_json_body,
     upstream::{
         codex::CodexCredentials,
         relay::{ACCOUNT_ID_HEADER, is_backend_api_path, relay_request_headers, resolve_relay_url},
@@ -20,7 +19,6 @@ use crate::{
 };
 
 use super::{
-    body as server_body,
     codex::header_bag,
     config::AppConfig,
     oauth::current_time_ms,
@@ -147,24 +145,7 @@ async fn forward_relay(
         outgoing = outgoing.header(name, value);
     }
     if parts.method != Method::GET && parts.method != Method::HEAD {
-        if let Some(tracker) = tracker.as_ref() {
-            let content_encoding = parts
-                .headers
-                .get("content-encoding")
-                .and_then(|value| value.to_str().ok());
-            let encoded = server_body::read_limited_body(
-                &parts.headers,
-                body,
-                server_body::MAX_JSON_BODY_BYTES,
-            )
-            .await?;
-            if let Ok(parsed) = parse_json_body(&encoded, content_encoding) {
-                tracker.observe_request_value(&serde_json::Value::Object(parsed));
-            }
-            outgoing = outgoing.body(reqwest::Body::from(encoded));
-        } else {
-            outgoing = outgoing.body(reqwest::Body::wrap_stream(body.into_data_stream()));
-        }
+        outgoing = outgoing.body(reqwest::Body::wrap_stream(body.into_data_stream()));
     }
     let upstream = outgoing.send().await.map_err(relay_fetch_error)?;
     Ok(match tracker {
@@ -174,8 +155,10 @@ async fn forward_relay(
 }
 
 fn is_codex_usage_path(pathname: &str) -> bool {
-    pathname == "/backend-api/codex/responses"
-        || pathname.starts_with("/backend-api/codex/responses/")
+    matches!(
+        pathname,
+        "/backend-api/codex/responses" | "/backend-api/codex/responses/"
+    )
 }
 
 fn relay_fetch_error(error: reqwest::Error) -> ApiError {

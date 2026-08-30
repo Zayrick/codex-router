@@ -139,15 +139,21 @@ async fn dispatch(
             response::json(&gemini::gemini_model_detail(&payload, &model)?, 200)
         }
         route @ (ApiRoute::Responses | ApiRoute::Compact | ApiRoute::Proxy) => {
+            let track_usage = matches!(route, ApiRoute::Responses | ApiRoute::Compact);
             let proxy_route = match route {
                 ApiRoute::Responses => CodexProxyRoute::Responses,
                 ApiRoute::Compact => CodexProxyRoute::Compact,
                 ApiRoute::Proxy => CodexProxyRoute::Proxy,
                 _ => return Err(runtime_failure()),
             };
+            let tracker = track_usage.then(|| {
+                if websocket.is_some() {
+                    UsageTracker::websocket(state.usage.clone(), identity, client_url.path())
+                } else {
+                    UsageTracker::http(state.usage.clone(), identity, client_url.path())
+                }
+            });
             if let Some(upgrade) = websocket {
-                let tracker =
-                    UsageTracker::websocket(state.usage.clone(), identity, client_url.path());
                 return client
                     .forward_websocket(
                         upgrade,
@@ -159,11 +165,13 @@ async fn dispatch(
                     )
                     .await;
             }
-            let tracker = UsageTracker::http(state.usage.clone(), identity, client_url.path());
             let upstream = client
-                .forward_proxy(request, client_url, proxy_route, &tracker)
+                .forward_proxy(request, client_url, proxy_route, tracker.as_ref())
                 .await?;
-            Ok(response::upstream_proxy_tracked(upstream, tracker))
+            Ok(match tracker {
+                Some(tracker) => response::upstream_proxy_tracked(upstream, tracker),
+                None => response::upstream_proxy(upstream),
+            })
         }
         ApiRoute::MessageTokens | ApiRoute::GeminiTokens { .. } => Err(runtime_failure()),
         route @ (ApiRoute::ChatCompletions

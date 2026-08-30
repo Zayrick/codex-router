@@ -130,7 +130,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         request: Request<Body>,
         client_url: &Url,
         route: CodexProxyRoute,
-        tracker: &UsageTracker,
+        tracker: Option<&UsageTracker>,
     ) -> AppResult<reqwest::Response> {
         let credentials = self.credentials().await?;
         let (parts, body) = request.into_parts();
@@ -146,11 +146,8 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             source,
         )
         .await?;
-        if let Some(model) = prepared.requested_model.as_deref() {
-            tracker.set_requested_model_for_service_tier(
-                model,
-                prepared.requested_service_tier.as_deref(),
-            );
+        if let (Some(tracker), Some(model)) = (tracker, prepared.requested_model.as_deref()) {
+            tracker.set_requested_model(model);
         }
         let headers = proxy_request_headers(&prepared.headers, &credentials, target.path(), false);
         self.send(&target, parts.method, headers, prepared.body, false)
@@ -164,7 +161,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         method: &Method,
         source_headers: &HeaderMap,
         route: CodexProxyRoute,
-        tracker: UsageTracker,
+        tracker: Option<UsageTracker>,
     ) -> AppResult<Response> {
         let credentials = self.credentials().await?;
         let source = header_bag(source_headers);
@@ -175,7 +172,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             target,
             headers,
             route == CodexProxyRoute::Responses,
-            Some(tracker),
+            tracker,
         )
         .await
     }
@@ -232,7 +229,6 @@ struct PreparedProxyBody {
     headers: HeaderBag,
     body: Option<reqwest::Body>,
     requested_model: Option<String>,
-    requested_service_tier: Option<String>,
 }
 
 async fn prepare_proxy_body(
@@ -276,18 +272,12 @@ async fn adapt_json_body<'a>(
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_owned);
-    let requested_service_tier = parsed
-        .body
-        .get("service_tier")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
     let adapted = adapt(&parsed.body);
     if matches!(adapted, Cow::Borrowed(_)) {
         return Ok(PreparedProxyBody {
             headers,
             body: Some(reqwest::Body::from(parsed.encoded_body)),
             requested_model,
-            requested_service_tier,
         });
     }
     let bytes = serde_json::to_vec(adapted.as_ref()).map_err(|_| json_serialization_error())?;
@@ -295,7 +285,6 @@ async fn adapt_json_body<'a>(
         headers: json_headers(&headers),
         body: Some(reqwest::Body::from(bytes)),
         requested_model,
-        requested_service_tier,
     })
 }
 
@@ -358,17 +347,10 @@ async fn adapt_live_bootstrap(
         payload.insert("session".into(), session);
     }
     let bytes = serde_json::to_vec(&payload).map_err(|_| json_serialization_error())?;
-    let requested_model = payload
-        .get("session")
-        .and_then(Value::as_object)
-        .and_then(|session| session.get("model"))
-        .and_then(Value::as_str)
-        .map(str::to_owned);
     Ok(PreparedProxyBody {
         headers: json_headers(&headers),
         body: Some(reqwest::Body::from(bytes)),
-        requested_model,
-        requested_service_tier: None,
+        requested_model: None,
     })
 }
 
@@ -379,7 +361,6 @@ fn passthrough_body(body: Body, method: &Method, headers: HeaderBag) -> Prepared
         headers,
         body,
         requested_model: None,
-        requested_service_tier: None,
     }
 }
 

@@ -139,7 +139,7 @@ async fn consume_events(
     while let Some(chunk) = source.next().await {
         let chunk = chunk.map_err(|_| stream_failed())?;
         for event in decoder.push_bytes(&chunk)? {
-            tracker.observe_response_value(&Value::Object(event.clone()));
+            tracker.observe_response_object(&event);
             if consume(&event)? {
                 drop(source);
                 return Ok(());
@@ -147,7 +147,7 @@ async fn consume_events(
         }
     }
     for event in decoder.finish()? {
-        tracker.observe_response_value(&Value::Object(event.clone()));
+        tracker.observe_response_object(&event);
         if consume(&event)? {
             break;
         }
@@ -185,7 +185,7 @@ fn chat_stream(
                 }
             };
             for event in events {
-                tracker.observe_response_value(&Value::Object(event.clone()));
+                tracker.observe_response_object(&event);
                 match presenter.push_event(&event) {
                     Ok(frames) => for frame in frames {
                         yield Ok::<_, Infallible>(frame.into_bytes());
@@ -214,7 +214,7 @@ fn chat_stream(
             let tail = decoder.finish().and_then(|events| {
                 let mut frames = Vec::new();
                 for event in events {
-                    tracker.observe_response_value(&Value::Object(event.clone()));
+                    tracker.observe_response_object(&event);
                     frames.extend(presenter.push_event(&event)?);
                 }
                 presenter.finish()?;
@@ -265,7 +265,7 @@ fn completion_stream(
                 }
             };
             for event in events {
-                tracker.observe_response_value(&Value::Object(event.clone()));
+                tracker.observe_response_object(&event);
                 match presenter.push_event(&event) {
                     Ok(frames) => for chat_frame in frames {
                         match completion.push_str(&chat_frame) {
@@ -305,7 +305,7 @@ fn completion_stream(
             let tail = decoder.finish().and_then(|events| {
                 let mut chat_frames = Vec::new();
                 for event in events {
-                    tracker.observe_response_value(&Value::Object(event.clone()));
+                    tracker.observe_response_object(&event);
                     chat_frames.extend(presenter.push_event(&event)?);
                 }
                 presenter.finish()?;
@@ -369,7 +369,7 @@ fn anthropic_stream(
             };
             match events {
                 Ok(events) => for event in events {
-                    tracker.observe_response_value(&Value::Object(event.clone()));
+                    tracker.observe_response_object(&event);
                     for frame in presenter.push(Value::Object(event)) {
                         yield Ok::<_, Infallible>(render_anthropic(&frame).into_bytes());
                     }
@@ -391,7 +391,7 @@ fn anthropic_stream(
         if !failed && !finished {
             match decoder.finish() {
                 Ok(events) => for event in events {
-                    tracker.observe_response_value(&Value::Object(event.clone()));
+                    tracker.observe_response_object(&event);
                     for frame in presenter.push(Value::Object(event)) {
                         yield Ok::<_, Infallible>(render_anthropic(&frame).into_bytes());
                     }
@@ -434,7 +434,7 @@ fn gemini_stream(
             };
             match events {
                 Ok(events) => for event in events {
-                    tracker.observe_response_value(&Value::Object(event.clone()));
+                    tracker.observe_response_object(&event);
                     for frame in presenter.push(Value::Object(event)) {
                         yield Ok::<_, Infallible>(frame.render().into_bytes());
                     }
@@ -459,7 +459,7 @@ fn gemini_stream(
         if !failed && !finished {
             match decoder.finish() {
                 Ok(events) => for event in events {
-                    tracker.observe_response_value(&Value::Object(event.clone()));
+                    tracker.observe_response_object(&event);
                     for frame in presenter.push(Value::Object(event)) {
                         yield Ok::<_, Infallible>(frame.render().into_bytes());
                     }
