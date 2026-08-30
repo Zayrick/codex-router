@@ -19,10 +19,14 @@ import {
 	type SubscriptionInfo,
 	type SubscriptionMetadata,
 	type UsageDashboard,
+	type UsageIdentityFilter,
 	type UsageRange,
 } from "./admin-api";
 import QuotaTimeline from "./QuotaTimeline";
-import ManagementShell, { ProductMark } from "./ManagementShell";
+import ManagementShell, {
+	ProductMark,
+	type ManagementPage,
+} from "./ManagementShell";
 import "./App.css";
 
 const MANAGEMENT_PATH_PATTERN = /^\/[A-Za-z0-9_-]{1,128}\/admin\/?$/;
@@ -61,9 +65,15 @@ function App() {
 	const [subscriptionLoading, setSubscriptionLoading] = useState(false);
 	const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
 	const [usage, setUsage] = useState<UsageDashboard | null>(null);
+	const [overviewUsage, setOverviewUsage] = useState<UsageDashboard | null>(null);
 	const [usageRange, setUsageRange] = useState<UsageRange>("7d");
+	const [usageIdentity, setUsageIdentity] =
+		useState<UsageIdentityFilter | null>(null);
 	const [usageLoading, setUsageLoading] = useState(false);
 	const [usageError, setUsageError] = useState<string | null>(null);
+	const [activePage, setActivePage] = useState<ManagementPage>(() =>
+		managementPageFromSearch(window.location.search),
+	);
 	const [apiKeys, setApiKeys] = useState<ClientApiKey[]>([]);
 	const [authProxyAccounts, setAuthProxyAccounts] = useState<AuthProxyAccount[]>([]);
 	const [authProxyRefreshing, setAuthProxyRefreshing] = useState(false);
@@ -107,6 +117,7 @@ function App() {
 	const authProxyTogglingRef = useRef<Set<string>>(new Set());
 	const pollTimerRef = useRef<number | null>(null);
 	const authProxyPollTimerRef = useRef<number | null>(null);
+	const usageRequestRef = useRef(0);
 	const initializeRef = useRef(initialize);
 
 	useEffect(() => {
@@ -148,6 +159,19 @@ function App() {
 		return () => window.clearInterval(timer);
 	}, [screen]);
 
+	useEffect(() => {
+		const onPopState = () => {
+			setActivePage(managementPageFromSearch(window.location.search));
+		};
+		window.addEventListener("popstate", onPopState);
+		return () => window.removeEventListener("popstate", onPopState);
+	}, []);
+
+	useEffect(() => {
+		if (screen !== "dashboard") return;
+		document.title = `${managementPageTitle(activePage)} · Codex Router`;
+	}, [activePage, screen]);
+
 	async function initialize(): Promise<void> {
 		if (!api) return;
 		try {
@@ -161,10 +185,10 @@ function App() {
 			setLoginError(null);
 			if (state.oauth) {
 				void refreshSubscription(true);
-				void refreshUsage("7d");
 			} else {
 				void beginDeviceLogin();
 			}
+			void refreshUsage("7d", null);
 		} catch (error) {
 			if (!mountedRef.current) return;
 			if (error instanceof AdminSessionExpiredError) {
@@ -227,27 +251,50 @@ function App() {
 		}
 	}
 
-	async function refreshUsage(range = usageRange): Promise<void> {
-		if (!api || usageLoading) return;
+	async function refreshUsage(
+		range = usageRange,
+		identity = usageIdentity,
+	): Promise<void> {
+		if (!api) return;
+		const requestId = ++usageRequestRef.current;
 		setUsageLoading(true);
 		setUsageError(null);
 		try {
-			const next = await api.getUsage(range);
+			const next = await api.getUsage(range, identity);
 			if (!mountedRef.current) return;
+			if (!identity) setOverviewUsage(next);
+			if (requestId !== usageRequestRef.current) return;
 			setUsage(next);
 		} catch (error) {
-			if (!mountedRef.current) return;
+			if (!mountedRef.current || requestId !== usageRequestRef.current) return;
 			if (handleSessionFailure(error)) return;
 			setUsageError(errorMessage(error, "读取 Token 用量失败，请稍后重试。"));
 		} finally {
-			if (mountedRef.current) setUsageLoading(false);
+			if (mountedRef.current && requestId === usageRequestRef.current) {
+				setUsageLoading(false);
+			}
 		}
 	}
 
 	function changeUsageRange(range: UsageRange): void {
 		if (range === usageRange) return;
 		setUsageRange(range);
-		void refreshUsage(range);
+		void refreshUsage(range, usageIdentity);
+	}
+
+	function changeUsageIdentity(identity: UsageIdentityFilter | null): void {
+		if (sameUsageIdentity(identity, usageIdentity)) return;
+		setUsageIdentity(identity);
+		void refreshUsage(usageRange, identity);
+	}
+
+	function navigateManagementPage(page: ManagementPage): void {
+		if (page === activePage) return;
+		const url = new URL(window.location.href);
+		if (page === "overview") url.searchParams.delete("page");
+		else url.searchParams.set("page", page);
+		window.history.pushState(null, "", url);
+		setActivePage(page);
 	}
 
 	async function beginDeviceLogin(): Promise<void> {
@@ -314,9 +361,6 @@ function App() {
 			setOAuth(null);
 			setSubscription(null);
 			setSubscriptionError(null);
-			setUsage(null);
-			setUsageError(null);
-			setUsageLoading(false);
 			showNotice("已退出 Codex 登录。", "success");
 			void beginDeviceLogin();
 		} catch (error) {
@@ -670,6 +714,9 @@ function App() {
 		setOAuth(null);
 		setSubscription(null);
 		setUsage(null);
+		setOverviewUsage(null);
+		setUsageIdentity(null);
+		usageRequestRef.current += 1;
 		setUsageError(null);
 		setUsageLoading(false);
 		setApiKeys([]);
@@ -722,87 +769,91 @@ function App() {
 	return (
 		<ManagementShell
 			activeApiKeys={apiKeys.filter((entry) => entry.enabled).length}
+			activePage={activePage}
 			activeProxyAccounts={authProxyAccounts.filter((entry) => entry.enabled).length}
+			basePath={basePath ?? ""}
 			mainAccountConnected={oauth !== null}
 			onLogout={() => void handleLogout()}
-			requestCount={usage?.totals.requests ?? null}
+			onNavigate={navigateManagementPage}
+			requestCount={overviewUsage?.totals.requests ?? null}
 			totalApiKeys={apiKeys.length}
 			totalProxyAccounts={authProxyAccounts.length}
-			usageRangeLabel={formatUsageRange(usageRange)}
+			usageRangeLabel={formatUsageRange(overviewUsage?.range ?? "7d")}
 		>
-			<section className="dashboard-section" aria-labelledby="account-section-title">
-				<header className="dashboard-section-header">
-					<span>01</span>
-					<div>
-						<h2 id="account-section-title">账户与用量</h2>
-						<p>主账户授权、配额周期与实际 Token 消耗。</p>
-					</div>
-				</header>
-				<div className="dashboard-section-body">
-					<AccountCard
-						deviceAuthorization={deviceAuthorization}
-						deviceError={deviceError}
-						deviceLoading={deviceLoading}
-						error={subscriptionError}
-						loading={subscriptionLoading}
-						now={now}
-						oauth={oauth}
-						oauthRemoving={oauthRemoving}
-						onCopy={(value, label) => void copyText(value, label)}
-						onRefresh={() => void refreshSubscription()}
-						onRemove={() => void removeOAuth()}
-						onRetry={() => void beginDeviceLogin()}
-						subscription={subscription}
-					/>
+			{activePage === "overview" ? (
+				<OverviewPage
+					activeApiKeys={apiKeys.filter((entry) => entry.enabled).length}
+					activeProxyAccounts={authProxyAccounts.filter((entry) => entry.enabled).length}
+					mainAccountConnected={oauth !== null}
+					onNavigate={navigateManagementPage}
+					planType={subscription?.planType ?? null}
+					totalApiKeys={apiKeys.length}
+					totalProxyAccounts={authProxyAccounts.length}
+					usage={overviewUsage}
+				/>
+			) : null}
 
-					{oauth ? (
-						<UsageCard
-							error={usageError}
-							loading={usageLoading}
-							onRangeChange={changeUsageRange}
-							onRefresh={() => void refreshUsage()}
-							range={usageRange}
-							usage={usage}
-						/>
-					) : null}
-				</div>
-			</section>
+			{activePage === "usage" ? (
+				<UsageCard
+					accounts={authProxyAccounts}
+					apiKeys={apiKeys}
+					error={usageError}
+					identity={usageIdentity}
+					loading={usageLoading}
+					onIdentityChange={changeUsageIdentity}
+					onRangeChange={changeUsageRange}
+					onRefresh={() => void refreshUsage()}
+					range={usageRange}
+					usage={usage}
+				/>
+			) : null}
 
-			<section className="dashboard-section" aria-labelledby="identity-section-title">
-				<header className="dashboard-section-header">
-					<span>02</span>
-					<div>
-						<h2 id="identity-section-title">调用身份</h2>
-						<p>管理代理账户与下游客户端使用的 API Keys。</p>
-					</div>
-				</header>
-				<div className="dashboard-section-body">
-					<AuthProxyCard
-						accounts={authProxyAccounts}
-						loading={authProxyRefreshing}
-						onAdd={() => setAuthProxyEditor("new")}
-						onDelete={setPendingAuthProxyDelete}
-						onEdit={setAuthProxyEditor}
-						onOAuth={(entry) => void handleAuthProxyOAuth(entry)}
-						onRefresh={() => void refreshAuthProxyAccounts()}
-						onToggle={(entry) => void toggleAuthProxyAccount(entry)}
-						oauthRemoving={authProxyOAuthRemoving}
-						togglingAccounts={authProxyToggling}
-					/>
+			{activePage === "api-keys" ? (
+				<ApiKeysCard
+					apiKeys={apiKeys}
+					loading={keysRefreshing}
+					onAdd={() => setKeyEditor("new")}
+					onCopy={(value) => void copyText(value, "API Key")}
+					onDelete={setPendingDelete}
+					onEdit={setKeyEditor}
+					onRefresh={() => void refreshApiKeys()}
+					onToggle={(entry) => void toggleApiKey(entry)}
+					togglingKeys={keysToggling}
+				/>
+			) : null}
 
-					<ApiKeysCard
-						apiKeys={apiKeys}
-						loading={keysRefreshing}
-						onAdd={() => setKeyEditor("new")}
-						onCopy={(value) => void copyText(value, "API Key")}
-						onDelete={setPendingDelete}
-						onEdit={setKeyEditor}
-						onRefresh={() => void refreshApiKeys()}
-						onToggle={(entry) => void toggleApiKey(entry)}
-						togglingKeys={keysToggling}
-					/>
-				</div>
-			</section>
+			{activePage === "accounts" ? (
+				<AuthProxyCard
+					accounts={authProxyAccounts}
+					loading={authProxyRefreshing}
+					onAdd={() => setAuthProxyEditor("new")}
+					onDelete={setPendingAuthProxyDelete}
+					onEdit={setAuthProxyEditor}
+					onOAuth={(entry) => void handleAuthProxyOAuth(entry)}
+					onRefresh={() => void refreshAuthProxyAccounts()}
+					onToggle={(entry) => void toggleAuthProxyAccount(entry)}
+					oauthRemoving={authProxyOAuthRemoving}
+					togglingAccounts={authProxyToggling}
+				/>
+			) : null}
+
+			{activePage === "account" ? (
+				<AccountCard
+					deviceAuthorization={deviceAuthorization}
+					deviceError={deviceError}
+					deviceLoading={deviceLoading}
+					error={subscriptionError}
+					loading={subscriptionLoading}
+					now={now}
+					oauth={oauth}
+					oauthRemoving={oauthRemoving}
+					onCopy={(value, label) => void copyText(value, label)}
+					onRefresh={() => void refreshSubscription()}
+					onRemove={() => void removeOAuth()}
+					onRetry={() => void beginDeviceLogin()}
+					subscription={subscription}
+				/>
+			) : null}
 
 			{notice ? (
 				<StatusToast notice={notice} onClose={() => setNotice(null)} />
@@ -851,6 +902,134 @@ function App() {
 				/>
 			) : null}
 		</ManagementShell>
+	);
+}
+
+function OverviewPage({
+	activeApiKeys,
+	activeProxyAccounts,
+	mainAccountConnected,
+	onNavigate,
+	planType,
+	totalApiKeys,
+	totalProxyAccounts,
+	usage,
+}: {
+	activeApiKeys: number;
+	activeProxyAccounts: number;
+	mainAccountConnected: boolean;
+	onNavigate: (page: ManagementPage) => void;
+	planType: string | null;
+	totalApiKeys: number;
+	totalProxyAccounts: number;
+	usage: UsageDashboard | null;
+}) {
+	return (
+		<div className="overview-layout">
+			<section className="card overview-health" aria-labelledby="overview-health-title">
+				<CardHeader id="overview-health-title" title="配置状态" />
+				<div className="overview-status-list">
+					<OverviewStatusRow
+						detail={mainAccountConnected ? `${formatPlanType(planType)} 计划` : "需要完成设备授权"}
+						label="主账户"
+						onClick={() => onNavigate("account")}
+						ready={mainAccountConnected}
+						value={mainAccountConnected ? "连接正常" : "等待登录"}
+					/>
+					<OverviewStatusRow
+						detail={`共配置 ${totalApiKeys} 个`}
+						label="API Keys"
+						onClick={() => onNavigate("api-keys")}
+						ready={activeApiKeys > 0}
+						value={`${activeApiKeys} 个启用`}
+					/>
+					<OverviewStatusRow
+						detail={`共配置 ${totalProxyAccounts} 个`}
+						label="下游账户"
+						onClick={() => onNavigate("accounts")}
+						ready={activeProxyAccounts > 0}
+						value={`${activeProxyAccounts} 个启用`}
+					/>
+				</div>
+			</section>
+
+			<section className="card overview-recent" aria-labelledby="overview-recent-title">
+				<CardHeader
+					id="overview-recent-title"
+					action={(
+						<button className="button button-ghost overview-view-all" onClick={() => onNavigate("usage")} type="button">
+							查看用量
+						</button>
+					)}
+					title="最近请求"
+				/>
+				{usage && usage.recentEvents.length > 0 ? (
+					<div className="overview-event-list">
+						{usage.recentEvents.slice(0, 5).map((event) => (
+							<div className="overview-event" key={event.id}>
+								<span className={`overview-event-status usage-status-${event.status}`} aria-hidden="true" />
+								<div>
+									<strong>{event.identityName}</strong>
+									<span>{event.model} · {usageIdentityLabel(event.identityType)}</span>
+								</div>
+								<div>
+									<strong>{formatTokens(event.totalTokens)}</strong>
+									<time dateTime={isoDate(event.recordedAt)}>{formatCompactDate(event.recordedAt)}</time>
+								</div>
+							</div>
+						))}
+					</div>
+				) : (
+					<div className="empty-state overview-empty">
+						<strong>暂无请求记录</strong>
+						<p>完成首次 Codex 请求后，最近活动会显示在这里。</p>
+					</div>
+				)}
+			</section>
+
+			<section className="card overview-usage-snapshot" aria-labelledby="overview-usage-title">
+				<div>
+					<span>{usage ? formatUsageRange(usage.range) : "最近 7 天"}</span>
+					<h2 id="overview-usage-title">Token 用量</h2>
+					<p>快速查看当前统计区间的累计消耗，或进入用量页按身份进一步筛选。</p>
+				</div>
+				<div className="overview-usage-value">
+					<strong>{usage ? formatTokens(usage.totals.totalTokens) : "—"}</strong>
+					<span>{usage ? `${formatCount(usage.totals.requests)} 次请求` : "正在等待用量数据"}</span>
+				</div>
+				<button className="button button-primary" onClick={() => onNavigate("usage")} type="button">
+					打开用量分析
+				</button>
+			</section>
+		</div>
+	);
+}
+
+function OverviewStatusRow({
+	detail,
+	label,
+	onClick,
+	ready,
+	value,
+}: {
+	detail: string;
+	label: string;
+	onClick: () => void;
+	ready: boolean;
+	value: string;
+}) {
+	return (
+		<button className="overview-status-row" onClick={onClick} type="button">
+			<span className={`overview-status-indicator${ready ? " ready" : ""}`} aria-hidden="true" />
+			<span>
+				<strong>{label}</strong>
+				<small>{detail}</small>
+			</span>
+			<span>
+				<strong>{value}</strong>
+				<small>进入管理</small>
+			</span>
+		</button>
 	);
 }
 
@@ -1191,19 +1370,27 @@ function AccountCard({
 }
 
 interface UsageCardProps {
+	accounts: AuthProxyAccount[];
+	apiKeys: ClientApiKey[];
 	usage: UsageDashboard | null;
+	identity: UsageIdentityFilter | null;
 	range: UsageRange;
 	loading: boolean;
 	error: string | null;
+	onIdentityChange: (identity: UsageIdentityFilter | null) => void;
 	onRangeChange: (range: UsageRange) => void;
 	onRefresh: () => void;
 }
 
 function UsageCard({
+	accounts,
+	apiKeys,
 	usage,
+	identity,
 	range,
 	loading,
 	error,
+	onIdentityChange,
 	onRangeChange,
 	onRefresh,
 }: UsageCardProps) {
@@ -1228,6 +1415,35 @@ function UsageCard({
 				id="usage-card-title"
 				action={
 					<div className="usage-card-actions">
+						<label className="usage-identity-control">
+							<span>调用身份</span>
+							<select
+								aria-label="按 API Key 或下游账户筛选 Token 用量"
+								disabled={loading}
+								onChange={(event) => onIdentityChange(parseUsageIdentityValue(event.target.value))}
+								value={usageIdentityValue(identity)}
+							>
+								<option value="">所有 API Keys 与下游账户</option>
+								{apiKeys.length > 0 ? (
+									<optgroup label="API Keys">
+										{apiKeys.map((entry) => (
+											<option key={entry.id} value={usageIdentityValue({ identityType: "api_key", identityId: entry.id })}>
+												{entry.name} · {maskApiKey(entry.key)}
+											</option>
+										))}
+									</optgroup>
+								) : null}
+								{accounts.length > 0 ? (
+									<optgroup label="下游 account id">
+										{accounts.map((entry) => (
+											<option key={entry.id} value={usageIdentityValue({ identityType: "auth_proxy", identityId: entry.id })}>
+												{entry.name} · {entry.accountId}
+											</option>
+										))}
+									</optgroup>
+								) : null}
+							</select>
+						</label>
 						<label className="usage-range-control">
 							<span>统计范围</span>
 							<select
@@ -1254,8 +1470,21 @@ function UsageCard({
 						</button>
 					</div>
 				}
-				title="Token 用量"
+				title="用量明细"
 			/>
+
+			<div className="usage-filter-summary" aria-live="polite">
+				<span className={identity ? "is-filtered" : undefined} aria-hidden="true" />
+				<div>
+					<strong>{usageIdentityDescription(identity, apiKeys, accounts)}</strong>
+					<small>汇总、趋势、模型分布与请求明细均使用当前筛选条件</small>
+				</div>
+				{identity ? (
+					<button className="button button-ghost" disabled={loading} onClick={() => onIdentityChange(null)} type="button">
+						清除筛选
+					</button>
+				) : null}
+			</div>
 
 			{error ? (
 				<div className="inline-alert error-alert usage-alert" role="alert">
@@ -1272,7 +1501,7 @@ function UsageCard({
 			{empty ? (
 				<div className="empty-state usage-empty">
 					<strong>所选范围内暂无 Token 用量</strong>
-					<span>API Key 或代理账户完成首次 Codex 请求后会显示在这里。</span>
+					<span>{identity ? "当前身份在该时间范围内没有已落库请求。" : "API Key 或下游账户完成首次 Codex 请求后会显示在这里。"}</span>
 				</div>
 			) : null}
 
@@ -2309,6 +2538,83 @@ function iconPaths(name: IconName): ReactNode {
 function managementBasePath(pathname: string): string | null {
 	if (!MANAGEMENT_PATH_PATTERN.test(pathname)) return null;
 	return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+}
+
+function managementPageFromSearch(search: string): ManagementPage {
+	const page = new URLSearchParams(search).get("page");
+	if (
+		page === "usage" ||
+		page === "api-keys" ||
+		page === "accounts" ||
+		page === "account"
+	) {
+		return page;
+	}
+	return "overview";
+}
+
+function managementPageTitle(page: ManagementPage): string {
+	switch (page) {
+		case "overview":
+			return "运行概览";
+		case "usage":
+			return "用量分析";
+		case "api-keys":
+			return "API Keys";
+		case "accounts":
+			return "下游账户";
+		case "account":
+			return "主账户";
+	}
+}
+
+function usageIdentityValue(identity: UsageIdentityFilter | null): string {
+	return identity
+		? `${identity.identityType}:${encodeURIComponent(identity.identityId)}`
+		: "";
+}
+
+function parseUsageIdentityValue(value: string): UsageIdentityFilter | null {
+	if (!value) return null;
+	const separator = value.indexOf(":");
+	if (separator < 1) return null;
+	const identityType = value.slice(0, separator);
+	if (identityType !== "api_key" && identityType !== "auth_proxy") return null;
+	try {
+		const identityId = decodeURIComponent(value.slice(separator + 1));
+		return identityId ? { identityType, identityId } : null;
+	} catch {
+		return null;
+	}
+}
+
+function sameUsageIdentity(
+	left: UsageIdentityFilter | null,
+	right: UsageIdentityFilter | null,
+): boolean {
+	return (
+		left === right ||
+		(left !== null &&
+			right !== null &&
+			left.identityType === right.identityType &&
+			left.identityId === right.identityId)
+	);
+}
+
+function usageIdentityDescription(
+	identity: UsageIdentityFilter | null,
+	apiKeys: ClientApiKey[],
+	accounts: AuthProxyAccount[],
+): string {
+	if (!identity) return "所有调用身份";
+	if (identity.identityType === "api_key") {
+		const entry = apiKeys.find((candidate) => candidate.id === identity.identityId);
+		return entry ? `API Key：${entry.name}` : "已筛选 API Key";
+	}
+	const entry = accounts.find((candidate) => candidate.id === identity.identityId);
+	return entry
+		? `下游账户：${entry.name} · ${entry.accountId}`
+		: "已筛选下游账户";
 }
 
 function errorMessage(error: unknown, fallback: string): string {

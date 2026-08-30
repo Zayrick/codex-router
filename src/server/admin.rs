@@ -27,7 +27,7 @@ use super::{
     oauth::{ReqwestOAuthHttpClient, SystemClock, current_time_ms},
     response,
     state::AppState,
-    usage::UsageRange,
+    usage::{UsageIdentityFilter, UsageRange},
 };
 
 const MAX_ADMIN_BODY_BYTES: usize = 16 * 1024;
@@ -138,10 +138,30 @@ async fn dispatch(
                 .find(|(name, _)| name == "range")
                 .map(|(_, value)| value.into_owned());
             let range = UsageRange::parse(range.as_deref()).ok_or_else(invalid_usage_range)?;
-            let dashboard = state.usage.dashboard(range).await.map_err(|error| {
-                tracing::warn!(event = "usage_dashboard", status = "failed", error = %error);
-                usage_query_error()
-            })?;
+            let identity_type = client_url
+                .query_pairs()
+                .find(|(name, _)| name == "identityType")
+                .map(|(_, value)| value.into_owned());
+            let identity_id = client_url
+                .query_pairs()
+                .find(|(name, _)| name == "identityId")
+                .map(|(_, value)| value.into_owned());
+            let identity = match (identity_type.as_deref(), identity_id.as_deref()) {
+                (None, None) => None,
+                (Some(kind), Some(id)) => Some(
+                    UsageIdentityFilter::parse(kind, id)
+                        .ok_or_else(invalid_usage_identity_filter)?,
+                ),
+                _ => return Err(invalid_usage_identity_filter()),
+            };
+            let dashboard = state
+                .usage
+                .dashboard(range, identity)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(event = "usage_dashboard", status = "failed", error = %error);
+                    usage_query_error()
+                })?;
             response::json(&dashboard, 200)
         }
         AdminRoute::OAuthStart => {
@@ -411,4 +431,10 @@ fn invalid_usage_range() -> ApiError {
     ApiError::new(400, "The usage range is invalid.")
         .with_kind("invalid_request_error")
         .with_code("invalid_usage_range")
+}
+
+fn invalid_usage_identity_filter() -> ApiError {
+    ApiError::new(400, "The usage identity filter is invalid.")
+        .with_kind("invalid_request_error")
+        .with_code("invalid_usage_identity_filter")
 }

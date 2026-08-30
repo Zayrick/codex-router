@@ -213,7 +213,9 @@ usage 的上游终止 JSON/SSE/WebSocket 事件时把用量写入 SQLite。一�
 response，相同 response ID 只落库一次。模型优先取终止响应，缺失且请求模型可用时使用请求模型。
 
 管理会话可读取 `GET /<admin.path>/admin/usage?range=7d`。`range` 支持 `24h`、`7d`、`30d` 和
-`all`，省略时使用 `7d`，其他值返回 `400`。返回 JSON 包含：
+`all`，省略时使用 `7d`。还可同时传入 `identityType` 与 `identityId`，对单个调用身份重新计算全部
+聚合结果；`identityType` 支持 `api_key` 和 `auth_proxy`，`identityId` 使用 `/state` 返回的稳定记录
+ID。两个身份参数必须一起出现，非法范围或身份筛选返回 `400`。返回 JSON 包含：
 
 - `startAt`、`endAt` 和所选 `range`；
 - `totals`：请求数以及输入、缓存命中、缓存创建、输出、推理和总 Token；
@@ -227,7 +229,8 @@ response，相同 response ID 只落库一次。模型优先取终止响应，�
 ## 13. 管理 API
 
 管理 JSON API 位于 `/<admin.path>/admin`。精确的 `GET /<admin.path>/admin` 返回 React 管理页面；
-错误方法、额外路径段和其他隐藏路径族请求返回空 `404`。页面与以下 JSON 端点共享管理契约：
+页面通过 `?page=usage`、`?page=api-keys`、`?page=accounts` 和 `?page=account` 切换独立视图。错误方法、
+额外路径段和其他隐藏路径族请求返回空 `404`。页面与以下 JSON 端点共享管理契约：
 
 | 方法与相对路径 | 用途 |
 | --- | --- |
@@ -235,7 +238,7 @@ response，相同 response ID 只落库一次。模型优先取终止响应，�
 | `POST /logout` | 清除管理会话 |
 | `GET /state` | 读取 OAuth 摘要、订阅摘要、API Key 列表和 Backend API 代理设置 |
 | `GET /subscription` | 实时读取订阅与额度 |
-| `GET /usage?range=7d` | 读取 SQLite 中的下游 Token 用量聚合与最近事件 |
+| `GET /usage?range=7d&identityType=api_key&identityId=<id>` | 读取 SQLite 中的下游 Token 用量聚合与最近事件，可选按身份筛选 |
 | `POST /oauth/device` | 创建设备授权请求 |
 | `POST /oauth/device/poll` | 轮询设备授权结果 |
 | `DELETE /oauth` | 删除已保存的 OAuth 凭据 |

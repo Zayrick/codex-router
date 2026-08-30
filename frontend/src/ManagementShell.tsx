@@ -1,31 +1,80 @@
-import { useEffect, useState, type ReactNode } from "react";
+import {
+	useEffect,
+	useState,
+	type MouseEvent,
+	type ReactNode,
+} from "react";
 
-type ShellIconName = "home" | "logout" | "menu";
+export type ManagementPage =
+	| "overview"
+	| "usage"
+	| "api-keys"
+	| "accounts"
+	| "account";
+
+type ShellIconName =
+	| "home"
+	| "usage"
+	| "key"
+	| "accounts"
+	| "account"
+	| "logout"
+	| "menu";
 
 interface ManagementShellProps {
 	activeApiKeys: number;
+	activePage: ManagementPage;
 	activeProxyAccounts: number;
+	basePath: string;
 	children: ReactNode;
 	mainAccountConnected: boolean;
 	onLogout: () => void;
+	onNavigate: (page: ManagementPage) => void;
 	requestCount: number | null;
 	totalApiKeys: number;
 	totalProxyAccounts: number;
 	usageRangeLabel: string;
 }
 
+const PAGE_COPY: Record<ManagementPage, { title: string; description: string }> = {
+	overview: {
+		title: "运行概览",
+		description: "快速检查账户连接、调用身份与近期请求状态。",
+	},
+	usage: {
+		title: "用量分析",
+		description: "按时间、API Key 或下游 account id 查看完整 Token 消耗。",
+	},
+	"api-keys": {
+		title: "API Keys",
+		description: "创建和维护下游客户端访问 Codex Router 的密钥。",
+	},
+	accounts: {
+		title: "下游账户",
+		description: "管理 auth proxy account id、独立登录与启停状态。",
+	},
+	account: {
+		title: "主账户",
+		description: "维护 Codex OAuth 登录，并查看订阅计划与额度窗口。",
+	},
+};
+
 export default function ManagementShell({
 	activeApiKeys,
+	activePage,
 	activeProxyAccounts,
+	basePath,
 	children,
 	mainAccountConnected,
 	onLogout,
+	onNavigate,
 	requestCount,
 	totalApiKeys,
 	totalProxyAccounts,
 	usageRangeLabel,
 }: ManagementShellProps) {
 	const [mobileOpen, setMobileOpen] = useState(false);
+	const pageCopy = PAGE_COPY[activePage];
 
 	useEffect(() => {
 		if (!mobileOpen) return;
@@ -35,6 +84,21 @@ export default function ManagementShell({
 		window.addEventListener("keydown", closeOnEscape);
 		return () => window.removeEventListener("keydown", closeOnEscape);
 	}, [mobileOpen]);
+
+	function navigate(event: MouseEvent<HTMLAnchorElement>, page: ManagementPage): void {
+		if (
+			event.button !== 0 ||
+			event.metaKey ||
+			event.ctrlKey ||
+			event.shiftKey ||
+			event.altKey
+		) {
+			return;
+		}
+		event.preventDefault();
+		setMobileOpen(false);
+		onNavigate(page);
+	}
 
 	const shellClassName = mobileOpen
 		? "management-shell mobile-sidebar-open"
@@ -53,7 +117,8 @@ export default function ManagementShell({
 				<header className="sidebar-header">
 					<a
 						className="sidebar-brand"
-						href={window.location.pathname}
+						href={managementPageHref(basePath, "overview")}
+						onClick={(event) => navigate(event, "overview")}
 						aria-label="Codex Router 首页"
 					>
 						<ProductMark />
@@ -65,22 +130,22 @@ export default function ManagementShell({
 				</header>
 
 				<nav className="sidebar-navigation" aria-label="主导航">
-					<div className="sidebar-nav-group">
-						<span className="sidebar-group-label">运行</span>
-						<a
-							aria-current="page"
-							className="sidebar-nav-item active"
-							href={window.location.pathname}
-							onClick={() => setMobileOpen(false)}
-						>
-							<span className="sidebar-nav-icon"><ShellIcon name="home" /></span>
-							<span className="sidebar-nav-label">主页</span>
-						</a>
-					</div>
+					<NavGroup label="运行">
+						<NavItem activePage={activePage} basePath={basePath} icon="home" label="概览" onNavigate={navigate} page="overview" />
+						<NavItem activePage={activePage} basePath={basePath} icon="usage" label="用量分析" onNavigate={navigate} page="usage" />
+					</NavGroup>
+					<NavGroup label="调用身份">
+						<NavItem activePage={activePage} basePath={basePath} icon="key" label="API Keys" onNavigate={navigate} page="api-keys" />
+						<NavItem activePage={activePage} basePath={basePath} icon="accounts" label="下游账户" onNavigate={navigate} page="accounts" />
+					</NavGroup>
+					<NavGroup label="账户">
+						<NavItem activePage={activePage} basePath={basePath} icon="account" label="主账户" onNavigate={navigate} page="account" />
+					</NavGroup>
 				</nav>
 
 				<div className="sidebar-footer">
 					<div className="sidebar-service-state" title="管理服务已连接">
+						<span className="service-status-dot" aria-hidden="true" />
 						<span className="sidebar-footer-copy">
 							<strong>管理服务</strong>
 							<small>已连接</small>
@@ -108,63 +173,75 @@ export default function ManagementShell({
 								<ShellIcon name="menu" />
 							</button>
 							<div>
-								<h1 id="dashboard-title">运行概览</h1>
-								<p className="dashboard-description">
-									集中查看账户配额、Token 消耗与调用身份。
-								</p>
+								<p className="page-eyebrow">{pageEyebrow(activePage)}</p>
+								<h1 id="dashboard-title">{pageCopy.title}</h1>
+								<p className="dashboard-description">{pageCopy.description}</p>
 							</div>
 						</div>
-						<span
-							className={`account-state-pill ${mainAccountConnected ? "connected" : "pending"}`}
-						>
+						<span className={`account-state-pill ${mainAccountConnected ? "connected" : "pending"}`}>
+							<span aria-hidden="true" />
 							{mainAccountConnected ? "主账户已连接" : "等待主账户登录"}
 						</span>
 					</section>
 
-					<section className="dashboard-summary" aria-label="运行摘要">
-						<SummaryCard
-							detail={mainAccountConnected ? "OAuth 凭据可用" : "需要完成设备授权"}
-							label="主账户"
-							value={mainAccountConnected ? "已连接" : "待登录"}
-						/>
-						<SummaryCard
-							detail={`共 ${totalApiKeys} 个本地密钥`}
-							label="可用 API Keys"
-							value={String(activeApiKeys)}
-						/>
-						<SummaryCard
-							detail={`共 ${totalProxyAccounts} 个代理账户`}
-							label="启用代理账户"
-							value={String(activeProxyAccounts)}
-						/>
-						<SummaryCard
-							detail={`${usageRangeLabel}累计请求`}
-							label="请求数"
-							value={requestCount === null ? "—" : requestCount.toLocaleString("zh-CN")}
-						/>
-					</section>
+					{activePage === "overview" ? (
+						<section className="dashboard-summary" aria-label="运行摘要">
+							<SummaryCard detail={mainAccountConnected ? "OAuth 凭据可用" : "需要完成设备授权"} label="主账户" value={mainAccountConnected ? "已连接" : "待登录"} />
+							<SummaryCard detail={`共 ${totalApiKeys} 个本地密钥`} label="可用 API Keys" value={String(activeApiKeys)} />
+							<SummaryCard detail={`共 ${totalProxyAccounts} 个下游账户`} label="启用下游账户" value={String(activeProxyAccounts)} />
+							<SummaryCard detail={`${usageRangeLabel}累计请求`} label="请求数" value={requestCount === null ? "—" : requestCount.toLocaleString("zh-CN")} />
+						</section>
+					) : null}
 
-					<div className="dashboard-content">{children}</div>
+					<div className={`dashboard-content page-${activePage}`}>{children}</div>
 				</main>
 			</section>
 		</div>
 	);
 }
 
-function SummaryCard({
-	detail,
+function NavGroup({ label, children }: { label: string; children: ReactNode }) {
+	return (
+		<div className="sidebar-nav-group">
+			<span className="sidebar-group-label">{label}</span>
+			<div className="sidebar-nav-items">{children}</div>
+		</div>
+	);
+}
+
+function NavItem({
+	activePage,
+	basePath,
+	icon,
 	label,
-	value,
+	onNavigate,
+	page,
 }: {
-	detail: string;
+	activePage: ManagementPage;
+	basePath: string;
+	icon: ShellIconName;
 	label: string;
-	value: string;
+	onNavigate: (event: MouseEvent<HTMLAnchorElement>, page: ManagementPage) => void;
+	page: ManagementPage;
 }) {
+	const active = activePage === page;
+	return (
+		<a
+			aria-current={active ? "page" : undefined}
+			className={`sidebar-nav-item${active ? " active" : ""}`}
+			href={managementPageHref(basePath, page)}
+			onClick={(event) => onNavigate(event, page)}
+		>
+			<span className="sidebar-nav-icon"><ShellIcon name={icon} /></span>
+			<span className="sidebar-nav-label">{label}</span>
+		</a>
+	);
+}
+
+function SummaryCard({ detail, label, value }: { detail: string; label: string; value: string }) {
 	return (
 		<article className="summary-card">
-			<div className="summary-card-topline">
-				<span>{label}</span>
-			</div>
+			<div className="summary-card-topline"><span>{label}</span></div>
 			<strong>{value}</strong>
 			<small>{detail}</small>
 		</article>
@@ -184,17 +261,20 @@ export function ProductMark({ compact = false }: { compact?: boolean }) {
 	);
 }
 
+function pageEyebrow(page: ManagementPage): string {
+	if (page === "overview") return "DASHBOARD";
+	if (page === "usage") return "OBSERVABILITY";
+	if (page === "account") return "CODEX ACCOUNT";
+	return "IDENTITIES";
+}
+
+function managementPageHref(basePath: string, page: ManagementPage): string {
+	return page === "overview" ? basePath : `${basePath}?page=${encodeURIComponent(page)}`;
+}
+
 function ShellIcon({ name }: { name: ShellIconName }) {
 	return (
-		<svg
-			aria-hidden="true"
-			fill="none"
-			stroke="currentColor"
-			strokeLinecap="round"
-			strokeLinejoin="round"
-			strokeWidth="1.8"
-			viewBox="0 0 24 24"
-		>
+		<svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
 			{shellIconPaths(name)}
 		</svg>
 	);
@@ -204,6 +284,14 @@ function shellIconPaths(name: ShellIconName): ReactNode {
 	switch (name) {
 		case "home":
 			return <><path d="m3 10 9-7 9 7" /><path d="M5 9v11h14V9" /><path d="M9 20v-6h6v6" /></>;
+		case "usage":
+			return <><path d="M4 19V9" /><path d="M10 19V5" /><path d="M16 19v-7" /><path d="M22 19H2" /></>;
+		case "key":
+			return <><circle cx="8" cy="15" r="4" /><path d="m11 12 8-8" /><path d="m15 8 2 2" /><path d="m17 6 2 2" /></>;
+		case "accounts":
+			return <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>;
+		case "account":
+			return <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>;
 		case "logout":
 			return <><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></>;
 		case "menu":

@@ -70,6 +70,13 @@ export interface AdminState {
 
 export type UsageRange = "24h" | "7d" | "30d" | "all";
 
+export type UsageIdentityType = "api_key" | "auth_proxy";
+
+export interface UsageIdentityFilter {
+	identityType: UsageIdentityType;
+	identityId: string;
+}
+
 export interface UsageTotals {
 	requests: number;
 	inputTokens: number;
@@ -91,7 +98,7 @@ export interface UsageModelRow extends UsageTotals {
 }
 
 export interface UsageIdentityRow extends UsageTotals {
-	identityType: "api_key" | "auth_proxy";
+	identityType: UsageIdentityType;
 	identityId: string;
 	identityName: string;
 }
@@ -99,7 +106,7 @@ export interface UsageIdentityRow extends UsageTotals {
 export interface UsageEvent extends Omit<UsageTotals, "requests"> {
 	id: number;
 	recordedAt: number;
-	identityType: "api_key" | "auth_proxy";
+	identityType: UsageIdentityType;
 	identityId: string;
 	identityName: string;
 	model: string;
@@ -188,10 +195,16 @@ export class AdminApiClient {
 		return value.subscription;
 	}
 
-	getUsage(range: UsageRange): Promise<UsageDashboard> {
-		return this.requestJson<UsageDashboard>(
-			`/usage?range=${encodeURIComponent(range)}`,
-		);
+	getUsage(
+		range: UsageRange,
+		identity: UsageIdentityFilter | null = null,
+	): Promise<UsageDashboard> {
+		const query = new URLSearchParams({ range });
+		if (identity) {
+			query.set("identityType", identity.identityType);
+			query.set("identityId", identity.identityId);
+		}
+		return this.requestJson<UsageDashboard>(`/usage?${query.toString()}`);
 	}
 
 	startDeviceAuthorization(): Promise<DeviceAuthorization> {

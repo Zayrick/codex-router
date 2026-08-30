@@ -72,6 +72,37 @@ impl UsageIdentityKind {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageIdentityFilter {
+    kind: UsageIdentityKind,
+    id: String,
+}
+
+impl UsageIdentityFilter {
+    pub fn parse(kind: &str, id: &str) -> Option<Self> {
+        let kind = match kind {
+            "api_key" => UsageIdentityKind::ApiKey,
+            "auth_proxy" => UsageIdentityKind::AuthProxy,
+            _ => return None,
+        };
+        if id.is_empty() || id.len() > 256 {
+            return None;
+        }
+        Some(Self {
+            kind,
+            id: id.to_owned(),
+        })
+    }
+
+    fn kind(&self) -> &'static str {
+        self.kind.as_str()
+    }
+
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 impl From<&ClientApiKey> for UsageIdentity {
     fn from(value: &ClientApiKey) -> Self {
         Self {
@@ -216,11 +247,15 @@ impl UsageStore {
         Ok(())
     }
 
-    pub async fn dashboard(&self, range: UsageRange) -> Result<UsageDashboard> {
+    pub async fn dashboard(
+        &self,
+        range: UsageRange,
+        identity: Option<UsageIdentityFilter>,
+    ) -> Result<UsageDashboard> {
         let connection = self.connection.clone();
         tokio::task::spawn_blocking(move || {
             let connection = connection.lock().expect("usage database lock poisoned");
-            query_dashboard(&connection, range)
+            query_dashboard(&connection, range, identity.as_ref())
         })
         .await
         .context("usage database query task failed")?
@@ -651,22 +686,29 @@ pub struct UsageEventRow {
     pub total_tokens: i64,
 }
 
-fn query_dashboard(connection: &Connection, range: UsageRange) -> Result<UsageDashboard> {
+fn query_dashboard(
+    connection: &Connection,
+    range: UsageRange,
+    identity: Option<&UsageIdentityFilter>,
+) -> Result<UsageDashboard> {
     let end_at = current_time_ms();
-    let earliest =
-        connection.query_row("SELECT MIN(recorded_at_ms) FROM usage_events", [], |row| {
-            row.get::<_, Option<i64>>(0)
-        })?;
+    let (identity_type, identity_id) = identity_parameters(identity);
+    let earliest = connection.query_row(
+        "SELECT MIN(recorded_at_ms) FROM usage_events \
+         WHERE (?1 IS NULL OR (identity_type = ?1 AND identity_id = ?2))",
+        params![identity_type, identity_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )?;
     let start_at = range
         .duration_ms()
         .map(|duration| end_at.saturating_sub(duration))
         .or(earliest)
         .unwrap_or(end_at);
-    let totals = query_totals(connection, start_at, end_at)?;
-    let series = query_series(connection, range, start_at, end_at)?;
-    let models = query_models(connection, start_at, end_at)?;
-    let identities = query_identities(connection, start_at, end_at)?;
-    let recent_events = query_recent_events(connection, start_at, end_at)?;
+    let totals = query_totals(connection, start_at, end_at, identity)?;
+    let series = query_series(connection, range, start_at, end_at, identity)?;
+    let models = query_models(connection, start_at, end_at, identity)?;
+    let identities = query_identities(connection, start_at, end_at, identity)?;
+    let recent_events = query_recent_events(connection, start_at, end_at, identity)?;
     Ok(UsageDashboard {
         range: range.label().into(),
         start_at,
@@ -679,6 +721,12 @@ fn query_dashboard(connection: &Connection, range: UsageRange) -> Result<UsageDa
     })
 }
 
+fn identity_parameters(identity: Option<&UsageIdentityFilter>) -> (Option<&str>, Option<&str>) {
+    identity
+        .map(|value| (Some(value.kind()), Some(value.id())))
+        .unwrap_or((None, None))
+}
+
 const TOTAL_COLUMNS: &str = r#"
     COUNT(*),
     COALESCE(SUM(input_tokens), 0),
@@ -689,30 +737,54 @@ const TOTAL_COLUMNS: &str = r#"
     COALESCE(SUM(total_tokens), 0)
 "#;
 
-fn query_totals(connection: &Connection, start_at: i64, end_at: i64) -> Result<UsageTotals> {
+fn query_totals(
+    connection: &Connection,
+    start_at: i64,
+    end_at: i64,
+    identity: Option<&UsageIdentityFilter>,
+) -> Result<UsageTotals> {
     let sql = format!(
-        "SELECT {TOTAL_COLUMNS} FROM usage_events WHERE recorded_at_ms >= ?1 AND recorded_at_ms <= ?2"
+        "SELECT {TOTAL_COLUMNS} FROM usage_events \
+         WHERE recorded_at_ms >= ?1 AND recorded_at_ms <= ?2 \
+         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4))"
     );
-    Ok(connection.query_row(&sql, params![start_at, end_at], totals_from_row)?)
+    let (identity_type, identity_id) = identity_parameters(identity);
+    Ok(connection.query_row(
+        &sql,
+        params![start_at, end_at, identity_type, identity_id],
+        totals_from_row,
+    )?)
 }
 
 fn query_models(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
+    identity: Option<&UsageIdentityFilter>,
 ) -> Result<Vec<UsageBreakdownRow>> {
     let sql = format!(
         "SELECT model, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms <= ?2 \
-         GROUP BY model ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, model LIMIT ?3"
+         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) \
+         GROUP BY model ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, model LIMIT ?5"
     );
     let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params![start_at, end_at, BREAKDOWN_LIMIT], |row| {
-        Ok(UsageBreakdownRow {
-            model: row.get(0)?,
-            totals: totals_from_row_at(row, 1)?,
-        })
-    })?;
+    let (identity_type, identity_id) = identity_parameters(identity);
+    let rows = statement.query_map(
+        params![
+            start_at,
+            end_at,
+            identity_type,
+            identity_id,
+            BREAKDOWN_LIMIT
+        ],
+        |row| {
+            Ok(UsageBreakdownRow {
+                model: row.get(0)?,
+                totals: totals_from_row_at(row, 1)?,
+            })
+        },
+    )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -720,22 +792,34 @@ fn query_identities(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
+    identity: Option<&UsageIdentityFilter>,
 ) -> Result<Vec<UsageIdentityRow>> {
     let sql = format!(
         "SELECT identity_type, identity_id, identity_name, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms <= ?2 \
+         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) \
          GROUP BY identity_type, identity_id, identity_name \
-         ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, identity_name LIMIT ?3"
+         ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, identity_name LIMIT ?5"
     );
     let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params![start_at, end_at, BREAKDOWN_LIMIT], |row| {
-        Ok(UsageIdentityRow {
-            identity_type: row.get(0)?,
-            identity_id: row.get(1)?,
-            identity_name: row.get(2)?,
-            totals: totals_from_row_at(row, 3)?,
-        })
-    })?;
+    let (identity_type, identity_id) = identity_parameters(identity);
+    let rows = statement.query_map(
+        params![
+            start_at,
+            end_at,
+            identity_type,
+            identity_id,
+            BREAKDOWN_LIMIT
+        ],
+        |row| {
+            Ok(UsageIdentityRow {
+                identity_type: row.get(0)?,
+                identity_id: row.get(1)?,
+                identity_name: row.get(2)?,
+                totals: totals_from_row_at(row, 3)?,
+            })
+        },
+    )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -744,6 +828,7 @@ fn query_series(
     range: UsageRange,
     start_at: i64,
     end_at: i64,
+    identity: Option<&UsageIdentityFilter>,
 ) -> Result<Vec<UsageSeriesPoint>> {
     let bucket_ms = range.bucket_ms();
     let aligned_start = start_at - start_at.rem_euclid(bucket_ms);
@@ -752,16 +837,28 @@ fn query_series(
         SELECT ((recorded_at_ms - ?1) / ?2), COUNT(*), COALESCE(SUM(total_tokens), 0)
         FROM usage_events
         WHERE recorded_at_ms >= ?3 AND recorded_at_ms <= ?4
+          AND (?5 IS NULL OR (identity_type = ?5 AND identity_id = ?6))
         GROUP BY 1 ORDER BY 1
         "#,
     )?;
-    let rows = statement.query_map(params![aligned_start, bucket_ms, start_at, end_at], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, i64>(2)?,
-        ))
-    })?;
+    let (identity_type, identity_id) = identity_parameters(identity);
+    let rows = statement.query_map(
+        params![
+            aligned_start,
+            bucket_ms,
+            start_at,
+            end_at,
+            identity_type,
+            identity_id
+        ],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
+    )?;
     let populated = rows
         .map(|row| row.map(|(index, requests, tokens)| (index, (requests, tokens))))
         .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
@@ -788,6 +885,7 @@ fn query_recent_events(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
+    identity: Option<&UsageIdentityFilter>,
 ) -> Result<Vec<UsageEventRow>> {
     let mut statement = connection.prepare(
         r#"
@@ -796,28 +894,39 @@ fn query_recent_events(
                cache_creation_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
         FROM usage_events
         WHERE recorded_at_ms >= ?1 AND recorded_at_ms <= ?2
-        ORDER BY recorded_at_ms DESC, id DESC LIMIT ?3
+          AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4))
+        ORDER BY recorded_at_ms DESC, id DESC LIMIT ?5
         "#,
     )?;
-    let rows = statement.query_map(params![start_at, end_at, RECENT_EVENT_LIMIT], |row| {
-        Ok(UsageEventRow {
-            id: row.get(0)?,
-            recorded_at: row.get(1)?,
-            identity_type: row.get(2)?,
-            identity_id: row.get(3)?,
-            identity_name: row.get(4)?,
-            model: row.get(5)?,
-            transport: row.get(6)?,
-            endpoint: row.get(7)?,
-            status: row.get(8)?,
-            input_tokens: row.get(9)?,
-            cached_input_tokens: row.get(10)?,
-            cache_creation_input_tokens: row.get(11)?,
-            output_tokens: row.get(12)?,
-            reasoning_output_tokens: row.get(13)?,
-            total_tokens: row.get(14)?,
-        })
-    })?;
+    let (identity_type, identity_id) = identity_parameters(identity);
+    let rows = statement.query_map(
+        params![
+            start_at,
+            end_at,
+            identity_type,
+            identity_id,
+            RECENT_EVENT_LIMIT
+        ],
+        |row| {
+            Ok(UsageEventRow {
+                id: row.get(0)?,
+                recorded_at: row.get(1)?,
+                identity_type: row.get(2)?,
+                identity_id: row.get(3)?,
+                identity_name: row.get(4)?,
+                model: row.get(5)?,
+                transport: row.get(6)?,
+                endpoint: row.get(7)?,
+                status: row.get(8)?,
+                input_tokens: row.get(9)?,
+                cached_input_tokens: row.get(10)?,
+                cache_creation_input_tokens: row.get(11)?,
+                output_tokens: row.get(12)?,
+                reasoning_output_tokens: row.get(13)?,
+                total_tokens: row.get(14)?,
+            })
+        },
+    )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -867,7 +976,7 @@ mod tests {
 
     async fn wait_for_requests(store: &UsageStore, expected: i64) -> UsageDashboard {
         for _ in 0..100 {
-            let dashboard = store.dashboard(UsageRange::Week).await.unwrap();
+            let dashboard = store.dashboard(UsageRange::Week, None).await.unwrap();
             if dashboard.totals.requests == expected {
                 return dashboard;
             }
@@ -933,12 +1042,84 @@ mod tests {
         };
         store.insert(event.clone()).await.unwrap();
         store.insert(event).await.unwrap();
-        let dashboard = store.dashboard(UsageRange::Week).await.unwrap();
+        let dashboard = store.dashboard(UsageRange::Week, None).await.unwrap();
         assert_eq!(dashboard.totals.requests, 1);
         assert_eq!(dashboard.totals.total_tokens, 15);
         assert_eq!(dashboard.models[0].model, "gpt-5.6-sol");
         assert_eq!(dashboard.identities[0].identity_name, "laptop");
         assert_eq!(dashboard.recent_events[0].transport, "http");
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn filters_every_dashboard_view_by_identity() {
+        let (store, path) = temporary_store();
+        let now = current_time_ms();
+        for event in [
+            UsageEvent {
+                recorded_at_ms: now,
+                identity_type: "api_key".into(),
+                identity_id: "key-1".into(),
+                identity_name: "laptop".into(),
+                model: "gpt-5.6-sol".into(),
+                transport: "http".into(),
+                endpoint: "/v1/responses".into(),
+                status: "completed".into(),
+                response_id: "resp_filter_key".into(),
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                cache_creation_input_tokens: 0,
+                output_tokens: 5,
+                reasoning_output_tokens: 1,
+                total_tokens: 15,
+            },
+            UsageEvent {
+                recorded_at_ms: now,
+                identity_type: "auth_proxy".into(),
+                identity_id: "account-1".into(),
+                identity_name: "production".into(),
+                model: "gpt-5.6-terra".into(),
+                transport: "websocket".into(),
+                endpoint: "/v1/responses".into(),
+                status: "completed".into(),
+                response_id: "resp_filter_account".into(),
+                input_tokens: 60,
+                cached_input_tokens: 20,
+                cache_creation_input_tokens: 4,
+                output_tokens: 30,
+                reasoning_output_tokens: 12,
+                total_tokens: 90,
+            },
+        ] {
+            store.insert(event).await.unwrap();
+        }
+
+        let filter = UsageIdentityFilter::parse("auth_proxy", "account-1").unwrap();
+        let dashboard = store
+            .dashboard(UsageRange::Week, Some(filter))
+            .await
+            .unwrap();
+
+        assert_eq!(dashboard.totals.requests, 1);
+        assert_eq!(dashboard.totals.total_tokens, 90);
+        assert_eq!(dashboard.models.len(), 1);
+        assert_eq!(dashboard.models[0].model, "gpt-5.6-terra");
+        assert_eq!(dashboard.identities.len(), 1);
+        assert_eq!(dashboard.identities[0].identity_id, "account-1");
+        assert_eq!(dashboard.recent_events.len(), 1);
+        assert_eq!(dashboard.recent_events[0].identity_type, "auth_proxy");
+        assert_eq!(
+            dashboard
+                .series
+                .iter()
+                .map(|point| point.requests)
+                .sum::<i64>(),
+            1
+        );
+
+        assert!(UsageIdentityFilter::parse("unknown", "account-1").is_none());
+        assert!(UsageIdentityFilter::parse("api_key", "").is_none());
         drop(store);
         remove_temporary_store(&path);
     }
