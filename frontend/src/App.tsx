@@ -1343,12 +1343,12 @@ function UsageCard({
 								onChange={(event) => onIdentityChange(parseUsageIdentityValue(event.target.value))}
 								value={usageIdentityValue(identity)}
 							>
-								<option value="">所有 API Keys 与下游账户</option>
+								<option value="">所有</option>
 								{apiKeys.length > 0 ? (
 									<optgroup label="API Keys">
 										{apiKeys.map((entry) => (
 											<option key={entry.id} value={usageIdentityValue({ identityType: "api_key", identityId: entry.id })}>
-												{entry.name} · {maskApiKey(entry.key)}
+												{entry.name}
 											</option>
 										))}
 									</optgroup>
@@ -1357,7 +1357,7 @@ function UsageCard({
 									<optgroup label="下游 account id">
 										{accounts.map((entry) => (
 											<option key={entry.id} value={usageIdentityValue({ identityType: "auth_proxy", identityId: entry.id })}>
-												{entry.name} · {entry.accountId}
+												{entry.name}
 											</option>
 										))}
 									</optgroup>
@@ -1392,19 +1392,6 @@ function UsageCard({
 				}
 				title="用量明细"
 			/>
-
-			<div className="usage-filter-summary" aria-live="polite">
-				<span className={identity ? "is-filtered" : undefined} aria-hidden="true" />
-				<div>
-					<strong>{usageIdentityDescription(identity, apiKeys, accounts)}</strong>
-					<small>汇总、趋势、模型分布与请求明细均使用当前筛选条件</small>
-				</div>
-				{identity ? (
-					<button className="button button-ghost" disabled={loading} onClick={() => onIdentityChange(null)} type="button">
-						清除筛选
-					</button>
-				) : null}
-			</div>
 
 			{error ? (
 				<div className="inline-alert error-alert usage-alert" role="alert">
@@ -2516,22 +2503,6 @@ function sameUsageIdentity(
 			left.identityType === right.identityType &&
 			left.identityId === right.identityId)
 	);
-}
-
-function usageIdentityDescription(
-	identity: UsageIdentityFilter | null,
-	apiKeys: ClientApiKey[],
-	accounts: AuthProxyAccount[],
-): string {
-	if (!identity) return "所有调用身份";
-	if (identity.identityType === "api_key") {
-		const entry = apiKeys.find((candidate) => candidate.id === identity.identityId);
-		return entry ? `API Key：${entry.name}` : "已筛选 API Key";
-	}
-	const entry = accounts.find((candidate) => candidate.id === identity.identityId);
-	return entry
-		? `下游账户：${entry.name} · ${entry.accountId}`
-		: "已筛选下游账户";
 }
 
 function errorMessage(error: unknown, fallback: string): string {

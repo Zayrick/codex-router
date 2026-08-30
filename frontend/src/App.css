@@ -1339,59 +1339,6 @@
 	box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
-.usage-filter-summary {
-	display: grid;
-	grid-template-columns: auto minmax(0, 1fr) auto;
-	align-items: center;
-	gap: 0.7rem;
-	margin: 0 0 0.85rem;
-	padding: 0.72rem 0.78rem;
-	background: var(--surface-subtle);
-	border: 1px solid var(--border);
-	border-radius: 0.62rem;
-}
-
-.usage-filter-summary > span {
-	display: block;
-	width: 0.48rem;
-	height: 0.48rem;
-	background: var(--text-tertiary);
-	border-radius: 50%;
-}
-
-.usage-filter-summary > span.is-filtered {
-	background: var(--success);
-	box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 12%, transparent);
-}
-
-.usage-filter-summary > div {
-	display: grid;
-	min-width: 0;
-	gap: 0.16rem;
-}
-
-.usage-filter-summary strong,
-.usage-filter-summary small {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.usage-filter-summary strong {
-	font-size: 0.72rem;
-}
-
-.usage-filter-summary small {
-	color: var(--text-tertiary);
-	font-size: 0.62rem;
-}
-
-.usage-filter-summary .button {
-	min-height: 2rem;
-	padding: 0.4rem 0.55rem;
-	font-size: 0.7rem;
-}
-
 .usage-alert {
 	margin: 0 0 0.8rem;
 }
@@ -2478,15 +2425,6 @@ td strong {
 	.usage-card-actions .icon-button {
 		align-self: flex-end;
 		flex: 0 0 auto;
-	}
-
-	.usage-filter-summary {
-		grid-template-columns: auto minmax(0, 1fr);
-	}
-
-	.usage-filter-summary .button {
-		grid-column: 1 / -1;
-		width: 100%;
 	}
 
 	.usage-summary-grid {
