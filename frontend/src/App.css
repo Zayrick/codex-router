@@ -556,28 +556,55 @@
 }
 
 .sidebar-service-state {
+	position: relative;
 	color: var(--text-secondary);
 }
 
-.service-status-dot {
-	display: block;
-	width: 0.48rem;
-	height: 0.48rem;
-	flex: 0 0 auto;
-	background: var(--success);
-	border-radius: 50%;
-	box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 12%, transparent);
+.sidebar-service-state .sidebar-footer-copy {
+	flex: 1 1 auto;
+	overflow: visible;
 }
 
 .sidebar-footer-copy strong {
+	overflow: hidden;
 	color: var(--text);
 	font-size: 0.72rem;
 	font-weight: 680;
+	text-overflow: ellipsis;
 }
 
 .sidebar-footer-copy small {
 	color: var(--text-tertiary);
 	font-size: 0.62rem;
+}
+
+.sidebar-account-plan {
+	display: flex;
+	min-width: 0;
+	align-items: center;
+	gap: 0.15rem;
+}
+
+.sidebar-plan-info .plan-info-button {
+	width: 1rem;
+	height: 1rem;
+}
+
+.sidebar-plan-info .plan-info-button svg {
+	width: 0.72rem;
+	height: 0.72rem;
+}
+
+.sidebar-plan-info .plan-tooltip {
+	top: auto;
+	bottom: calc(100% + 0.5rem);
+	left: 0;
+	width: calc(var(--sidebar-width) - 1.4rem);
+}
+
+.sidebar-plan-info .plan-tooltip-row {
+	grid-template-columns: 5rem minmax(0, 1fr);
+	gap: 0.5rem;
 }
 
 .sidebar-logout {
@@ -674,32 +701,6 @@
 	margin: 1.05rem 0 0;
 	color: var(--text-secondary);
 	font-size: 0.88rem;
-}
-
-.account-state-pill {
-	display: inline-flex;
-	align-items: center;
-	margin-bottom: 0.2rem;
-	padding: 0;
-	color: var(--text-secondary);
-	background: transparent;
-	border: 0;
-	font-size: 0.7rem;
-	font-weight: 650;
-	white-space: nowrap;
-}
-
-.account-state-pill > span {
-	display: block;
-	width: 0.42rem;
-	height: 0.42rem;
-	margin-right: 0.42rem;
-	background: var(--warning);
-	border-radius: 50%;
-}
-
-.account-state-pill.connected > span {
-	background: var(--success);
 }
 
 .dashboard-summary {
@@ -1032,6 +1033,10 @@
 	margin-bottom: 0.8rem;
 }
 
+.account-summary > .card-header:last-child {
+	margin-bottom: 0;
+}
+
 .account-header-actions {
 	display: flex;
 	align-items: center;
@@ -1050,47 +1055,46 @@
 	height: 1rem;
 }
 
-.account-profile {
-	display: flex;
-	min-width: 0;
-	flex-direction: column;
-	gap: 0.2rem;
-	padding: 0.1rem 0;
-}
-
-.account-identity-row {
-	position: relative;
+.account-device-header-actions {
 	display: flex;
 	min-width: 0;
 	align-items: center;
-	gap: 0.5rem;
 	flex-wrap: wrap;
+	justify-content: flex-end;
 }
 
-.account-email {
+.account-device-code {
+	display: inline-flex;
 	min-width: 0;
-	max-width: 100%;
+	align-items: center;
+	gap: 0.4rem;
+}
+
+.account-device-code > span {
+	color: var(--text-tertiary);
+	font-size: 0.68rem;
+}
+
+.account-device-code code {
 	overflow-wrap: anywhere;
 	color: var(--text);
-	font-size: clamp(1.05rem, 2.2vw, 1.22rem);
-	font-weight: 720;
-	letter-spacing: -0.025em;
-	line-height: 1.35;
+	font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+	font-size: 0.82rem;
+	font-weight: 760;
+	letter-spacing: 0.08em;
 }
 
-.plan-badge {
+.account-device-loading {
 	display: inline-flex;
-	min-height: 1.55rem;
 	align-items: center;
-	padding: 0.25rem 0.58rem;
-	color: var(--primary);
-	background: var(--primary-soft);
-	border: 1px solid var(--primary-border);
-	border-radius: 999px;
-	font-size: 0.68rem;
-	font-weight: 750;
-	line-height: 1;
-	white-space: nowrap;
+	gap: 0.45rem;
+	color: var(--text-secondary);
+	font-size: 0.75rem;
+}
+
+.account-device-loading .spinner {
+	width: 0.9rem;
+	height: 0.9rem;
 }
 
 .plan-info {
@@ -1114,11 +1118,6 @@
 		color 160ms ease,
 		background-color 160ms ease,
 		transform 140ms var(--ease-out);
-}
-
-.plan-info-button .icon {
-	width: 1rem;
-	height: 1rem;
 }
 
 .plan-info-button:active {
@@ -1180,39 +1179,11 @@
 	text-align: right;
 }
 
-.token-expiry,
 .device-code-expiry {
 	margin: 0.55rem 0 0;
 	color: var(--text-tertiary);
 	font-size: 0.71rem;
 	line-height: 1.5;
-}
-
-.token-expiry time {
-	color: var(--text-secondary);
-	font-variant-numeric: tabular-nums;
-}
-
-.account-connect {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto;
-	align-items: center;
-	gap: 1.5rem;
-	min-height: 4.75rem;
-	padding: 0.1rem 0;
-}
-
-.account-device {
-	display: flex;
-	min-width: 0;
-	flex-direction: column;
-	justify-content: center;
-	gap: 0.75rem;
-}
-
-.account-device .center-state,
-.account-device .inline-alert {
-	margin: 0;
 }
 
 .device-code-inline {
@@ -1241,15 +1212,6 @@
 
 .device-code-expiry {
 	margin-top: 0;
-}
-
-.account-login-action {
-	display: flex;
-	align-items: flex-end;
-}
-
-.account-login-action .button {
-	min-width: 10rem;
 }
 
 .account-quota-section {
@@ -2355,22 +2317,14 @@ td strong {
 		height: 5rem;
 	}
 
-	.account-connect {
-		grid-template-columns: minmax(0, 1fr);
-		gap: 1rem;
+	.account-card-disconnected .account-summary > .card-header {
+		align-items: flex-start;
+		flex-direction: column;
 	}
 
-	.account-profile,
-	.account-device {
-		min-height: 4rem;
-	}
-
-	.account-login-action {
-		align-items: stretch;
-	}
-
-	.account-login-action .button {
+	.account-device-header-actions {
 		width: 100%;
+		justify-content: flex-start;
 	}
 
 	.table-wrap {
@@ -2537,10 +2491,6 @@ td strong {
 
 	.usage-summary-grid {
 		grid-template-columns: minmax(0, 1fr);
-	}
-
-	.plan-tooltip {
-		width: min(19rem, calc(100vw - 4.5rem));
 	}
 
 	.editor-tools {

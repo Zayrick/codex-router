@@ -772,7 +772,9 @@ function App() {
 			activePage={activePage}
 			activeProxyAccounts={authProxyAccounts.filter((entry) => entry.enabled).length}
 			basePath={basePath ?? ""}
-			mainAccountConnected={oauth !== null}
+			mainAccount={oauth}
+			mainAccountSubscription={subscription}
+			now={now}
 			onLogout={() => void handleLogout()}
 			onNavigate={navigateManagementPage}
 			requestCount={overviewUsage?.totals.requests ?? null}
@@ -1165,15 +1167,6 @@ function AccountCard({
 	onRetry,
 }: AccountCardProps) {
 	const info = isSubscriptionInfo(subscription) ? subscription : null;
-	const credits = info?.rateLimitResetCredits;
-	const availableCredits = credits?.availableCount ?? null;
-	const applicableCredits = credits?.applicableAvailableCount ?? null;
-	const resetCredits =
-		availableCredits === null
-			? "暂无数据"
-			: applicableCredits === null
-				? String(Math.max(0, availableCredits))
-				: `${Math.max(0, availableCredits)} · 可用 ${Math.max(0, applicableCredits)}`;
 
 	return (
 		<section
@@ -1209,133 +1202,60 @@ function AccountCard({
 									{oauthRemoving ? "退出中…" : "退出登录"}
 								</button>
 							</div>
-						) : undefined
-					}
-					title="Codex 账户"
-				/>
-
-				{oauth ? (
-					<div className="account-profile">
-						<div className="account-identity-row">
-							<strong className="account-email">{oauth.email ?? "未提供邮箱"}</strong>
-							<span className="plan-badge">{formatPlanType(subscription?.planType)}</span>
-							<span className="plan-info">
+						) : deviceAuthorization ? (
+							<div className="account-header-actions account-device-header-actions">
+								<span className="account-device-code">
+									<span>设备码</span>
+									<code>{deviceAuthorization.userCode}</code>
+								</span>
 								<button
-									aria-describedby="account-plan-details"
-									aria-label="查看套餐详情"
-									className="plan-info-button"
+									className="button button-secondary account-header-button"
+									onClick={() => onCopy(deviceAuthorization.userCode, "设备码")}
 									type="button"
 								>
-									<Icon name="info" />
+									<Icon name="copy" />
+									复制
 								</button>
-								<span className="plan-tooltip" id="account-plan-details" role="tooltip">
-									<strong>套餐详情</strong>
-									<span className="plan-tooltip-row">
-										<span>开始时间</span>
-										<b>
-											{validTimestamp(subscription?.subscriptionActiveStart)
-												? formatDate(subscription.subscriptionActiveStart)
-												: "暂无数据"}
-										</b>
-									</span>
-									<span className="plan-tooltip-row">
-										<span>到期时间</span>
-										<b
-											className={
-												validTimestamp(subscription?.subscriptionActiveUntil) &&
-												subscription.subscriptionActiveUntil <= now
-													? "danger-text"
-													: undefined
-											}
-										>
-											{validTimestamp(subscription?.subscriptionActiveUntil)
-												? formatDate(subscription.subscriptionActiveUntil)
-												: "暂无数据"}
-										</b>
-									</span>
-									<span className="plan-tooltip-row">
-										<span>重置积分</span>
-										<b>{resetCredits}</b>
-									</span>
-									<span className="plan-tooltip-row">
-										<span>用量更新时间</span>
-										<b>
-											{validTimestamp(info?.fetchedAt)
-												? formatDate(info.fetchedAt)
-												: "暂无数据"}
-										</b>
-									</span>
-								</span>
-							</span>
-						</div>
-						<p className="token-expiry">
-							Token 到期时间：
-							{validTimestamp(oauth.expiresAt) ? (
-								<time dateTime={isoDate(oauth.expiresAt)}>{formatDate(oauth.expiresAt)}</time>
-							) : (
-								"未知"
-							)}
-						</p>
-					</div>
-				) : (
-					<div className="account-connect">
-						<div className="account-device">
-							{deviceLoading ? (
-								<div className="center-state" role="status">
-									<span className="spinner" aria-hidden="true" />
-									<span>正在获取登录码…</span>
-								</div>
-							) : null}
-							{deviceAuthorization ? (
-								<>
-									<div className="device-code-inline">
-										<code>{deviceAuthorization.userCode}</code>
-										<button
-											className="button button-secondary device-copy-button"
-											onClick={() => onCopy(deviceAuthorization.userCode, "登录码")}
-											type="button"
-										>
-											<Icon name="copy" />
-											复制
-										</button>
-									</div>
-									<small className="device-code-expiry">
-										设备码将在 {Math.max(1, Math.floor(deviceAuthorization.expiresIn / 60))} 分钟后失效
-									</small>
-								</>
-							) : null}
-							{deviceError ? (
-								<div className="inline-alert error-alert" role="alert">
-									<Icon name="alert" />
-									<span>{deviceError}</span>
-								</div>
-							) : null}
-						</div>
-						<div className="account-login-action">
-							{deviceAuthorization ? (
 								<a
-									className="button button-primary"
+									className="button button-secondary account-header-button"
 									href={deviceAuthorization.verificationUri}
 									rel="noopener noreferrer"
 									target="_blank"
 								>
-									打开登录页面
 									<Icon name="external" />
+									前往网页
 								</a>
-							) : deviceError ? (
-								<button className="button button-secondary" onClick={onRetry} type="button">
-									<Icon name="refresh" />
-									重新获取设备码
-								</button>
-							) : (
-								<button className="button button-primary" disabled type="button">
-									<span className="spinner" aria-hidden="true" />
-									正在准备登录页面…
-								</button>
-							)}
-						</div>
+							</div>
+						) : deviceError ? (
+							<button
+								className="button button-secondary account-header-button"
+								onClick={onRetry}
+								type="button"
+							>
+								<Icon name="refresh" />
+								重新获取设备码
+							</button>
+						) : (
+							<span className="account-device-loading" role="status">
+								<span className="spinner" aria-hidden="true" />
+								{deviceLoading ? "正在获取设备码…" : "正在准备设备码…"}
+							</span>
+						)
+					}
+					title="Codex 账户"
+				/>
+
+				{!oauth && deviceAuthorization ? (
+					<small className="device-code-expiry">
+						设备码将在 {Math.max(1, Math.floor(deviceAuthorization.expiresIn / 60))} 分钟后失效
+					</small>
+				) : null}
+				{!oauth && deviceError ? (
+					<div className="inline-alert error-alert" role="alert">
+						<Icon name="alert" />
+						<span>{deviceError}</span>
 					</div>
-				)}
+				) : null}
 			</div>
 
 			{oauth ? (
@@ -2478,7 +2398,6 @@ type IconName =
 	| "external"
 	| "eye"
 	| "eye-off"
-	| "info"
 	| "login"
 	| "logout"
 	| "plus"
@@ -2520,8 +2439,6 @@ function iconPaths(name: IconName): ReactNode {
 			return <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="2.5" /></>;
 		case "eye-off":
 			return <><path d="m3 3 18 18" /><path d="M10.6 6.15A10.6 10.6 0 0 1 12 6c6.5 0 10 6 10 6a16.8 16.8 0 0 1-3 3.8" /><path d="M6.6 6.6C3.5 8.4 2 12 2 12s3.5 6 10 6a10.7 10.7 0 0 0 3.4-.55" /></>;
-		case "info":
-			return <><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 8h.01" /></>;
 		case "login":
 			return <><path d="m8 17-5-5 5-5" /><path d="M3 12h12" /><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /></>;
 		case "logout":

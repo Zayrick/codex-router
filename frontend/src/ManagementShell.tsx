@@ -4,6 +4,11 @@ import {
 	type MouseEvent,
 	type ReactNode,
 } from "react";
+import type {
+	OAuthStatus,
+	SubscriptionInfo,
+	SubscriptionMetadata,
+} from "./admin-api";
 
 export type ManagementPage =
 	| "overview"
@@ -18,6 +23,7 @@ type ShellIconName =
 	| "key"
 	| "accounts"
 	| "account"
+	| "info"
 	| "logout"
 	| "menu";
 
@@ -27,7 +33,9 @@ interface ManagementShellProps {
 	activeProxyAccounts: number;
 	basePath: string;
 	children: ReactNode;
-	mainAccountConnected: boolean;
+	mainAccount: OAuthStatus | null;
+	mainAccountSubscription: SubscriptionInfo | SubscriptionMetadata | null;
+	now: number;
 	onLogout: () => void;
 	onNavigate: (page: ManagementPage) => void;
 	requestCount: number | null;
@@ -65,7 +73,9 @@ export default function ManagementShell({
 	activeProxyAccounts,
 	basePath,
 	children,
-	mainAccountConnected,
+	mainAccount,
+	mainAccountSubscription,
+	now,
 	onLogout,
 	onNavigate,
 	requestCount,
@@ -75,6 +85,7 @@ export default function ManagementShell({
 }: ManagementShellProps) {
 	const [mobileOpen, setMobileOpen] = useState(false);
 	const pageCopy = PAGE_COPY[activePage];
+	const mainAccountConnected = mainAccount !== null;
 
 	useEffect(() => {
 		if (!mobileOpen) return;
@@ -144,11 +155,23 @@ export default function ManagementShell({
 				</nav>
 
 				<div className="sidebar-footer">
-					<div className="sidebar-service-state" title="管理服务已连接">
-						<span className="service-status-dot" aria-hidden="true" />
+					<div className="sidebar-service-state">
 						<span className="sidebar-footer-copy">
-							<strong>管理服务</strong>
-							<small>已连接</small>
+							<strong title={mainAccount?.email ?? undefined}>
+								{mainAccount ? mainAccount.email ?? "未提供邮箱" : "尚未登陆"}
+							</strong>
+							{mainAccount ? (
+								<span className="sidebar-account-plan">
+									<small>{formatPlanType(mainAccountSubscription?.planType)}</small>
+									<AccountPlanInfo
+										now={now}
+										oauth={mainAccount}
+										subscription={mainAccountSubscription}
+									/>
+								</span>
+							) : (
+								<small>前往主帐户页面登陆</small>
+							)}
 						</span>
 					</div>
 					<button className="sidebar-logout" onClick={onLogout} type="button" title="退出">
@@ -178,10 +201,6 @@ export default function ManagementShell({
 								<p className="dashboard-description">{pageCopy.description}</p>
 							</div>
 						</div>
-						<span className={`account-state-pill ${mainAccountConnected ? "connected" : "pending"}`}>
-							<span aria-hidden="true" />
-							{mainAccountConnected ? "主账户已连接" : "等待主账户登录"}
-						</span>
 					</section>
 
 					{activePage === "overview" ? (
@@ -197,6 +216,83 @@ export default function ManagementShell({
 				</main>
 			</section>
 		</div>
+	);
+}
+
+function AccountPlanInfo({
+	now,
+	oauth,
+	subscription,
+}: {
+	now: number;
+	oauth: OAuthStatus;
+	subscription: SubscriptionInfo | SubscriptionMetadata | null;
+}) {
+	const info = isSubscriptionInfo(subscription) ? subscription : null;
+	const credits = info?.rateLimitResetCredits;
+	const availableCredits = credits?.availableCount ?? null;
+	const applicableCredits = credits?.applicableAvailableCount ?? null;
+	const resetCredits =
+		availableCredits === null
+			? "暂无数据"
+			: applicableCredits === null
+				? String(Math.max(0, availableCredits))
+				: `${Math.max(0, availableCredits)} · 可用 ${Math.max(0, applicableCredits)}`;
+
+	return (
+		<span className="plan-info sidebar-plan-info">
+			<button
+				aria-describedby="sidebar-account-plan-details"
+				aria-label="查看套餐详情"
+				className="plan-info-button"
+				type="button"
+			>
+				<ShellIcon name="info" />
+			</button>
+			<span
+				className="plan-tooltip"
+				id="sidebar-account-plan-details"
+				role="tooltip"
+			>
+				<strong>套餐详情</strong>
+				<PlanTooltipRow
+					label="开始时间"
+					value={formatTimestamp(subscription?.subscriptionActiveStart)}
+				/>
+				<PlanTooltipRow
+					danger={timestampExpired(subscription?.subscriptionActiveUntil, now)}
+					label="到期时间"
+					value={formatTimestamp(subscription?.subscriptionActiveUntil)}
+				/>
+				<PlanTooltipRow
+					danger={timestampExpired(oauth.expiresAt, now)}
+					label="Token 到期时间"
+					value={formatTimestamp(oauth.expiresAt, "未知")}
+				/>
+				<PlanTooltipRow label="重置积分" value={resetCredits} />
+				<PlanTooltipRow
+					label="用量更新时间"
+					value={formatTimestamp(info?.fetchedAt)}
+				/>
+			</span>
+		</span>
+	);
+}
+
+function PlanTooltipRow({
+	danger = false,
+	label,
+	value,
+}: {
+	danger?: boolean;
+	label: string;
+	value: string;
+}) {
+	return (
+		<span className="plan-tooltip-row">
+			<span>{label}</span>
+			<b className={danger ? "danger-text" : undefined}>{value}</b>
+		</span>
 	);
 }
 
@@ -292,9 +388,56 @@ function shellIconPaths(name: ShellIconName): ReactNode {
 			return <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>;
 		case "account":
 			return <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>;
+		case "info":
+			return <><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 8h.01" /></>;
 		case "logout":
 			return <><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></>;
 		case "menu":
 			return <><path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" /></>;
+	}
+}
+
+function isSubscriptionInfo(
+	value: SubscriptionInfo | SubscriptionMetadata | null,
+): value is SubscriptionInfo {
+	return value !== null && "windows" in value;
+}
+
+function validTimestamp(value: number | null | undefined): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function timestampExpired(value: number | null | undefined, now: number): boolean {
+	return validTimestamp(value) && value <= now;
+}
+
+function formatTimestamp(
+	value: number | null | undefined,
+	fallback = "暂无数据",
+): string {
+	if (!validTimestamp(value)) return fallback;
+	return new Intl.DateTimeFormat("zh-CN", {
+		dateStyle: "medium",
+		timeStyle: "short",
+	}).format(new Date(value));
+}
+
+function formatPlanType(value: string | null | undefined): string {
+	const normalized = value?.trim().toLowerCase() ?? "";
+	switch (normalized) {
+		case "pro":
+			return "Pro";
+		case "prolite":
+		case "pro-lite":
+		case "pro_lite":
+			return "Pro Lite";
+		case "plus":
+			return "Plus";
+		case "team":
+			return "Team";
+		case "free":
+			return "Free";
+		default:
+			return value || "未知";
 	}
 }
