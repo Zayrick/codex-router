@@ -1012,7 +1012,7 @@
 }
 
 .usage-events-table {
-	min-width: 57rem;
+	min-width: 68rem;
 	table-layout: auto;
 }
 
@@ -1044,8 +1044,16 @@
 	font-size: 0.65rem;
 }
 
+.usage-events-table .usage-endpoint {
+	display: block;
+	max-width: 15rem;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .usage-events-table time,
-.usage-events-table td:nth-child(n+5) {
+.usage-events-table td:nth-child(n+6) {
 	font-variant-numeric: tabular-nums;
 }
 
@@ -1628,6 +1636,12 @@ td strong {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.usage-events-table td code.usage-endpoint {
+		max-width: none;
+		overflow-wrap: anywhere;
+		white-space: normal;
 	}
 
 	thead {

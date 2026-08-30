@@ -1443,6 +1443,7 @@ function UsageCard({
 										<th scope="col">身份</th>
 										<th scope="col">模型</th>
 										<th scope="col">传输</th>
+										<th scope="col">请求路径</th>
 										<th scope="col">输入 / 缓存读 / 写</th>
 										<th scope="col">输出 / 推理</th>
 										<th scope="col">总量</th>
@@ -1463,6 +1464,11 @@ function UsageCard({
 												<span className={`usage-transport usage-transport-${event.transport}`}>
 													{event.transport === "websocket" ? "WS" : "HTTP"}
 												</span>
+											</td>
+											<td data-label="请求路径">
+												<code className="usage-endpoint" title={event.endpoint}>
+													{event.endpoint}
+												</code>
 											</td>
 											<td data-label="输入 / 缓存读 / 写">
 												{formatTokens(event.inputTokens)} / {formatTokens(event.cachedInputTokens)} / {formatTokens(event.cacheCreationInputTokens)}
