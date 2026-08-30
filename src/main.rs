@@ -2,11 +2,18 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
+#[cfg(debug_assertions)]
+mod dev;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let Some(config_path) = config_path()? else {
         return Ok(());
     };
+    #[cfg(debug_assertions)]
+    if dev::should_supervise() {
+        return dev::run().await;
+    }
     codex_router::server::run(config_path).await
 }
 

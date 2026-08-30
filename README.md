@@ -2,7 +2,7 @@
 
 Codex Router 是一个独立运行的 Rust API 网关，把 ChatGPT Codex 能力转换或映射为 OpenAI、
 Anthropic 与 Gemini 风格接口。它从原 Cloudflare Worker 项目迁移而来，但运行时不再依赖
-Cloudflare、Workers KV、Wrangler、Wasm、Node.js 或前端构建链。
+Cloudflare、Workers KV、Wrangler、Wasm、Node.js 或外部静态资源目录。
 
 现有协议转换、请求策略、SSE 呈现、OAuth、API Key 与额度监控逻辑均从参考项目复用并继续由
 原有测试覆盖。HTTP、WebSocket、定时任务和持久化已改为 Tokio、Axum、Reqwest 与本地 TOML
@@ -16,21 +16,40 @@ Cloudflare、Workers KV、Wrangler、Wasm、Node.js 或前端构建链。
 - `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket relay；
 - Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
 - OAuth 设备授权、下游 API Key、代理账户及代理账户独立 OAuth 的管理 JSON API；
+- 迁移自 Worker 的 React 管理页面与公开用量状态页面；
 - 后台 OAuth 刷新、用量采集、reset watch、Bark 与钉钉通知；
 - 原生流式正文和双向 WebSocket bridge，不依赖 Worker `ReadableStream`。
 
-前端暂未实现：`GET /status/usage` 与精确的管理页路径返回空 `404`。公开用量数据
-`GET /status/usage/data` 和全部管理 JSON API 保留。完整契约见 [API 文档](docs/api.md)，旧
-Worker 配置与 KV 的字段映射见 [配置与迁移](docs/configuration.md)。
+`GET /status/usage` 提供公开用量页面；管理页面只在精确的
+`/<admin.path>/admin` 路径提供，附近路径不会暴露页面。发行构建会把带指纹的 React 资源直接
+嵌入 Rust 二进制，部署时不需要 Node.js、pnpm 或 `frontend` 目录。完整契约见
+[API 文档](docs/api.md)，旧 Worker 配置与 KV 的字段映射见
+[配置与迁移](docs/configuration.md)。
 
 ## 运行
 
-要求 Rust 1.97 或更高版本。
+要求 Rust 1.97 或更高版本。第一次从源码构建还需要 Node.js 22.12 或更高版本及 pnpm 11；它们只
+用于编译 React 前端，不是发行二进制的运行时依赖。
 
 ```sh
 cp config.example.toml config.toml
+cargo run -- --config config.toml
+```
+
+开发模式下这一个命令会同时启动 Vite 和 Rust 服务。修改 React/CSS 后浏览器通过 HMR 更新；修改
+Rust 源码后会自动执行增量编译，并在编译成功后重启后端。请通过 Rust 服务访问页面：
+
+- `http://127.0.0.1:8787/status/usage`
+- `http://127.0.0.1:8787/<admin.path>/admin`
+
+Vite 的 `127.0.0.1:5173` 端口只提供开发资源。生产运行使用发行构建：
+
+```sh
 cargo run --release -- --config config.toml
 ```
+
+`cargo build --release` 同样会自动安装、检查并构建前端，然后把产物嵌入
+`target/release/codex-router`。构建完成后，单独复制该二进制和配置文件即可运行。
 
 不传 `--config` 时默认读取当前目录的 `config.toml`。配置只从该文件和命令行路径读取，不读取
 业务环境变量。
@@ -87,4 +106,5 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
 cargo fmt --all -- --check
 cargo test --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
+(cd frontend && pnpm typecheck && pnpm lint && pnpm build)
 ```

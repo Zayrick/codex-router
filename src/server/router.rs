@@ -10,16 +10,16 @@ use url::Url;
 
 use crate::{
     application::{
-        StatusRoute, is_admin_path_family, is_known_api_path, match_admin_route, match_api_route,
-        match_status_route,
+        AdminRoute, StatusRoute, is_admin_path_family, is_known_api_path, match_admin_route,
+        match_api_route, match_status_route,
     },
     auth::{ApiKeyRepository, OAuthRepository, client_token},
     upstream::relay::is_backend_api_path,
 };
 
 use super::{
-    admin::handle_admin, api::handle_api, oauth::current_time_ms, relay::handle_relay, response,
-    state::AppState, status::usage_snapshot,
+    admin::handle_admin, api::handle_api, frontend, oauth::current_time_ms, relay::handle_relay,
+    response, state::AppState, status::usage_snapshot,
 };
 
 pub fn build(state: AppState) -> Router {
@@ -48,7 +48,14 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("websocket"));
 
+    if let Some(response) = frontend::asset_response(request.method(), &path) {
+        return response;
+    }
+
     let output = if let Some(matched) = match_admin_route(&method, &path, &config.admin.path) {
+        if matched.route == AdminRoute::Page {
+            return frontend::application_page();
+        }
         handle_admin(matched, request, client_url, &config, &state).await
     } else if is_admin_path_family(&path, &config.admin.path) {
         response::empty(404)
@@ -77,7 +84,7 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
         }
     } else if let Some(route) = match_status_route(&method, &path) {
         match route {
-            StatusRoute::Page => response::empty(404),
+            StatusRoute::Page => return frontend::application_page(),
             StatusRoute::Usage => usage_snapshot(&state).await,
         }
     } else if matches!(path.as_str(), "/status/usage" | "/status/usage/data") {
@@ -238,6 +245,33 @@ mod tests {
         let body = to_bytes(counted.into_body(), 1024 * 1024).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(payload["input_tokens"].as_u64().is_some());
+
+        for page in ["/status/usage", "/secret/admin"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(page).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().get("content-type").unwrap(),
+                "text/html; charset=utf-8"
+            );
+            assert!(
+                response
+                    .headers()
+                    .get("content-security-policy")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .contains("nonce-")
+            );
+            let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+            assert!(
+                body.windows(b"/@vite/client".len())
+                    .any(|value| value == b"/@vite/client")
+            );
+        }
 
         let status = app
             .oneshot(

@@ -1,0 +1,29 @@
+{
+	"name": "codex-router-web",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"packageManager": "pnpm@11.18.0",
+	"engines": {
+		"node": ">=22.12"
+	},
+	"scripts": {
+		"build": "tsc -b tsconfig.app.json tsconfig.node.json && vite build",
+		"dev": "vite",
+		"lint": "oxlint",
+		"typecheck": "tsc -b tsconfig.app.json tsconfig.node.json"
+	},
+	"dependencies": {
+		"react": "^19.2.8",
+		"react-dom": "^19.2.8"
+	},
+	"devDependencies": {
+		"@types/node": "^26.1.2",
+		"@types/react": "^19.2.17",
+		"@types/react-dom": "^19.2.3",
+		"@vitejs/plugin-react": "^6.0.4",
+		"oxlint": "^1.75.0",
+		"typescript": "~6.0.2",
+		"vite": "^8.2.0"
+	}
+}

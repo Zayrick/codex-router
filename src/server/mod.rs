@@ -5,6 +5,7 @@ mod api;
 mod body;
 mod codex;
 pub mod config;
+mod frontend;
 mod oauth;
 mod provider_error;
 mod relay;

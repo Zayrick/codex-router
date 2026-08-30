@@ -18,7 +18,7 @@
 | `AUTH_KV` 的代理 OAuth | `state.auth_proxy_oauth`，明文 |
 | `AUTH_KV` 的用量快照 | `state.usage`，明文 |
 | Cron Trigger | 进程内定时任务，周期为 `server.maintenance_interval_seconds` |
-| `ASSETS` binding | 已删除；当前不提供前端资源 |
+| `ASSETS` binding | 已删除；React 资源在发行构建时嵌入 Rust 二进制 |
 
 旧 KV 中的数据是 AES-GCM 密文，当前服务不会读取 KV 或旧 envelope。迁移时可通过当前管理 API
 重新完成 OAuth 设备授权并重新创建 API Key/代理账户，也可以在可信离线环境中解密旧数据后，按

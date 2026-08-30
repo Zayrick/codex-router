@@ -181,8 +181,9 @@ URL 或自定义子协议。
   header；
 - 公开协议 API 过滤客户端凭据、Cookie 和账户 ID；透明转发仅在 `/backend-api` 路径族按许可
   配置处理认证 header，其他路径保持原始凭据；
-- 最终响应的 `Content-Type` 为 `text/html` 或 `application/xhtml+xml` 时保留状态与无关
-  header，移除正文长度、编码和正文。其他媒体类型保持原始正文。
+- 透明转发得到的最终响应在 `Content-Type` 为 `text/html` 或 `application/xhtml+xml` 时保留状态与
+  无关 header，但移除正文长度、编码和正文；本地状态页与管理页不适用这条规则。其他媒体类型
+  保持原始正文。
 
 默认 `server.cors_origin` 为 `*`，当前配置只支持一个原样的 origin 值，不实现动态 allowlist，也不
 启用 credentialed CORS。
@@ -200,13 +201,15 @@ URL 或自定义子协议。
 `GET /status/usage/data` 返回公开快照字段：采样时间、订阅类型，以及每个窗口的 ID、
 类别、名称、周期类型、已用/剩余百分比、窗口秒数和重置时间。它不返回 OAuth、账户 ID、邮箱、
 API Key、Cookie、管理信息或内部告警投递状态。尚未完成首次采样时返回空快照；读取失败时返回
-`503`。该路径精确匹配且只接受 `GET`；其他方法返回空 `404`。前端尚未实现，因此
-`GET /status/usage` 固定返回空 `404`。
+`503`。该路径精确匹配且只接受 `GET`；其他方法返回空 `404`。
+
+`GET /status/usage` 返回公开 React 用量页面。该页面只读取上述公开快照接口，不读取或展示
+OAuth、API Key、管理配置或管理会话。页面路径同样精确匹配，其他方法返回空 `404`。
 
 ## 12. 管理 API
 
-管理 JSON API 位于 `/<admin.path>/admin`。前端尚未实现，精确的管理页路径固定返回空 `404`；
-以下端点保留原有管理契约：
+管理 JSON API 位于 `/<admin.path>/admin`。精确的 `GET /<admin.path>/admin` 返回 React 管理页面；
+错误方法、额外路径段和其他隐藏路径族请求返回空 `404`。页面与以下 JSON 端点共享原有管理契约：
 
 | 方法与相对路径 | 用途 |
 | --- | --- |
