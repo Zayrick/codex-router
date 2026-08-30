@@ -1,0 +1,194 @@
+//! Encrypted device-authorization session orchestration.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::core::{ApiError, AppResult};
+
+use super::{
+    StoredOAuthCredentials, credentials_from_token_response,
+    oauth_ports::{OAuthClock, OAuthCredentialsStore},
+    oauth_provider::{DEVICE_VERIFICATION_URL, OAuthProvider, ProviderDevicePollResult},
+    sign_json, verify_json,
+};
+
+const DEVICE_STATE_PURPOSE: &str = "codex-worker/device-state/v1";
+pub const DEVICE_LIFETIME_MS: i64 = 15 * 60 * 1_000;
+pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceAuthorization {
+    pub verification_uri: String,
+    pub user_code: String,
+    pub expires_in: u64,
+    pub interval: u64,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DevicePollResult {
+    Pending { retry_after: u64 },
+    Stored { credentials: StoredOAuthCredentials },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceState {
+    version: u8,
+    device_auth_id: String,
+    user_code: String,
+    expires_at: i64,
+    interval: u64,
+}
+
+pub struct DeviceAuthorizationService<'a> {
+    credentials: &'a dyn OAuthCredentialsStore,
+    provider: &'a OAuthProvider<'a>,
+    clock: &'a dyn OAuthClock,
+    state_signing_key: &'a str,
+    state_purpose: String,
+}
+
+impl<'a> DeviceAuthorizationService<'a> {
+    pub fn new(
+        credentials: &'a dyn OAuthCredentialsStore,
+        provider: &'a OAuthProvider<'a>,
+        clock: &'a dyn OAuthClock,
+        state_signing_key: &'a str,
+    ) -> Self {
+        Self {
+            credentials,
+            provider,
+            clock,
+            state_signing_key,
+            state_purpose: DEVICE_STATE_PURPOSE.into(),
+        }
+    }
+
+    pub fn scoped(
+        credentials: &'a dyn OAuthCredentialsStore,
+        provider: &'a OAuthProvider<'a>,
+        clock: &'a dyn OAuthClock,
+        state_signing_key: &'a str,
+        record_id: &str,
+    ) -> Self {
+        Self {
+            credentials,
+            provider,
+            clock,
+            state_signing_key,
+            state_purpose: format!("{DEVICE_STATE_PURPOSE}/auth-proxy/{record_id}"),
+        }
+    }
+
+    pub async fn start(&self) -> AppResult<DeviceAuthorization> {
+        self.credentials.require_unconfigured().await?;
+        let authorization = self.provider.request_device_authorization().await?;
+        let interval = poll_interval(authorization.interval.as_ref());
+        let expires_at = self.clock.now_ms().await.saturating_add(DEVICE_LIFETIME_MS);
+        let state = DeviceState {
+            version: 1,
+            device_auth_id: authorization.device_auth_id,
+            user_code: authorization.user_code.clone(),
+            expires_at,
+            interval,
+        };
+        let value = serde_json::to_value(state).map_err(|_| device_session_unavailable())?;
+        let state = sign_json(&value, self.state_signing_key, &self.state_purpose)
+            .map_err(|_| device_session_unavailable())?;
+
+        Ok(DeviceAuthorization {
+            verification_uri: DEVICE_VERIFICATION_URL.into(),
+            user_code: authorization.user_code,
+            expires_in: (DEVICE_LIFETIME_MS / 1_000) as u64,
+            interval,
+            state,
+        })
+    }
+
+    pub async fn poll(&self, sealed_state: &str) -> AppResult<DevicePollResult> {
+        self.credentials.require_unconfigured().await?;
+        let state = device_state(sealed_state, self.state_signing_key, &self.state_purpose)?;
+        if state.expires_at <= self.clock.now_ms().await {
+            return Err(
+                ApiError::new(410, "The device authorization session has expired.")
+                    .with_kind("invalid_request_error")
+                    .with_code("device_session_expired"),
+            );
+        }
+
+        match self
+            .provider
+            .poll_device_authorization_token(&state.device_auth_id, &state.user_code)
+            .await?
+        {
+            ProviderDevicePollResult::Pending => Ok(DevicePollResult::Pending {
+                retry_after: state.interval,
+            }),
+            ProviderDevicePollResult::Authorized { token_payload } => {
+                let credentials = credentials_from_token_response(
+                    &token_payload,
+                    None,
+                    self.clock.now_ms().await,
+                )?;
+                self.credentials.require_unconfigured().await?;
+                self.credentials.store(&credentials).await?;
+                Ok(DevicePollResult::Stored { credentials })
+            }
+        }
+    }
+}
+
+fn device_state(signed_state: &str, signing_key: &str, purpose: &str) -> AppResult<DeviceState> {
+    let value =
+        verify_json(signed_state, signing_key, purpose).map_err(|_| invalid_device_state())?;
+    let state: DeviceState = serde_json::from_value(value).map_err(|_| invalid_device_state())?;
+    if state.version != 1
+        || state.device_auth_id.is_empty()
+        || state.user_code.is_empty()
+        || state.interval < 1
+    {
+        return Err(invalid_device_state());
+    }
+    Ok(state)
+}
+
+fn poll_interval(value: Option<&Value>) -> u64 {
+    let parsed = match value {
+        Some(Value::Number(value)) => value.as_u64(),
+        Some(Value::String(value)) => value.trim().parse().ok(),
+        _ => None,
+    };
+    parsed
+        .filter(|value| (1..=60).contains(value))
+        .unwrap_or(DEFAULT_POLL_INTERVAL_SECONDS)
+}
+
+fn device_session_unavailable() -> ApiError {
+    ApiError::new(500, "Unable to create a device authorization session.")
+        .with_kind("configuration_error")
+        .with_code("device_session_unavailable")
+}
+
+fn invalid_device_state() -> ApiError {
+    ApiError::new(400, "The device authorization session is invalid.")
+        .with_kind("invalid_request_error")
+        .with_code("invalid_device_session")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn normalizes_provider_poll_interval() {
+        assert_eq!(poll_interval(Some(&json!(1))), 1);
+        assert_eq!(poll_interval(Some(&json!("12"))), 12);
+        assert_eq!(poll_interval(Some(&json!(1.5))), 5);
+        assert_eq!(poll_interval(Some(&json!("61"))), 5);
+        assert_eq!(poll_interval(None), 5);
+    }
+}

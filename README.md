@@ -1,0 +1,90 @@
+# Codex Router
+
+Codex Router 是一个独立运行的 Rust API 网关，把 ChatGPT Codex 能力转换或映射为 OpenAI、
+Anthropic 与 Gemini 风格接口。它从原 Cloudflare Worker 项目迁移而来，但运行时不再依赖
+Cloudflare、Workers KV、Wrangler、Wasm、Node.js 或前端构建链。
+
+现有协议转换、请求策略、SSE 呈现、OAuth、API Key 与额度监控逻辑均从参考项目复用并继续由
+原有测试覆盖。HTTP、WebSocket、定时任务和持久化已改为 Tokio、Axum、Reqwest 与本地 TOML
+配置文件。
+
+## 当前能力
+
+- OpenAI Models、Responses、Chat Completions 与 legacy Completions；
+- Anthropic Messages 与本地 token count；
+- Gemini Models、generateContent、streamGenerateContent 与 countTokens；
+- `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket relay；
+- Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
+- OAuth 设备授权、下游 API Key、代理账户及代理账户独立 OAuth 的管理 JSON API；
+- 后台 OAuth 刷新、用量采集、reset watch、Bark 与钉钉通知；
+- 原生流式正文和双向 WebSocket bridge，不依赖 Worker `ReadableStream`。
+
+前端暂未实现：`GET /status/usage` 与精确的管理页路径返回空 `404`。公开用量数据
+`GET /status/usage/data` 和全部管理 JSON API 保留。完整契约见 [API 文档](docs/api.md)，旧
+Worker 配置与 KV 的字段映射见 [配置与迁移](docs/configuration.md)。
+
+## 运行
+
+要求 Rust 1.97 或更高版本。
+
+```sh
+cp config.example.toml config.toml
+cargo run --release -- --config config.toml
+```
+
+不传 `--config` 时默认读取当前目录的 `config.toml`。配置只从该文件和命令行路径读取，不读取
+业务环境变量。
+
+启动前至少修改以下项目：
+
+- `admin.path`：隐藏管理 API 的 URL 段；
+- `admin.secret`：管理登录密钥；
+- `upstream.chatgpt_relay_url`：受信任的精确 HTTPS relay origin；
+- `state.api_keys`：至少一个启用的下游 API Key，或启动后通过管理 API 创建。
+
+验证本地接口：
+
+```sh
+curl http://127.0.0.1:8787/v1/messages/count_tokens \
+  -H 'Authorization: Bearer sk-change-me-123!' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-5","messages":[{"role":"user","content":"hello"}]}'
+```
+
+## 配置与持久状态
+
+`config.toml` 同时保存静态设置和运行时状态：
+
+- 主 OAuth 位于 `state.oauth`；
+- 下游 Key 位于 `state.api_keys`；
+- 代理账户位于 `state.auth_proxy_accounts`；
+- 代理 OAuth 位于 `state.auth_proxy_oauth`；
+- 用量快照位于 `state.usage`。
+
+这些字段按要求以明文保存，不再使用 `DATA_ENCRYPTION_KEY` 或 AES-GCM。管理 API 和后台刷新写入
+状态时，会先写入权限为 `0600` 的临时文件，再原子替换原配置。成功写入会把 TOML 规范化，注释
+可能丢失；请保留单独的配置模板，不要在管理 API 写入期间同时手工编辑生产配置。手工修改静态
+设置后需要重启服务。
+
+管理会话和 OAuth 设备轮询状态不加密，只使用 HMAC-SHA256 防篡改；其中不包含持久化配置的
+加密层。改变 `admin.secret` 会立即使已有管理会话与未完成的设备授权 state 失效。
+
+## 部署注意
+
+- `upstream.chatgpt_relay_url` 会收到 OAuth Bearer、ChatGPT 账户 ID、提示内容和模型输出，必须由
+  部署者控制并审计；
+- `server.public_origin` 必须是客户端看到的精确 origin，并用于管理 API 同源校验；
+- 管理 Cookie 始终带 `Secure`，生产和浏览器管理场景应通过 HTTPS 反向代理访问；
+- 反向代理需要允许 WebSocket Upgrade，并关闭 SSE 响应缓冲；
+- `config.toml` 包含明文 OAuth、API Key、Webhook 和管理密钥，不应提交到版本库、复制到日志或
+  放入权限宽松的备份。
+
+## 开发检查
+
+依赖统一通过不带版本号的 `cargo add` 安装，由 Cargo 选择当前最新版。常用检查：
+
+```sh
+cargo fmt --all -- --check
+cargo test --all-targets
+cargo clippy --all-targets --all-features -- -D warnings
+```

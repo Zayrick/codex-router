@@ -1,0 +1,33 @@
+# Codex Router reads all runtime settings and persisted state from this file.
+# Copy it to config.toml, protect that file as a secret, and replace placeholders.
+
+[server]
+bind = "127.0.0.1:8787"
+public_origin = "http://127.0.0.1:8787"
+cors_origin = "*"
+maintenance_interval_seconds = 300
+log_filter = "codex_router=info,tower_http=info"
+
+[admin]
+path = "change-this-hidden-path"
+secret = "change-this-admin-secret"
+
+[upstream]
+chatgpt_relay_url = "https://relay.example.com"
+codex_resets_url = "https://codex-resets.com/api/v1/status"
+
+[notifications]
+# bark_push_url = "https://api.day.app/device-key"
+# dingtalk_webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=access-token"
+# dingtalk_secret = "SEC..."
+
+[state]
+
+[[state.api_keys]]
+id = "00000000-0000-4000-8000-000000000001"
+name = "local"
+key = "sk-change-me-123!"
+enabled = true
+
+# OAuth, proxy accounts, proxy OAuth, and usage snapshots are added here by
+# the management API and maintenance task. They remain plaintext by design.
