@@ -897,15 +897,10 @@ function LoginView({ error, loading, onSubmit }: LoginViewProps) {
 
 	return (
 		<div className="auth-shell">
-			<aside className="auth-aside">
-				<div className="auth-brand">
-					<ProductMark />
-					<span><strong>Codex Router</strong><small>Management</small></span>
-				</div>
-				<div className="auth-aside-copy">
-					<p>ROUTING CONTROL</p>
-					<h1>把运行状态，<br />收进一个视野。</h1>
-					<span>账户、配额、用量与调用身份，都从这里开始。</span>
+			<aside className="auth-aside" aria-label="Codex Router">
+				<div className="auth-aside-title" aria-hidden="true">
+					<span>Codex</span>
+					<span>Router</span>
 				</div>
 			</aside>
 
