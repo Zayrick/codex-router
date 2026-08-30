@@ -2388,7 +2388,7 @@ td strong {
 	font-size: 9px;
 }
 
-/* Rounded-segment doughnuts */
+/* Doughnut charts */
 .donut-card {
 	display: grid;
 	gap: 0.85rem;

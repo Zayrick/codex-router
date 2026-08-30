@@ -345,7 +345,7 @@ function DonutBreakdownCard({
 									fill="none"
 									key={segment.index}
 									stroke={DONUT_COLORS[segment.index % DONUT_COLORS.length]}
-									strokeLinecap="round"
+									strokeLinecap="butt"
 									strokeWidth="18"
 								/>
 							))}
@@ -428,16 +428,19 @@ function donutSegments(values: number[], total: number) {
 	return values.flatMap((value, index) => {
 		if (!(value > 0) || !(total > 0)) return [];
 		const sweep = value / total * 360;
-		const gap = Math.min(2.6, sweep * 0.22);
-		const start = cursor + gap / 2;
-		const end = Math.min(cursor + sweep - gap / 2, start + 359.5);
+		const start = cursor;
+		const end = cursor + sweep;
 		cursor += sweep;
-		return end > start ? [{ index, start, end }] : [];
+		return [{ index, start, end }];
 	});
 }
 
 function arcPath(cx: number, cy: number, radius: number, start: number, end: number): string {
 	const startPoint = polarPoint(cx, cy, radius, start);
+	if (end - start >= 360 - Number.EPSILON * 360) {
+		const oppositePoint = polarPoint(cx, cy, radius, start + 180);
+		return `M ${startPoint.x} ${startPoint.y} A ${radius} ${radius} 0 1 1 ${oppositePoint.x} ${oppositePoint.y} A ${radius} ${radius} 0 1 1 ${startPoint.x} ${startPoint.y} Z`;
+	}
 	const endPoint = polarPoint(cx, cy, radius, end);
 	return `M ${startPoint.x} ${startPoint.y} A ${radius} ${radius} 0 ${end - start > 180 ? 1 : 0} 1 ${endPoint.x} ${endPoint.y}`;
 }
