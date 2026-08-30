@@ -1444,8 +1444,6 @@ function UsageCard({
 										<th scope="col">模型</th>
 										<th scope="col">传输</th>
 										<th scope="col">请求路径</th>
-										<th scope="col">输入 / 缓存读 / 写</th>
-										<th scope="col">输出 / 推理</th>
 										<th scope="col">总量</th>
 									</tr>
 								</thead>
@@ -1469,12 +1467,6 @@ function UsageCard({
 												<code className="usage-endpoint" title={event.endpoint}>
 													{event.endpoint}
 												</code>
-											</td>
-											<td data-label="输入 / 缓存读 / 写">
-												{formatTokens(event.inputTokens)} / {formatTokens(event.cachedInputTokens)} / {formatTokens(event.cacheCreationInputTokens)}
-											</td>
-											<td data-label="输出 / 推理">
-												{formatTokens(event.outputTokens)} / {formatTokens(event.reasoningOutputTokens)}
 											</td>
 											<td data-label="总量">
 												<strong>{formatTokens(event.totalTokens)}</strong>

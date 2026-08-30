@@ -6,7 +6,7 @@
 }
 
 .usage-shell {
-	width: min(1440px, 100%);
+	width: min(var(--app-page-max-width), 100%);
 	margin: 0 auto;
 }
 
@@ -548,4 +548,3 @@
 		margin-left: 0;
 	}
 }
-

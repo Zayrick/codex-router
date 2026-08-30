@@ -266,7 +266,7 @@
 	height: 3.75rem;
 	align-items: center;
 	justify-content: space-between;
-	padding: 0 max(1.25rem, calc((100vw - 66rem) / 2));
+	padding: 0 max(1.25rem, calc((100vw - var(--app-page-max-width)) / 2));
 	border-bottom: 1px solid var(--border);
 }
 
@@ -288,7 +288,7 @@
 }
 
 .panel-main {
-	width: min(100% - 2.5rem, 64rem);
+	width: min(100% - 2.5rem, var(--app-page-max-width));
 	margin: 0 auto;
 	padding: 2rem 0 3rem;
 }
@@ -1012,7 +1012,7 @@
 }
 
 .usage-events-table {
-	min-width: 68rem;
+	min-width: 50rem;
 	table-layout: auto;
 }
 
@@ -1547,7 +1547,7 @@ td strong {
 	}
 
 	.panel-main {
-		width: min(100% - 1.5rem, 64rem);
+		width: min(100% - 1.5rem, var(--app-page-max-width));
 		padding-top: 1.5rem;
 	}
 
