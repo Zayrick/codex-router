@@ -27,7 +27,7 @@ const CSP_NONCE_PLACEHOLDER: &str = "__CODEX_ROUTER_CSP_NONCE__";
 #[folder = "$CODEX_ROUTER_FRONTEND_DIST/"]
 struct FrontendAssets;
 
-/// Serves the shared admin/status application shell with a per-request CSP nonce.
+/// Serves the shared admin/account application shell with a per-request CSP nonce.
 pub fn application_page() -> Response {
     let nonce = URL_SAFE_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes());
 
@@ -133,8 +133,8 @@ fn development_page(nonce: &str) -> String {
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<meta property="csp-nonce" nonce="{nonce}" />
-		<meta name="description" content="Codex Router 的 OAuth、订阅额度与 API Key 管理面板。" />
-		<title>Codex Router 管理面板</title>
+		<meta name="description" content="Codex Router 的账户用量查询与管理面板。" />
+		<title>Codex Router</title>
 	</head>
 	<body>
 		<div id="root"></div>

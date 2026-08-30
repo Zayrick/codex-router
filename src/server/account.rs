@@ -1,9 +1,8 @@
-use axum::response::Response;
+use axum::{body::Body, http::Request, response::Response};
 use serde::Serialize;
-use url::Url;
 
 use crate::{
-    application::{MatchedPublicAccountRoute, MonitoredQuotaWindow, PublicAccountRoute},
+    application::MonitoredQuotaWindow,
     auth::{
         ApiKeyRepository, AuthProxyAccount, OAuthRepository, constant_time_equal,
         matching_auth_proxy_account,
@@ -15,15 +14,17 @@ use crate::{
 };
 
 use super::{
+    body,
     codex::CodexClient,
     config::AppConfig,
-    frontend,
     oauth::current_time_ms,
     response,
     state::AppState,
     usage::{UsageBounds, UsageIdentityFilter, UsageRange},
     usage_store::CodexUsageStateRepository,
 };
+
+const MAX_PUBLIC_ACCOUNT_BODY_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicAccountKind {
@@ -74,34 +75,49 @@ struct PublicQuotaWindow {
 }
 
 pub async fn handle_public_account(
-    matched: MatchedPublicAccountRoute,
-    client_url: &Url,
+    request: Request<Body>,
     config: &AppConfig,
     state: &AppState,
-) -> Option<Response> {
-    let account = match resolve_account(&matched.credential, state).await {
-        Ok(Some(account)) => account,
-        Ok(None) => return None,
-        Err(error) => {
-            tracing::warn!(
-                event = "public_account_resolve",
-                status = "failed",
-                error = %error
-            );
-            return None;
-        }
-    };
-
-    if matched.route == PublicAccountRoute::Page {
-        return Some(frontend::application_page());
+) -> Response {
+    match public_account_dashboard(request, config, state).await {
+        Ok(output) => output,
+        Err(error) => response::api_error(&error),
     }
+}
 
-    Some(
-        match account_dashboard(&account, client_url, config, state).await {
-            Ok(output) => output,
-            Err(error) => response::api_error(&error),
-        },
-    )
+async fn public_account_dashboard(
+    request: Request<Body>,
+    config: &AppConfig,
+    state: &AppState,
+) -> AppResult<Response> {
+    let (credential, range) = public_account_input(request).await?;
+    let account = resolve_account(&credential, state)
+        .await?
+        .ok_or_else(invalid_account_credential)?;
+    account_dashboard(&account, range, config, state).await
+}
+
+async fn public_account_input(request: Request<Body>) -> AppResult<(String, UsageRange)> {
+    let (parts, body) = request.into_parts();
+    let bytes =
+        body::read_limited_body(&parts.headers, body, MAX_PUBLIC_ACCOUNT_BODY_BYTES).await?;
+    let mut credential = None;
+    let mut range = None;
+    for (name, value) in url::form_urlencoded::parse(&bytes) {
+        match name.as_ref() {
+            "credential" if credential.is_none() => credential = Some(value.into_owned()),
+            "range" if range.is_none() => range = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    let credential = credential
+        .filter(|value| (1..=512).contains(&value.encode_utf16().count()))
+        .ok_or_else(invalid_account_credential_input)?;
+    let range = range
+        .as_deref()
+        .and_then(|value| UsageRange::parse(Some(value)))
+        .ok_or_else(invalid_usage_range)?;
+    Ok((credential, range))
 }
 
 async fn resolve_account(credential: &str, state: &AppState) -> AppResult<Option<PublicAccount>> {
@@ -134,15 +150,10 @@ async fn resolve_account(credential: &str, state: &AppState) -> AppResult<Option
 
 async fn account_dashboard(
     account: &PublicAccount,
-    client_url: &Url,
+    range: UsageRange,
     config: &AppConfig,
     state: &AppState,
 ) -> AppResult<Response> {
-    let range = client_url
-        .query_pairs()
-        .find(|(name, _)| name == "range")
-        .map(|(_, value)| value.into_owned());
-    let range = UsageRange::parse(range.as_deref()).ok_or_else(invalid_usage_range)?;
     let now_ms = current_time_ms();
     let primary_oauth = OAuthRepository::new(state.config.as_ref());
     let account_oauth = (account.kind == PublicAccountKind::AuthProxy)
@@ -331,6 +342,19 @@ fn invalid_usage_range() -> ApiError {
         .with_kind("invalid_request_error")
         .with_code("invalid_usage_range")
         .with_param("range")
+}
+
+fn invalid_account_credential_input() -> ApiError {
+    ApiError::new(400, "An API key or account ID is required.")
+        .with_kind("invalid_request_error")
+        .with_code("invalid_account_credential_input")
+        .with_param("credential")
+}
+
+fn invalid_account_credential() -> ApiError {
+    ApiError::new(404, "The account does not exist or is disabled.")
+        .with_kind("authentication_error")
+        .with_code("invalid_account_credential")
 }
 
 fn usage_query_error() -> ApiError {

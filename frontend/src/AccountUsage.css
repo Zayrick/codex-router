@@ -24,6 +24,7 @@
 .public-account-brand {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
 	gap: 0.65rem;
 	align-self: flex-start;
 }
@@ -41,6 +42,13 @@
 .public-account-brand span {
 	color: var(--text-tertiary);
 	font-size: 0.62rem;
+}
+
+.public-account-change {
+	min-height: 1.9rem;
+	margin-left: 0.25rem;
+	padding: 0.4rem 0.62rem;
+	font-size: 0.66rem;
 }
 
 .public-account-heading {
@@ -344,35 +352,6 @@
 	gap: 0.65rem;
 }
 
-.public-account-skeleton {
-	display: grid;
-	gap: 0.85rem;
-}
-
-.public-account-skeleton > div,
-.public-account-skeleton span {
-	background: var(--surface-hover);
-	border: 1px solid var(--border);
-	border-radius: 0.85rem;
-	animation: account-skeleton-pulse 1.2s ease-in-out infinite alternate;
-}
-
-.skeleton-quota { height: 11rem; }
-.skeleton-range { height: 3.8rem; }
-
-.skeleton-content {
-	display: grid;
-	height: 23rem;
-	grid-template-columns: 14rem repeat(3, minmax(0, 1fr));
-	gap: 0.85rem;
-	background: transparent !important;
-	border: 0 !important;
-}
-
-@keyframes account-skeleton-pulse {
-	to { opacity: 0.5; }
-}
-
 @media (max-width: 58rem) {
 	.public-account-header {
 		align-items: flex-start;
@@ -419,10 +398,6 @@
 
 	.public-account-metric:nth-of-type(1) {
 		border-left: 0;
-	}
-
-	.skeleton-content {
-		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 }
 
@@ -481,14 +456,5 @@
 
 	.public-account-metric {
 		border-left: 0;
-	}
-
-	.skeleton-content {
-		height: auto;
-		grid-template-columns: minmax(0, 1fr);
-	}
-
-	.skeleton-content span {
-		height: 12rem;
 	}
 }

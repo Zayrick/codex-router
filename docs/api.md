@@ -195,18 +195,17 @@ URL 或自定义子协议。
 
 ## 11. 公开账户用量页
 
-`GET /<credential>` 返回与一个已启用 account id 或 API Key 对应的 React 账户页，页面不带管理
-侧栏。`credential` 是 URL path segment；包含 `/`、`?`、`#` 等字符时必须进行 percent encoding。
-该 URL 本身包含访问凭证，应按 bearer secret 对待，不应分享或写入不受信任的日志。
+`GET /` 返回不带管理侧栏的 React 账户查询页。页面使用与管理登录页一致的表单，用户输入一个已
+启用的 API Key 或 account id 后，结果直接显示在当前页面。
 
-页面从 `GET /<credential>/data?range=cycle` 读取对应身份的聚合数据。`range` 支持 `cycle`、`24h`、
-`7d`、`30d` 和 `all`，返回身份类型、请求次数、Token、成本、时间序列、模型占比与
-额度时间条。响应不会回显 account id、API Key、OAuth、邮箱、Cookie 或管理会话。
+页面通过 `POST /account/data` 读取聚合数据，请求正文使用
+`application/x-www-form-urlencoded`，包含 `credential` 与 `range`。`range` 支持 `cycle`、`24h`、
+`7d`、`30d` 和 `all`。返回身份类型、请求次数、Token、成本、时间序列、模型占比与额度时间条，
+但不会回显 account id、API Key、OAuth、邮箱、Cookie 或管理会话。
 
 API Key 页面使用主账户的后台额度快照；配置了独立 OAuth 的代理账户会读取自己的额度，未配置时
-沿用主账户额度。无法读取额度时仍返回 Token 用量，`quota` 为 `null`。无效或已停用的凭证不由
-本地账户页处理，而是继续进入透明 relay；如果 relay 返回 HTML，服务仍按透明响应策略移除页面
-正文。
+沿用主账户额度。无法读取额度时仍返回 Token 用量，`quota` 为 `null`。无效或已停用的凭证返回本地
+通用的 `404` JSON 错误。
 
 ## 12. Token 用量统计
 

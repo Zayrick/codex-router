@@ -11,7 +11,6 @@ use url::Url;
 use crate::{
     application::{
         AdminRoute, is_admin_path_family, is_known_api_path, match_admin_route, match_api_route,
-        match_public_account_route,
     },
     auth::{ApiKeyRepository, OAuthRepository, client_token},
     upstream::relay::is_backend_api_path,
@@ -82,10 +81,17 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
                 }
             }
         }
-    } else if let Some(matched) = match_public_account_route(&method, &path) {
-        match handle_public_account(matched, &client_url, &config, &state).await {
-            Some(output) => return output,
-            None => handle_relay(request, client_url, websocket, &config, &state).await,
+    } else if path == "/" {
+        if method == "GET" {
+            return frontend::application_page();
+        } else {
+            response::empty(404)
+        }
+    } else if path == "/account/data" {
+        if method == "POST" {
+            handle_public_account(request, &config, &state).await
+        } else {
+            response::empty(404)
         }
     } else if method == "OPTIONS" && is_known_api_path(&path) {
         response::with_cors(response::empty(204), &config.server.cors_origin)
@@ -265,7 +271,7 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(payload["input_tokens"].as_u64().is_some());
 
-        for page in ["/sk-test-value-123!", "/account-test", "/secret/admin"] {
+        for page in ["/", "/secret/admin"] {
             let response = app
                 .clone()
                 .oneshot(Request::builder().uri(page).body(Body::empty()).unwrap())
@@ -292,24 +298,31 @@ mod tests {
             );
         }
 
-        let account_data = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/sk-test-value-123!/data?range=7d")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(account_data.status(), StatusCode::OK);
-        let body = to_bytes(account_data.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(payload["account"].get("name").is_none());
-        assert_eq!(payload["account"]["identityType"], "api_key");
-        assert_eq!(payload["usage"]["range"], "7d");
+        for (form, identity_type, range) in [
+            ("credential=sk-test-value-123%21&range=7d", "api_key", "7d"),
+            ("credential=account-test&range=24h", "auth_proxy", "24h"),
+        ] {
+            let account_data = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/account/data")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(Body::from(form))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(account_data.status(), StatusCode::OK);
+            let body = to_bytes(account_data.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(payload["account"].get("name").is_none());
+            assert_eq!(payload["account"]["identityType"], identity_type);
+            assert_eq!(payload["usage"]["range"], range);
+        }
 
         let _ = tokio::fs::remove_file(path).await;
         let _ = tokio::fs::remove_file(&usage_path).await;

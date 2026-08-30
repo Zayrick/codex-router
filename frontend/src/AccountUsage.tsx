@@ -3,6 +3,7 @@ import {
 	useEffect,
 	useRef,
 	useState,
+	type FormEvent,
 } from "react";
 import type { UsageDashboard, UsageRange } from "./admin-api";
 import { ProductMark } from "./ManagementShell";
@@ -48,36 +49,42 @@ interface PublicQuotaSnapshot {
 function AccountUsage() {
 	const [range, setRange] = useState<UsageRange>("cycle");
 	const [snapshot, setSnapshot] = useState<PublicAccountDashboard | null>(null);
-	const [loading, setLoading] = useState(true);
+	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [now, setNow] = useState(() => Date.now());
 	const requestRef = useRef(0);
+	const credentialRef = useRef<string | null>(null);
 
-	const load = useCallback(async (nextRange: UsageRange, signal?: AbortSignal) => {
+	const load = useCallback(async (
+		nextRange: UsageRange,
+		nextCredential: string | null = credentialRef.current,
+	) => {
+		if (!nextCredential) return;
 		const requestId = ++requestRef.current;
 		setLoading(true);
 		try {
-			const query = new URLSearchParams({ range: nextRange });
-			const init: RequestInit = {
-				cache: "no-store",
+			const response = await fetch("/account/data", {
 				headers: { accept: "application/json" },
-			};
-			if (signal) init.signal = signal;
-			const response = await fetch(`${window.location.pathname}/data?${query}`, init);
+				method: "POST",
+				body: new URLSearchParams({
+					credential: nextCredential,
+					range: nextRange,
+				}),
+			});
 			if (!response.ok) {
 				throw new Error(response.status === 404 ? "not-found" : `HTTP ${response.status}`);
 			}
 			const next = parseDashboard(await response.json());
 			if (requestId !== requestRef.current) return;
+			credentialRef.current = nextCredential;
 			setSnapshot(next);
 			setError(null);
 			setNow(Date.now());
 		} catch (cause) {
-			if (cause instanceof DOMException && cause.name === "AbortError") return;
 			if (requestId !== requestRef.current) return;
 			setError(
 				cause instanceof Error && cause.message === "not-found"
-					? "这个账户不存在、已停用，或访问凭证已经变更。"
+					? "输入的 API Key 或 account id 不存在，或已停用。"
 					: "暂时无法读取账户用量，请稍后重试。",
 			);
 		} finally {
@@ -85,18 +92,10 @@ function AccountUsage() {
 		}
 	}, []);
 
-	useEffect(() => {
-		const controller = new AbortController();
-		const initialLoad = window.setTimeout(() => {
-			void load(range, controller.signal);
-		}, 0);
-		return () => {
-			controller.abort();
-			window.clearTimeout(initialLoad);
-		};
-	}, [load, range]);
+	const accountSelected = snapshot !== null;
 
 	useEffect(() => {
+		if (!accountSelected) return;
 		const refresh = window.setInterval(() => {
 			if (!document.hidden) void load(range);
 		}, REFRESH_INTERVAL_MS);
@@ -113,10 +112,32 @@ function AccountUsage() {
 			window.clearInterval(clock);
 			document.removeEventListener("visibilitychange", onVisibilityChange);
 		};
-	}, [load, range]);
+	}, [accountSelected, load, range]);
 
-	const usage = snapshot?.usage ?? null;
-	const totals = usage?.totals ?? null;
+	function lookup(credential: string): void {
+		setError(null);
+		void load("cycle", credential);
+	}
+
+	function changeRange(nextRange: UsageRange): void {
+		if (nextRange === range) return;
+		setRange(nextRange);
+		void load(nextRange);
+	}
+
+	function clearAccount(): void {
+		credentialRef.current = null;
+		setRange("cycle");
+		setSnapshot(null);
+		setError(null);
+	}
+
+	if (!snapshot) {
+		return <AccountLookupView error={error} loading={loading} onSubmit={lookup} />;
+	}
+
+	const usage = snapshot.usage;
+	const totals = usage.totals;
 
 	return (
 		<main className="public-account-page">
@@ -125,10 +146,18 @@ function AccountUsage() {
 					<div className="public-account-brand">
 						<ProductMark compact />
 						<div><strong>Codex Router</strong><span>账户用量</span></div>
+						<button
+							className="button button-secondary public-account-change"
+							disabled={loading}
+							onClick={clearAccount}
+							type="button"
+						>
+							更换凭据
+						</button>
 					</div>
 					<div className="public-account-heading">
 						<span className="public-account-kind">
-							{snapshot?.account.identityType === "auth_proxy" ? "ACCOUNT ID" : "API KEY"}
+							{snapshot.account.identityType === "auth_proxy" ? "ACCOUNT ID" : "API KEY"}
 						</span>
 						<h1>用量信息</h1>
 						<p>查看额度周期、Token 活动与模型消耗分布。</p>
@@ -136,83 +165,173 @@ function AccountUsage() {
 				</header>
 
 				{error ? <div className="public-account-alert" role="alert">{error}</div> : null}
-				{loading && !snapshot ? <AccountPageSkeleton /> : null}
 
-				{snapshot && usage && totals ? (
-					<div className={loading ? "public-account-content is-refreshing" : "public-account-content"}>
-						<section className="public-account-range-bar" aria-label="统计时间范围">
-							<div className="public-account-range-copy">
-								<strong>统计范围</strong>
-								<span>{formatDateRange(usage.startAt, usage.endAt)}</span>
-							</div>
-							<div className="public-account-range-actions">
-								<div className="public-account-range-options" role="group" aria-label="选择统计时间范围">
-									{RANGE_OPTIONS.map((option) => (
-										<button
-											aria-pressed={range === option.value}
-											className={range === option.value ? "active" : ""}
-											disabled={loading}
-											key={option.value}
-											onClick={() => setRange(option.value)}
-											type="button"
-										>
-											{option.label}
-										</button>
-									))}
-								</div>
-								<button
-									aria-label="刷新账户用量"
-									className="public-account-refresh"
-									disabled={loading}
-									onClick={() => void load(range)}
-									title="刷新账户用量"
-									type="button"
-								>
-									<RefreshIcon spinning={loading} />
-								</button>
-							</div>
-						</section>
-
-						<div className="public-account-overview">
-							<aside className="public-account-metrics" aria-label="账户用量指标">
-								<header><span>账户指标</span><small>{rangeLabel(usage.range)}</small></header>
-								<AccountMetric label="请求次数" value={formatCount(totals.requests)} />
-								<AccountMetric
-									label="Token 总量"
-									value={formatTokens(totals.totalTokens)}
-								/>
-								<AccountMetric
-									label="成本"
-									value={formatCost(totals.costUsd)}
-								/>
-							</aside>
-
-							<section className="public-account-visuals" aria-label="账户用量图表">
-								<div className="public-account-activity-stack activity-card-grid-stacked">
-									<TokenActivityCard now={now} usage={usage} />
-									<CostActivityCard now={now} usage={usage} />
-								</div>
-								<ModelTokenDonut usage={usage} />
-							</section>
+				<div className={loading ? "public-account-content is-refreshing" : "public-account-content"}>
+					<section className="public-account-range-bar" aria-label="统计时间范围">
+						<div className="public-account-range-copy">
+							<strong>统计范围</strong>
+							<span>{formatDateRange(usage.startAt, usage.endAt)}</span>
 						</div>
+						<div className="public-account-range-actions">
+							<div className="public-account-range-options" role="group" aria-label="选择统计时间范围">
+								{RANGE_OPTIONS.map((option) => (
+									<button
+										aria-pressed={range === option.value}
+										className={range === option.value ? "active" : ""}
+										disabled={loading}
+										key={option.value}
+										onClick={() => changeRange(option.value)}
+										type="button"
+									>
+										{option.label}
+									</button>
+								))}
+							</div>
+							<button
+								aria-label="刷新账户用量"
+								className="public-account-refresh"
+								disabled={loading}
+								onClick={() => void load(range)}
+								title="刷新账户用量"
+								type="button"
+							>
+								<RefreshIcon spinning={loading} />
+							</button>
+						</div>
+					</section>
 
-						<section className="public-account-quota" aria-label="账户额度时间条">
-							{snapshot.quota && snapshot.quota.windows.length > 0 ? (
-								<QuotaTimeline
-									className="public-account-quota-timeline"
-									now={now}
-									planType={snapshot.quota.planType}
-									sampledAt={snapshot.quota.sampledAt}
-									windows={snapshot.quota.windows}
-								/>
-							) : (
-								<div className="public-account-quota-empty">额度时间条尚未完成首次同步。</div>
-							)}
+					<div className="public-account-overview">
+						<aside className="public-account-metrics" aria-label="账户用量指标">
+							<header><span>账户指标</span><small>{rangeLabel(usage.range)}</small></header>
+							<AccountMetric label="请求次数" value={formatCount(totals.requests)} />
+							<AccountMetric
+								label="Token 总量"
+								value={formatTokens(totals.totalTokens)}
+							/>
+							<AccountMetric
+								label="成本"
+								value={formatCost(totals.costUsd)}
+							/>
+						</aside>
+
+						<section className="public-account-visuals" aria-label="账户用量图表">
+							<div className="public-account-activity-stack activity-card-grid-stacked">
+								<TokenActivityCard now={now} usage={usage} />
+								<CostActivityCard now={now} usage={usage} />
+							</div>
+							<ModelTokenDonut usage={usage} />
 						</section>
 					</div>
-				) : null}
+
+					<section className="public-account-quota" aria-label="账户额度时间条">
+						{snapshot.quota && snapshot.quota.windows.length > 0 ? (
+							<QuotaTimeline
+								className="public-account-quota-timeline"
+								now={now}
+								planType={snapshot.quota.planType}
+								sampledAt={snapshot.quota.sampledAt}
+								windows={snapshot.quota.windows}
+							/>
+						) : (
+							<div className="public-account-quota-empty">额度时间条尚未完成首次同步。</div>
+						)}
+					</section>
+				</div>
 			</div>
 		</main>
+	);
+}
+
+interface AccountLookupViewProps {
+	error: string | null;
+	loading: boolean;
+	onSubmit: (credential: string) => void;
+}
+
+function AccountLookupView({ error, loading, onSubmit }: AccountLookupViewProps) {
+	const [credential, setCredential] = useState("");
+	const [visible, setVisible] = useState(false);
+
+	function submit(event: FormEvent<HTMLFormElement>): void {
+		event.preventDefault();
+		if (!credential || loading) return;
+		onSubmit(credential);
+	}
+
+	return (
+		<div className="auth-shell">
+			<aside className="auth-aside" aria-label="Codex Router">
+				<div className="auth-aside-title" aria-hidden="true">
+					<span>Codex</span>
+					<span>Router</span>
+				</div>
+			</aside>
+
+			<div className="auth-main">
+				<main className="auth-card">
+					<div className="auth-mobile-brand"><ProductMark compact /><strong>Codex Router</strong></div>
+					<p className="auth-eyebrow">账户用量</p>
+					<h1>查看用量信息</h1>
+					<p className="auth-description">输入 API Key 或 account id，查看对应账户的额度与 Token 消耗。</p>
+
+					{error ? (
+						<div className="inline-alert error-alert" role="alert">
+							<LookupIcon name="alert" />
+							<span>{error}</span>
+						</div>
+					) : null}
+
+					<form className="auth-form" onSubmit={submit}>
+						<label htmlFor="account-credential">API Key 或 account id</label>
+						<div className="input-with-action">
+							<input
+								id="account-credential"
+								autoCapitalize="none"
+								autoComplete="off"
+								autoCorrect="off"
+								autoFocus
+								disabled={loading}
+								maxLength={512}
+								onChange={(event) => setCredential(event.target.value)}
+								placeholder="输入 API Key 或 account id"
+								required
+								spellCheck={false}
+								type={visible ? "text" : "password"}
+								value={credential}
+							/>
+							<button
+								aria-label={visible ? "隐藏访问凭据" : "显示访问凭据"}
+								className="input-action"
+								disabled={loading}
+								onClick={() => setVisible((value) => !value)}
+								type="button"
+							>
+								<LookupIcon name={visible ? "eye-off" : "eye"} />
+							</button>
+						</div>
+						<button className="button button-primary auth-submit" disabled={loading}>
+							{loading ? <span className="spinner" aria-hidden="true" /> : null}
+							{loading ? "查询中…" : "查看账户用量"}
+						</button>
+					</form>
+					<p className="auth-footnote">访问凭据仅用于本次用量查询</p>
+				</main>
+			</div>
+		</div>
+	);
+}
+
+function LookupIcon({ name }: { name: "alert" | "eye" | "eye-off" }) {
+	return (
+		<svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
+			{name === "alert" ? (
+				<><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.75 3h15.7a2 2 0 0 0 1.75-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></>
+			) : name === "eye" ? (
+				<><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="2.5" /></>
+			) : (
+				<><path d="m3 3 18 18" /><path d="M10.6 6.15A10.6 10.6 0 0 1 12 6c6.5 0 10 6 10 6a16.8 16.8 0 0 1-3 3.8" /><path d="M6.6 6.6C3.5 8.4 2 12 2 12s3.5 6 10 6a10.7 10.7 0 0 0 3.4-.55" /></>
+			)}
+		</svg>
 	);
 }
 
@@ -221,16 +340,6 @@ function AccountMetric({ label, value }: { label: string; value: string }) {
 		<div className="public-account-metric">
 			<span>{label}</span>
 			<strong>{value}</strong>
-		</div>
-	);
-}
-
-function AccountPageSkeleton() {
-	return (
-		<div className="public-account-skeleton" role="status" aria-label="正在读取账户用量">
-			<div className="skeleton-range" />
-			<div className="skeleton-content"><span /><span /><span /><span /></div>
-			<div className="skeleton-quota" />
 		</div>
 	);
 }

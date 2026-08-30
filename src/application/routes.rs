@@ -147,46 +147,6 @@ pub struct MatchedAdminRoute {
     pub route: AdminRoute,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublicAccountRoute {
-    Page,
-    Data,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchedPublicAccountRoute {
-    pub credential: String,
-    pub route: PublicAccountRoute,
-}
-
-pub fn match_public_account_route(
-    method: &str,
-    pathname: &str,
-) -> Option<MatchedPublicAccountRoute> {
-    if method != "GET" {
-        return None;
-    }
-
-    let relative = pathname.strip_prefix('/')?;
-    let (encoded_credential, route) = match relative.strip_suffix("/data") {
-        Some(value) if !value.is_empty() && !value.contains('/') => {
-            (value, PublicAccountRoute::Data)
-        }
-        _ if !relative.is_empty() && !relative.contains('/') => {
-            (relative, PublicAccountRoute::Page)
-        }
-        _ => return None,
-    };
-    let credential = percent_encoding::percent_decode_str(encoded_credential)
-        .decode_utf8()
-        .ok()?
-        .into_owned();
-    let length = credential.encode_utf16().count();
-    (1..=512)
-        .contains(&length)
-        .then_some(MatchedPublicAccountRoute { credential, route })
-}
-
 pub fn match_admin_route(
     method: &str,
     pathname: &str,
@@ -344,30 +304,5 @@ mod tests {
         );
         assert!(is_admin_path_family("/secret/admin/unknown", "secret"));
         assert!(!is_admin_path_family("/secret/administrator", "secret"));
-    }
-
-    #[test]
-    fn public_account_routes_capture_a_single_encoded_credential() {
-        assert_eq!(
-            match_public_account_route("GET", "/account-one"),
-            Some(MatchedPublicAccountRoute {
-                credential: "account-one".into(),
-                route: PublicAccountRoute::Page,
-            })
-        );
-        assert_eq!(
-            match_public_account_route("GET", "/sk-test%2Fvalue/data"),
-            Some(MatchedPublicAccountRoute {
-                credential: "sk-test/value".into(),
-                route: PublicAccountRoute::Data,
-            })
-        );
-        assert_eq!(match_public_account_route("POST", "/account-one"), None);
-        assert_eq!(match_public_account_route("GET", "/account-one/"), None);
-        assert_eq!(match_public_account_route("GET", "/status/usage"), None);
-        assert_eq!(
-            match_public_account_route("GET", "/account-one/data/"),
-            None
-        );
     }
 }
