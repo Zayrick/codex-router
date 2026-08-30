@@ -147,7 +147,10 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         )
         .await?;
         if let Some(model) = prepared.requested_model.as_deref() {
-            tracker.set_requested_model(model);
+            tracker.set_requested_model_for_service_tier(
+                model,
+                prepared.requested_service_tier.as_deref(),
+            );
         }
         let headers = proxy_request_headers(&prepared.headers, &credentials, target.path(), false);
         self.send(&target, parts.method, headers, prepared.body, false)
@@ -229,6 +232,7 @@ struct PreparedProxyBody {
     headers: HeaderBag,
     body: Option<reqwest::Body>,
     requested_model: Option<String>,
+    requested_service_tier: Option<String>,
 }
 
 async fn prepare_proxy_body(
@@ -272,12 +276,18 @@ async fn adapt_json_body<'a>(
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_owned);
+    let requested_service_tier = parsed
+        .body
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let adapted = adapt(&parsed.body);
     if matches!(adapted, Cow::Borrowed(_)) {
         return Ok(PreparedProxyBody {
             headers,
             body: Some(reqwest::Body::from(parsed.encoded_body)),
             requested_model,
+            requested_service_tier,
         });
     }
     let bytes = serde_json::to_vec(adapted.as_ref()).map_err(|_| json_serialization_error())?;
@@ -285,6 +295,7 @@ async fn adapt_json_body<'a>(
         headers: json_headers(&headers),
         body: Some(reqwest::Body::from(bytes)),
         requested_model,
+        requested_service_tier,
     })
 }
 
@@ -357,6 +368,7 @@ async fn adapt_live_bootstrap(
         headers: json_headers(&headers),
         body: Some(reqwest::Body::from(bytes)),
         requested_model,
+        requested_service_tier: None,
     })
 }
 
@@ -367,6 +379,7 @@ fn passthrough_body(body: Body, method: &Method, headers: HeaderBag) -> Prepared
         headers,
         body,
         requested_model: None,
+        requested_service_tier: None,
     }
 }
 

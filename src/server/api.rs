@@ -174,9 +174,7 @@ async fn dispatch(
             let input = body::request_json(&parts.headers, body).await?;
             let adapted = route.adapter().ok_or_else(runtime_failure)?.adapt(&input)?;
             let tracker = UsageTracker::http(state.usage.clone(), identity, client_url.path());
-            if let Some(model) = adapted.body.get("model").and_then(Value::as_str) {
-                tracker.set_requested_model(model);
-            }
+            tracker.observe_request_object(&adapted.body);
             let upstream = client
                 .send_converted_responses(&adapted.body, &parts.headers)
                 .await?;

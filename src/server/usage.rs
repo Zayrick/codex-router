@@ -289,10 +289,16 @@ struct UsageTrackerInner {
     identity: UsageIdentity,
     endpoint: String,
     transport: &'static str,
-    requested_model: Mutex<String>,
+    request: Mutex<TrackedRequest>,
     allow_multiple: bool,
     terminal_seen: AtomicBool,
     seen_responses: Mutex<HashSet<String>>,
+}
+
+#[derive(Default)]
+struct TrackedRequest {
+    model: String,
+    fast_mode: bool,
 }
 
 impl UsageTracker {
@@ -321,7 +327,7 @@ impl UsageTracker {
                 identity,
                 endpoint: endpoint.into(),
                 transport,
-                requested_model: Mutex::new(String::new()),
+                request: Mutex::new(TrackedRequest::default()),
                 allow_multiple,
                 terminal_seen: AtomicBool::new(false),
                 seen_responses: Mutex::new(HashSet::new()),
@@ -330,10 +336,21 @@ impl UsageTracker {
     }
 
     pub fn observe_request_value(&self, value: &Value) {
-        let Some(model) = request_model(value) else {
+        let Some(object) = value.as_object() else {
             return;
         };
-        self.set_requested_model(model);
+        self.observe_request_object(object);
+    }
+
+    pub fn observe_request_object(&self, object: &Map<String, Value>) {
+        let kind = string(object, "type");
+        if kind.is_some_and(|kind| !matches!(kind, "response.create" | "response.append")) {
+            return;
+        }
+        let Some(model) = request_model(object) else {
+            return;
+        };
+        self.set_requested_model_for_service_tier(model, request_service_tier(object));
     }
 
     pub fn observe_request_text(&self, text: &str) {
@@ -342,27 +359,29 @@ impl UsageTracker {
         }
     }
 
-    pub fn set_requested_model(&self, model: &str) {
+    pub fn set_requested_model_for_service_tier(&self, model: &str, service_tier: Option<&str>) {
         let model = model.trim();
         if model.is_empty() {
             return;
         }
-        if let Ok(mut current) = self.inner.requested_model.lock() {
-            *current = model.to_owned();
+        if let Ok(mut request) = self.inner.request.lock() {
+            request.model = model.to_owned();
+            request.fast_mode = service_tier == Some("priority");
         }
     }
 
     pub fn observe_response_value(&self, value: &Value) {
-        let fallback_model = self
+        let (fallback_model, fast_mode) = self
             .inner
-            .requested_model
+            .request
             .lock()
             .ok()
-            .map(|model| model.clone())
+            .map(|request| (request.model.clone(), request.fast_mode))
             .unwrap_or_default();
-        let Some(parsed) = parse_usage(value, &fallback_model) else {
+        let Some(mut parsed) = parse_usage(value, &fallback_model) else {
             return;
         };
+        parsed.model = recorded_model(&parsed.model, fast_mode);
         if !self.claim_terminal(&parsed, value) {
             return;
         }
@@ -491,18 +510,30 @@ impl UsageWireObserver {
     }
 }
 
-fn request_model(value: &Value) -> Option<&str> {
-    let object = value.as_object()?;
-    let kind = object.get("type").and_then(Value::as_str);
-    if kind.is_some_and(|kind| !matches!(kind, "response.create" | "response.append")) {
-        return None;
-    }
+fn request_model(object: &Map<String, Value>) -> Option<&str> {
     string(object, "model").or_else(|| {
         object
             .get("response")
             .and_then(Value::as_object)
             .and_then(|response| string(response, "model"))
     })
+}
+
+fn request_service_tier(object: &Map<String, Value>) -> Option<&str> {
+    string(object, "service_tier").or_else(|| {
+        object
+            .get("response")
+            .and_then(Value::as_object)
+            .and_then(|response| string(response, "service_tier"))
+    })
+}
+
+fn recorded_model(model: &str, fast_mode: bool) -> String {
+    if fast_mode && !model.ends_with("-fast") {
+        format!("{model}-fast")
+    } else {
+        model.to_owned()
+    }
 }
 
 fn parse_usage(value: &Value, fallback_model: &str) -> Option<ParsedUsage> {
@@ -1012,12 +1043,14 @@ mod tests {
         let (store, path) = temporary_store();
         let tracker = UsageTracker::websocket(store.clone(), identity(), "/v1/responses");
 
-        tracker.observe_request_text(r#"{"type":"response.create","model":"gpt-5.6-sol"}"#);
-        tracker.observe_response_text(
-            r#"{"type":"response.completed","response":{"id":"resp_ws_1","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
+        tracker.observe_request_text(
+            r#"{"type":"response.create","model":"gpt-5.6-sol","service_tier":"priority"}"#,
         );
         tracker.observe_response_text(
-            r#"{"type":"response.completed","response":{"id":"resp_ws_1","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
+            r#"{"type":"response.completed","response":{"id":"resp_ws_1","model":"gpt-5.6-sol","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
+        );
+        tracker.observe_response_text(
+            r#"{"type":"response.completed","response":{"id":"resp_ws_1","model":"gpt-5.6-sol","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
         );
         tracker.observe_request_text(r#"{"type":"response.create","model":"gpt-5.6-terra"}"#);
         tracker.observe_response_text(
@@ -1028,7 +1061,7 @@ mod tests {
         assert_eq!(dashboard.totals.total_tokens, 42);
         assert_eq!(dashboard.models.len(), 2);
         assert_eq!(dashboard.models[0].model, "gpt-5.6-terra");
-        assert_eq!(dashboard.models[1].model, "gpt-5.6-sol");
+        assert_eq!(dashboard.models[1].model, "gpt-5.6-sol-fast");
         assert!(
             dashboard
                 .recent_events
@@ -1045,7 +1078,7 @@ mod tests {
     async fn sse_wire_observer_handles_split_terminal_events() {
         let (store, path) = temporary_store();
         let tracker = UsageTracker::http(store.clone(), identity(), "/v1/responses");
-        tracker.set_requested_model("gpt-5.4");
+        tracker.set_requested_model_for_service_tier("gpt-5.4", Some("priority"));
         let mut observer = tracker.wire_observer(Some("text/event-stream; charset=utf-8"));
         let payload = br#"data: {"type":"response.completed","response":{"id":"resp_sse_1","usage":{"input_tokens":8,"input_tokens_details":{"cached_tokens":6},"output_tokens":3,"total_tokens":11}}}
 
@@ -1060,7 +1093,7 @@ data: [DONE]
         let dashboard = wait_for_requests(&store, 1).await;
         assert_eq!(dashboard.totals.total_tokens, 11);
         assert_eq!(dashboard.totals.cached_input_tokens, 6);
-        assert_eq!(dashboard.models[0].model, "gpt-5.4");
+        assert_eq!(dashboard.models[0].model, "gpt-5.4-fast");
         assert_eq!(dashboard.recent_events[0].transport, "http");
 
         drop(tracker);
