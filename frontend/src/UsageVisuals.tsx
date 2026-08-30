@@ -294,6 +294,7 @@ export function DownstreamCostDonut({ usage }: { usage: UsageDashboard }) {
 		<DonutBreakdownCard
 			fixedMetric="cost"
 			rows={identityRows(usage.identities)}
+			split
 			subtitle="各下游身份在当前周期成本中的占比"
 			title="下游成本分布"
 		/>
@@ -303,11 +304,13 @@ export function DownstreamCostDonut({ usage }: { usage: UsageDashboard }) {
 function DonutBreakdownCard({
 	fixedMetric,
 	rows,
+	split = false,
 	subtitle,
 	title,
 }: {
 	fixedMetric?: DonutMetric;
 	rows: DonutRow[];
+	split?: boolean;
 	subtitle?: string;
 	title: string;
 }) {
@@ -317,13 +320,13 @@ function DonutBreakdownCard({
 	const total = values.reduce((sum, value) => sum + Math.max(0, value), 0);
 	const segments = donutSegments(values, total);
 	return (
-		<article className="donut-card">
+		<article className={`donut-card${split ? " donut-card-split" : ""}`}>
 		<header>
 			<div>
 				<h3>{title}</h3>
 				<p>{subtitle ?? "按 Token 或成本查看占比"}</p>
 			</div>
-			{fixedMetric ? <span className="donut-fixed-metric">成本</span> : (
+			{fixedMetric ? null : (
 				<select aria-label={`${title}统计指标`} onChange={(event) => setSelectedMetric(event.target.value as DonutMetric)} value={metric}>
 					<option value="tokens">Token</option>
 					<option value="cost">成本</option>
@@ -333,20 +336,22 @@ function DonutBreakdownCard({
 		{total > 0 ? (
 			<div className="donut-content">
 				<div className="donut-figure">
-					<svg aria-label={`${title}${metric === "tokens" ? "Token" : "成本"}占比圆环图`} role="img" viewBox="0 0 180 180">
-						<circle className="donut-track" cx="90" cy="90" fill="none" r="62" strokeWidth="18" />
-						{segments.map((segment) => (
-							<path
-								d={arcPath(90, 90, 62, segment.start, segment.end)}
-								fill="none"
-								key={segment.index}
-								stroke={DONUT_COLORS[segment.index % DONUT_COLORS.length]}
-								strokeLinecap="round"
-								strokeWidth="18"
-							/>
-						))}
-					</svg>
-					<div><span>{metric === "tokens" ? "总 Token" : "总成本"}</span><strong>{metric === "tokens" ? formatTokens(total) : formatCost(total)}</strong></div>
+					<div className="donut-chart">
+						<svg aria-label={`${title}${metric === "tokens" ? "Token" : "成本"}占比圆环图`} role="img" viewBox="0 0 180 180">
+							<circle className="donut-track" cx="90" cy="90" fill="none" r="62" strokeWidth="18" />
+							{segments.map((segment) => (
+								<path
+									d={arcPath(90, 90, 62, segment.start, segment.end)}
+									fill="none"
+									key={segment.index}
+									stroke={DONUT_COLORS[segment.index % DONUT_COLORS.length]}
+									strokeLinecap="round"
+									strokeWidth="18"
+								/>
+							))}
+						</svg>
+						<div><span>{metric === "tokens" ? "总 Token" : "总成本"}</span><strong>{metric === "tokens" ? formatTokens(total) : formatCost(total)}</strong></div>
+					</div>
 				</div>
 				<div className="donut-legend">
 					{rows.map((row, index) => {

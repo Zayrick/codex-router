@@ -2394,8 +2394,7 @@ td strong {
 	gap: 0.85rem;
 }
 
-.donut-card select,
-.donut-fixed-metric {
+.donut-card select {
 	height: 2rem;
 	padding: 0 1.65rem 0 0.65rem;
 	color: var(--text);
@@ -2406,12 +2405,6 @@ td strong {
 	font-weight: 680;
 }
 
-.donut-fixed-metric {
-	display: inline-flex;
-	align-items: center;
-	padding-right: 0.65rem;
-}
-
 .donut-content {
 	display: grid;
 	grid-template-columns: minmax(9rem, 0.7fr) minmax(10rem, 1fr);
@@ -2420,35 +2413,44 @@ td strong {
 }
 
 .donut-figure {
-	position: relative;
 	display: grid;
 	place-items: center;
 }
 
-.donut-figure svg {
-	display: block;
+.donut-chart {
+	position: relative;
+	display: grid;
 	width: min(100%, 12rem);
+	place-items: center;
+}
+
+.donut-chart svg {
+	display: block;
+	width: 100%;
 }
 
 .donut-track {
 	stroke: var(--border);
 }
 
-.donut-figure > div {
+.donut-chart > div {
 	position: absolute;
+	top: 50%;
+	left: 50%;
 	display: grid;
 	max-width: 5.5rem;
 	justify-items: center;
 	gap: 0.2rem;
+	transform: translate(-50%, -50%);
 	text-align: center;
 }
 
-.donut-figure > div span {
+.donut-chart > div span {
 	color: var(--text-tertiary);
 	font-size: 0.56rem;
 }
 
-.donut-figure > div strong {
+.donut-chart > div strong {
 	max-width: 100%;
 	overflow: hidden;
 	font-size: 0.92rem;
@@ -2507,6 +2509,40 @@ td strong {
 .donut-legend-row small {
 	grid-column: 3;
 	text-align: right;
+}
+
+.donut-card-split {
+	grid-template-columns: minmax(10rem, 1fr) auto;
+	grid-template-rows: auto 1fr;
+	align-items: stretch;
+	column-gap: 1.25rem;
+}
+
+.donut-card-split > header {
+	grid-column: 1;
+	grid-row: 1;
+}
+
+.donut-card-split .donut-content {
+	display: contents;
+}
+
+.donut-card-split .donut-legend {
+	grid-column: 1;
+	grid-row: 2;
+	align-content: end;
+}
+
+.donut-card-split .donut-figure {
+	grid-column: 2;
+	grid-row: 1 / span 2;
+	min-width: 0;
+	padding-left: 1.25rem;
+	border-left: 1px solid var(--border);
+}
+
+.donut-card-split .donut-empty {
+	grid-column: 1 / -1;
 }
 
 .donut-empty {
@@ -3170,6 +3206,27 @@ td strong {
 
 	.donut-content {
 		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.donut-card-split {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: auto;
+	}
+
+	.donut-card-split .donut-content {
+		display: grid;
+	}
+
+	.donut-card-split .donut-figure,
+	.donut-card-split .donut-legend,
+	.donut-card-split > header {
+		grid-column: auto;
+		grid-row: auto;
+	}
+
+	.donut-card-split .donut-figure {
+		padding-left: 0;
+		border-left: 0;
 	}
 
 	.pricing-add-row,
