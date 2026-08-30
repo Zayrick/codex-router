@@ -1,0 +1,78 @@
+name: Build Linux amd64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-gnu
+
+jobs:
+  build:
+    name: Build release binary
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js and pnpm
+        uses: pnpm/setup@v2
+        with:
+          version: 11.18.0
+          runtime: node@22.12.0
+          cache: true
+          cache-dependency-path: frontend/pnpm-lock.yaml
+          package-json-file: frontend/package.json
+          install: false
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --target "$TARGET"
+          rustup default 1.97.1
+
+      - name: Cache Cargo dependencies and build output
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: linux-amd64-rust-1.97.1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            linux-amd64-rust-1.97.1-
+
+      - name: Build release binary
+        run: cargo build --locked --release --target "$TARGET"
+
+      - name: Verify binary
+        shell: bash
+        run: |
+          file "target/$TARGET/release/codex-router"
+          "target/$TARGET/release/codex-router" --version
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          package_dir="dist/codex-router-linux-amd64"
+          install -D -m 0755 "target/$TARGET/release/codex-router" "$package_dir/codex-router"
+          install -D -m 0644 config.example.toml "$package_dir/config.example.toml"
+          (
+            cd "$package_dir"
+            sha256sum codex-router > SHA256SUMS
+          )
+          tar -C dist -czf dist/codex-router-linux-amd64.tar.gz codex-router-linux-amd64
+
+      - name: Upload Linux amd64 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/codex-router-linux-amd64.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
