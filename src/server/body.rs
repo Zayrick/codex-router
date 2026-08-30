@@ -13,7 +13,7 @@ pub async fn request_json(headers: &HeaderMap, body: Body) -> AppResult<JsonObje
         .get("content-encoding")
         .and_then(|value| value.to_str().ok());
     let bytes = read_limited_body(headers, body, MAX_JSON_BODY_BYTES).await?;
-    parse_json_body(Some(&bytes), content_encoding)
+    parse_json_body(&bytes, content_encoding)
 }
 
 pub async fn read_limited_body(

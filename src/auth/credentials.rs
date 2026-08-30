@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 
 use crate::core::{ApiError, AppResult};
 
-use super::{SecretStore, oauth_ports::OAuthCredentialsStore};
+use super::{StateStore, oauth_ports::OAuthCredentialsStore};
 
 const OAUTH_KEY: &str = "oauth";
 const AUTH_PROXY_OAUTH_KEY_PREFIX: &str = "oauth:auth-proxy:";
@@ -37,19 +37,19 @@ pub struct OAuthStatus {
 }
 
 pub struct OAuthRepository<'a> {
-    store: &'a dyn SecretStore,
+    store: &'a dyn StateStore,
     storage_key: String,
 }
 
 impl<'a> OAuthRepository<'a> {
-    pub fn new(store: &'a dyn SecretStore) -> Self {
+    pub fn new(store: &'a dyn StateStore) -> Self {
         Self {
             store,
             storage_key: OAUTH_KEY.into(),
         }
     }
 
-    pub fn for_auth_proxy_account(store: &'a dyn SecretStore, record_id: &str) -> Self {
+    pub fn for_auth_proxy_account(store: &'a dyn StateStore, record_id: &str) -> Self {
         Self {
             store,
             storage_key: format!("{AUTH_PROXY_OAUTH_KEY_PREFIX}{record_id}"),
@@ -57,7 +57,7 @@ impl<'a> OAuthRepository<'a> {
     }
 
     pub async fn read(&self) -> AppResult<Option<StoredOAuthCredentials>> {
-        let Some(serialized) = self.store.get(&self.storage_key, Some(30)).await? else {
+        let Some(serialized) = self.store.get(&self.storage_key).await? else {
             return Ok(None);
         };
         if serialized.len() > MAX_OAUTH_CONFIG_CHARS {
@@ -78,7 +78,7 @@ impl<'a> OAuthRepository<'a> {
     }
 
     pub async fn require_unconfigured(&self) -> AppResult<()> {
-        if self.store.get(&self.storage_key, None).await?.is_some() {
+        if self.store.get(&self.storage_key).await?.is_some() {
             return Err(
                 ApiError::new(409, "OAuth credentials are already configured.")
                     .with_kind("invalid_request_error")

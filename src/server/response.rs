@@ -11,7 +11,7 @@ use crate::{
 };
 
 pub fn empty(status: u16) -> Response {
-    from_dto(http::empty_response(status)).unwrap_or_else(|_| fallback_response(500))
+    from_dto(http::empty_response(status)).unwrap_or_else(|_| internal_server_error())
 }
 
 pub fn json<T: Serialize + ?Sized>(value: &T, status: u16) -> AppResult<Response> {
@@ -19,7 +19,7 @@ pub fn json<T: Serialize + ?Sized>(value: &T, status: u16) -> AppResult<Response
 }
 
 pub fn api_error(error: &ApiError) -> Response {
-    json(&error.openai_payload(), error.status).unwrap_or_else(|_| fallback_response(500))
+    json(&error.openai_payload(), error.status).unwrap_or_else(|_| internal_server_error())
 }
 
 pub fn with_cors(response: Response, origin: &str) -> Response {
@@ -51,14 +51,11 @@ pub fn suppress_html_body(response: Response) -> Response {
     let (parts, _) = response.into_parts();
     let policy = http::suppress_html_body(ResponseDto {
         status: parts.status.as_u16(),
-        status_text: String::new(),
         headers: headers_dto(&parts.headers),
         body: ResponseBodyDto::Passthrough,
-        websocket: false,
-        encode_body_manual: false,
     });
     build_response(policy.status, &policy.headers, Body::empty())
-        .unwrap_or_else(|_| fallback_response(500))
+        .unwrap_or_else(|_| internal_server_error())
 }
 
 pub fn headers_dto(source: &HeaderMap) -> HeadersDto {
@@ -85,9 +82,7 @@ pub fn from_dto(response: ResponseDto) -> AppResult<Response> {
     let body = match response.body {
         ResponseBodyDto::Empty => Body::empty(),
         ResponseBodyDto::Bytes(bytes) => Body::from(bytes),
-        ResponseBodyDto::Passthrough | ResponseBodyDto::EventStream => {
-            return Err(invalid_response());
-        }
+        ResponseBodyDto::Passthrough => return Err(invalid_response()),
     };
     build_response(response.status, &response.headers, body)
 }
@@ -100,14 +95,11 @@ fn upstream(
     let headers = headers_dto(response.headers());
     let policy = policy(ResponseDto {
         status,
-        status_text: String::new(),
         headers,
         body: ResponseBodyDto::Passthrough,
-        websocket: false,
-        encode_body_manual: false,
     });
     let body = Body::from_stream(response.bytes_stream());
-    build_response(policy.status, &policy.headers, body).unwrap_or_else(|_| fallback_response(500))
+    build_response(policy.status, &policy.headers, body).unwrap_or_else(|_| internal_server_error())
 }
 
 fn map_response_head(
@@ -117,13 +109,10 @@ fn map_response_head(
     let (parts, body) = response.into_parts();
     let policy = policy(ResponseDto {
         status: parts.status.as_u16(),
-        status_text: String::new(),
         headers: headers_dto(&parts.headers),
         body: ResponseBodyDto::Passthrough,
-        websocket: false,
-        encode_body_manual: false,
     });
-    build_response(policy.status, &policy.headers, body).unwrap_or_else(|_| fallback_response(500))
+    build_response(policy.status, &policy.headers, body).unwrap_or_else(|_| internal_server_error())
 }
 
 fn build_response(status: u16, headers: &HeadersDto, body: Body) -> AppResult<Response> {
@@ -134,10 +123,9 @@ fn build_response(status: u16, headers: &HeadersDto, body: Body) -> AppResult<Re
     Ok(response)
 }
 
-fn fallback_response(status: u16) -> Response {
+fn internal_server_error() -> Response {
     let mut response = Response::new(Body::empty());
-    *response.status_mut() =
-        StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
     response
 }
 

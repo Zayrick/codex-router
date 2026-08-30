@@ -23,7 +23,7 @@ pub fn build_tool_name_maps<'a>(names: impl IntoIterator<Item = &'a str>) -> Too
             let ending = format!("_{suffix}");
             candidate = format!(
                 "{}{}",
-                truncate_utf16(&base, CODEX_IDENTIFIER_LIMIT.saturating_sub(ending.len())),
+                truncate_utf16(&base, CODEX_IDENTIFIER_LIMIT - ending.len()),
                 ending
             );
             suffix += 1;
@@ -56,7 +56,7 @@ pub fn shorten_codex_call_id(id: &str) -> String {
     let suffix = format!("_{}", stable_hash(id));
     format!(
         "{}{}",
-        truncate_utf16(id, CODEX_IDENTIFIER_LIMIT.saturating_sub(suffix.len())),
+        truncate_utf16(id, CODEX_IDENTIFIER_LIMIT - suffix.len()),
         suffix
     )
 }

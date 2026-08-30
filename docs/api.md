@@ -195,7 +195,7 @@ URL 或自定义子协议。
 
 ## 11. 用量状态
 
-后台维护任务按 `server.maintenance_interval_seconds` 周期采集用量，并把明文快照写回配置文件。
+后台维护任务按 `server.maintenance_interval_seconds` 周期采集用量，并把快照写回配置文件。
 浏览器请求路径不会实时访问 Codex 上游。
 
 `GET /status/usage/data` 返回公开快照字段：采样时间、订阅类型，以及每个窗口的 ID、
@@ -209,7 +209,7 @@ OAuth、API Key、管理配置或管理会话。页面路径同样精确匹配�
 ## 12. 管理 API
 
 管理 JSON API 位于 `/<admin.path>/admin`。精确的 `GET /<admin.path>/admin` 返回 React 管理页面；
-错误方法、额外路径段和其他隐藏路径族请求返回空 `404`。页面与以下 JSON 端点共享原有管理契约：
+错误方法、额外路径段和其他隐藏路径族请求返回空 `404`。页面与以下 JSON 端点共享管理契约：
 
 | 方法与相对路径 | 用途 |
 | --- | --- |

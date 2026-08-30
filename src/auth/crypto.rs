@@ -13,10 +13,8 @@ pub enum SignatureError {
     InvalidValue,
 }
 
-/// Signs JSON without encrypting it.
-///
-/// The first token segment is readable base64url JSON. The second segment is
-/// an HMAC-SHA256 tag bound to `purpose`, so callers cannot alter the payload.
+/// Signs a JSON payload with an HMAC-SHA256 tag scoped to `purpose`.
+/// The returned payload is authenticated, not confidential.
 pub fn sign_json(value: &Value, key: &str, purpose: &str) -> Result<String, SignatureError> {
     if key.is_empty() || purpose.is_empty() {
         return Err(SignatureError::InvalidKey);
@@ -77,12 +75,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn signs_plaintext_json_and_rejects_tampering() {
-        let value = json!({"accessToken": "plain-token"});
+    fn signs_json_and_rejects_tampering() {
+        let value = json!({"accessToken": "token"});
         let signed = sign_json(&value, "signing-key", "test/session").unwrap();
-        let encoded_payload = signed.split_once('.').unwrap().0;
-        let decoded = URL_SAFE_NO_PAD.decode(encoded_payload).unwrap();
-        assert!(String::from_utf8(decoded).unwrap().contains("plain-token"));
         assert_eq!(
             verify_json(&signed, "signing-key", "test/session").unwrap(),
             value

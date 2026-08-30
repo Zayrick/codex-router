@@ -166,11 +166,8 @@ fn rejection_response(
     }));
     let policy = upstream_proxy_response(ResponseDto {
         status: parts.status.as_u16(),
-        status_text: String::new(),
         headers,
         body: ResponseBodyDto::Passthrough,
-        websocket: false,
-        encode_body_manual: false,
     });
     let mut output = Response::new(Body::from(body.unwrap_or_default()));
     *output.status_mut() = parts.status;

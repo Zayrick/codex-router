@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn serves_local_apis_without_worker_bindings() {
+    async fn serves_local_apis() {
         let path =
             std::env::temp_dir().join(format!("codex-router-test-{}.toml", uuid::Uuid::new_v4()));
         let config = AppConfig {

@@ -7,7 +7,7 @@ use subtle::ConstantTimeEq;
 use crate::core::{ApiError, AppResult};
 
 use super::{
-    AuthProxyAccount, SecretStore,
+    AuthProxyAccount, StateStore,
     auth_proxy::{
         MAX_AUTH_PROXY_ACCOUNTS, auth_proxy_account_conflict, auth_proxy_account_not_found,
         validate_auth_proxy_account_input, validate_auth_proxy_account_with_id,
@@ -16,7 +16,7 @@ use super::{
     derived_record_id, new_record_id, sha256, valid_record_id,
 };
 
-const API_KEYS_KV_KEY: &str = "API_KEYS";
+const API_KEYS_KEY: &str = "API_KEYS";
 const CURRENT_API_KEYS_VERSION: u8 = 2;
 const IDLESS_API_KEYS_VERSION: u8 = 1;
 const MAX_API_KEYS_CONFIG_CHARS: usize = 128 * 1_024;
@@ -24,7 +24,6 @@ const MAX_API_KEYS: usize = 100;
 const MAX_API_KEY_NAME_LENGTH: usize = 100;
 const MIN_API_KEY_LENGTH: usize = 11;
 const MAX_API_KEY_LENGTH: usize = 512;
-const DUMMY_API_KEY: &str = "sk-aaaaaaaaaaaaaaaaaaa0";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientApiKey {
@@ -50,28 +49,24 @@ struct ApiKeyState {
 }
 
 pub struct ApiKeyRepository<'a> {
-    store: &'a dyn SecretStore,
+    store: &'a dyn StateStore,
 }
 
 impl<'a> ApiKeyRepository<'a> {
-    pub fn new(store: &'a dyn SecretStore) -> Self {
+    pub fn new(store: &'a dyn StateStore) -> Self {
         Self { store }
     }
 
     pub async fn read(&self) -> AppResult<Vec<ClientApiKey>> {
-        Ok(self.read_state(Some(30), false).await?.keys)
+        Ok(self.read_state(false).await?.keys)
     }
 
     pub async fn read_auth_proxy_accounts(&self) -> AppResult<Vec<AuthProxyAccount>> {
-        Ok(self.read_state(None, true).await?.auth_proxy_accounts)
+        Ok(self.read_state(true).await?.auth_proxy_accounts)
     }
 
-    async fn read_state(
-        &self,
-        cache_ttl: Option<u64>,
-        persist_upgrade: bool,
-    ) -> AppResult<ApiKeyState> {
-        let Some(serialized) = self.store.get(API_KEYS_KV_KEY, cache_ttl).await? else {
+    async fn read_state(&self, persist_upgrade: bool) -> AppResult<ApiKeyState> {
+        let Some(serialized) = self.store.get(API_KEYS_KEY).await? else {
             return Ok(ApiKeyState::default());
         };
         if serialized.len() > MAX_API_KEYS_CONFIG_CHARS {
@@ -114,7 +109,7 @@ impl<'a> ApiKeyRepository<'a> {
             auth_proxy_accounts: state.auth_proxy_accounts.clone(),
         })
         .map_err(|_| invalid_stored_api_keys())?;
-        self.store.put(API_KEYS_KV_KEY, &serialized).await
+        self.store.put(API_KEYS_KEY, &serialized).await
     }
 
     pub async fn authenticate(&self, token: Option<&str>) -> AppResult<()> {
@@ -169,7 +164,7 @@ impl<'a> ApiKeyRepository<'a> {
         value: &Value,
     ) -> AppResult<Vec<AuthProxyAccount>> {
         let candidate = validate_auth_proxy_account_input(value)?;
-        let current = self.read_state(None, true).await?;
+        let current = self.read_state(true).await?;
         require_available_auth_proxy_account(&current.auth_proxy_accounts, &candidate)?;
         let mut updated = current.auth_proxy_accounts;
         updated.push(candidate);
@@ -185,7 +180,7 @@ impl<'a> ApiKeyRepository<'a> {
         value: &Value,
     ) -> AppResult<Vec<AuthProxyAccount>> {
         let target_id = validate_auth_proxy_account_id(id.as_str())?;
-        let current = self.read_state(None, true).await?;
+        let current = self.read_state(true).await?;
         let mut accounts = current.auth_proxy_accounts;
         let index = accounts
             .iter()
@@ -208,7 +203,7 @@ impl<'a> ApiKeyRepository<'a> {
 
     pub async fn delete_auth_proxy_account(&self, id: &Value) -> AppResult<Vec<AuthProxyAccount>> {
         let target_id = validate_auth_proxy_account_id(id.as_str())?;
-        let current = self.read_state(None, true).await?;
+        let current = self.read_state(true).await?;
         let accounts: Vec<_> = current
             .auth_proxy_accounts
             .iter()
@@ -226,7 +221,7 @@ impl<'a> ApiKeyRepository<'a> {
 
     pub async fn auth_proxy_account(&self, id: &Value) -> AppResult<AuthProxyAccount> {
         let target_id = validate_auth_proxy_account_id(id.as_str())?;
-        self.read_state(None, true)
+        self.read_state(true)
             .await?
             .auth_proxy_accounts
             .into_iter()
@@ -239,16 +234,13 @@ pub fn authenticate_token(token: Option<&str>, configured: &[ClientApiKey]) -> A
     let Some(token) = token.filter(|token| utf16_len(token) <= MAX_API_KEY_LENGTH) else {
         return Err(invalid_api_key());
     };
-    let candidates: Vec<_> = configured.iter().filter(|entry| entry.enabled).collect();
     let token_digest = sha256(token);
-    let mut matched = false;
-    if candidates.is_empty() {
-        let _ = token_digest.ct_eq(&sha256(DUMMY_API_KEY));
-    } else {
-        for candidate in candidates {
-            matched |= bool::from(token_digest.ct_eq(&sha256(&candidate.key)));
-        }
-    }
+    let matched = configured
+        .iter()
+        .filter(|entry| entry.enabled)
+        .fold(false, |matched, candidate| {
+            matched | bool::from(token_digest.ct_eq(&sha256(&candidate.key)))
+        });
     if matched {
         Ok(())
     } else {
@@ -279,7 +271,7 @@ pub fn client_token<'a>(
 }
 
 pub fn validate_api_key_input(value: &Value) -> AppResult<ClientApiKey> {
-    validate_api_key_with_id(value, new_record_id()?)
+    validate_api_key_with_id(value, new_record_id())
 }
 
 fn validate_api_key_with_id(value: &Value, id: String) -> AppResult<ClientApiKey> {
@@ -496,13 +488,7 @@ fn invalid_stored_api_keys() -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        future::Future,
-        pin::pin,
-        sync::Mutex,
-        task::{Context, Poll, Waker},
-    };
+    use std::{collections::BTreeMap, sync::Mutex};
 
     use async_trait::async_trait;
     use serde_json::json;
@@ -515,8 +501,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl SecretStore for MemoryStore {
-        async fn get(&self, key: &str, _cache_ttl: Option<u64>) -> AppResult<Option<String>> {
+    impl StateStore for MemoryStore {
+        async fn get(&self, key: &str) -> AppResult<Option<String>> {
             Ok(self.values.lock().unwrap().get(key).cloned())
         }
 
@@ -531,16 +517,6 @@ mod tests {
         async fn delete(&self, key: &str) -> AppResult<()> {
             self.values.lock().unwrap().remove(key);
             Ok(())
-        }
-    }
-
-    fn block_on_ready<F: Future>(future: F) -> F::Output {
-        let mut future = pin!(future);
-        let waker = Waker::noop();
-        let mut context = Context::from_waker(waker);
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(value) => value,
-            Poll::Pending => panic!("test future unexpectedly returned pending"),
         }
     }
 
@@ -574,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_enabled_keys_and_executes_a_dummy_comparison() {
+    fn accepts_only_enabled_keys() {
         let keys = vec![
             key("disabled", "sk-bbbbbbbbbbbbbbbbbbb1", false),
             key("enabled", "sk-ccccccccccccccccccc2", true),
@@ -600,52 +576,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn version_one_config_defaults_proxy_accounts_and_is_plaintext() {
-        let store = MemoryStore::default();
-        let repository = ApiKeyRepository::new(&store);
-        let version_one = serde_json::to_string(&json!({ "version": 1, "keys": [] })).unwrap();
-        store
-            .values
-            .lock()
-            .unwrap()
-            .insert(API_KEYS_KV_KEY.into(), version_one);
-        assert!(
-            block_on_ready(repository.read_auth_proxy_accounts())
-                .unwrap()
-                .is_empty()
-        );
-
-        let configured_key = key("client", "sk-ccccccccccccccccccc2", true);
-        block_on_ready(repository.store(std::slice::from_ref(&configured_key))).unwrap();
-        let accounts = block_on_ready(repository.create_auth_proxy_account(&json!({
-            "name": "browser",
-            "accountId": "account-sensitive",
-            "enabled": true
-        })))
-        .unwrap();
-
-        let raw = store
-            .values
-            .lock()
-            .unwrap()
-            .get(API_KEYS_KV_KEY)
-            .cloned()
-            .unwrap();
-        assert!(raw.contains("account-sensitive"));
-        assert!(raw.contains("sk-ccccccccccccccccccc2"));
-        assert_eq!(
-            block_on_ready(repository.read()).unwrap(),
-            vec![configured_key]
-        );
-        assert_eq!(
-            block_on_ready(repository.read_auth_proxy_accounts()).unwrap(),
-            accounts
-        );
-    }
-
-    #[test]
-    fn records_without_ids_receive_stable_ids_and_are_written_as_version_two() {
+    #[tokio::test]
+    async fn records_without_ids_receive_stable_ids_and_are_written_as_version_two() {
         let store = MemoryStore::default();
         let repository = ApiKeyRepository::new(&store);
         let idless = serde_json::to_string(&json!({
@@ -666,10 +598,10 @@ mod tests {
             .values
             .lock()
             .unwrap()
-            .insert(API_KEYS_KV_KEY.into(), idless);
+            .insert(API_KEYS_KEY.into(), idless);
 
-        let accounts = block_on_ready(repository.read_auth_proxy_accounts()).unwrap();
-        let keys = block_on_ready(repository.read()).unwrap();
+        let accounts = repository.read_auth_proxy_accounts().await.unwrap();
+        let keys = repository.read().await.unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(keys.len(), 1);
         assert!(valid_record_id(&accounts[0].id));
@@ -681,7 +613,7 @@ mod tests {
             .values
             .lock()
             .unwrap()
-            .get(API_KEYS_KV_KEY)
+            .get(API_KEYS_KEY)
             .cloned()
             .unwrap();
         let rewritten: Value = serde_json::from_str(&serialized).unwrap();
@@ -698,60 +630,68 @@ mod tests {
         );
     }
 
-    #[test]
-    fn updates_use_opaque_ids_and_preserve_them_across_renames() {
+    #[tokio::test]
+    async fn updates_use_opaque_ids_and_preserve_them_across_renames() {
         let store = MemoryStore::default();
         let repository = ApiKeyRepository::new(&store);
         let supplied_id = "00000000-0000-4000-8000-000000000098";
-        let created = block_on_ready(repository.create(&json!({
-            "id": supplied_id,
-            "name": "before",
-            "key": "sk-created-value-123!",
-            "enabled": true
-        })))
-        .unwrap();
+        let created = repository
+            .create(&json!({
+                "id": supplied_id,
+                "name": "before",
+                "key": "sk-created-value-123!",
+                "enabled": true
+            }))
+            .await
+            .unwrap();
         assert_eq!(created[0].id.as_bytes()[14], b'4');
         assert_ne!(created[0].id, supplied_id);
         let id = created[0].id.clone();
-        let updated = block_on_ready(repository.update(
-            &json!(id),
-            &json!({
+        let updated = repository
+            .update(
+                &json!(id),
+                &json!({
                 "name": "after",
                 "key": "sk-created-value-123!",
                 "enabled": false
-            }),
-        ))
-        .unwrap();
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(updated[0].id, id);
         assert_eq!(updated[0].name, "after");
         assert!(!updated[0].enabled);
     }
 
-    #[test]
-    fn proxy_account_ids_are_generated_and_survive_editable_field_changes() {
+    #[tokio::test]
+    async fn proxy_account_ids_are_generated_and_survive_editable_field_changes() {
         let store = MemoryStore::default();
         let repository = ApiKeyRepository::new(&store);
         let supplied_id = "00000000-0000-4000-8000-000000000099";
-        let created = block_on_ready(repository.create_auth_proxy_account(&json!({
-            "id": supplied_id,
-            "name": "before",
-            "accountId": "account-before",
-            "enabled": true
-        })))
-        .unwrap();
+        let created = repository
+            .create_auth_proxy_account(&json!({
+                "id": supplied_id,
+                "name": "before",
+                "accountId": "account-before",
+                "enabled": true
+            }))
+            .await
+            .unwrap();
         assert_eq!(created[0].id.as_bytes()[14], b'4');
         assert_ne!(created[0].id, supplied_id);
         let id = created[0].id.clone();
 
-        let updated = block_on_ready(repository.update_auth_proxy_account(
-            &json!(id),
-            &json!({
-                "name": "after",
-                "accountId": "account-after",
-                "enabled": false
-            }),
-        ))
-        .unwrap();
+        let updated = repository
+            .update_auth_proxy_account(
+                &json!(id),
+                &json!({
+                    "name": "after",
+                    "accountId": "account-after",
+                    "enabled": false
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(updated[0].id, id);
         assert_eq!(updated[0].name, "after");
         assert_eq!(updated[0].account_id, "account-after");

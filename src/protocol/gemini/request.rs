@@ -1,25 +1,23 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use serde_json::{Map, Value, json};
 
-use crate::core::{ApiError, AppResult, JsonObject};
+use crate::{
+    core::{ApiError, AppResult, JsonObject},
+    protocol::identifiers::{
+        ToolNameMaps, build_tool_name_maps, codex_tool_name, shorten_codex_call_id,
+    },
+};
 
 use super::TokenCounter;
 
 const MAX_TOOLS: usize = 128;
-const CODEX_IDENTIFIER_LIMIT: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdaptedGeminiRequest {
     pub body: JsonObject,
     pub model: String,
     pub reverse_tool_names: HashMap<String, String>,
-}
-
-#[derive(Default)]
-struct ToolNameMaps {
-    forward: HashMap<String, String>,
-    reverse: HashMap<String, String>,
 }
 
 struct FunctionDeclaration<'a> {
@@ -546,74 +544,6 @@ fn effort_from_budget(budget: f64) -> String {
     .into()
 }
 
-fn build_tool_name_maps<'a>(names: impl IntoIterator<Item = &'a str>) -> ToolNameMaps {
-    let mut result = ToolNameMaps::default();
-    let mut used = HashSet::new();
-    for name in names {
-        if result.forward.contains_key(name) {
-            continue;
-        }
-        let base = tool_name_candidate(name);
-        let mut candidate = base.clone();
-        let mut suffix = 1;
-        while used.contains(&candidate) {
-            let ending = format!("_{suffix}");
-            candidate = format!(
-                "{}{}",
-                truncate_utf16(&base, CODEX_IDENTIFIER_LIMIT - utf16_len(&ending)),
-                ending
-            );
-            suffix += 1;
-        }
-        used.insert(candidate.clone());
-        result.forward.insert(name.to_owned(), candidate.clone());
-        result.reverse.insert(candidate, name.to_owned());
-    }
-    result
-}
-
-fn codex_tool_name(name: &str, forward: &HashMap<String, String>) -> String {
-    forward
-        .get(name)
-        .cloned()
-        .unwrap_or_else(|| tool_name_candidate(name))
-}
-
-fn tool_name_candidate(name: &str) -> String {
-    if utf16_len(name) <= CODEX_IDENTIFIER_LIMIT {
-        return name.to_owned();
-    }
-    if let Some(suffix) = name
-        .strip_prefix("mcp__")
-        .and_then(|rest| rest.rsplit_once("__").map(|(_, suffix)| suffix))
-    {
-        return truncate_utf16(&format!("mcp__{suffix}"), CODEX_IDENTIFIER_LIMIT);
-    }
-    truncate_utf16(name, CODEX_IDENTIFIER_LIMIT)
-}
-
-fn shorten_codex_call_id(id: &str) -> String {
-    if utf16_len(id) <= CODEX_IDENTIFIER_LIMIT {
-        return id.to_owned();
-    }
-    let suffix = format!("_{}", stable_hash(id));
-    format!(
-        "{}{}",
-        truncate_utf16(id, CODEX_IDENTIFIER_LIMIT - utf16_len(&suffix)),
-        suffix
-    )
-}
-
-fn stable_hash(value: &str) -> String {
-    let mut left = 0x811c_9dc5_u32;
-    let mut right = 0x9e37_79b9_u32;
-    for code in value.encode_utf16() {
-        left = (left ^ u32::from(code)).wrapping_mul(0x0100_0193);
-        right = (right ^ u32::from(code)).wrapping_mul(0x85eb_ca6b);
-    }
-    format!("{left:08x}{right:08x}")
-}
-
 fn message(role: &str, part: Value) -> Value {
     json!({ "type": "message", "role": role, "content": [part] })
 }
@@ -696,20 +626,4 @@ fn invalid_request(message: impl Into<String>, param: &str) -> ApiError {
 
 fn utf16_len(value: &str) -> usize {
     value.encode_utf16().count()
-}
-
-fn truncate_utf16(value: &str, limit: usize) -> String {
-    let mut length = 0;
-    value
-        .chars()
-        .take_while(|character| {
-            let next = length + character.len_utf16();
-            if next > limit {
-                false
-            } else {
-                length = next;
-                true
-            }
-        })
-        .collect()
 }

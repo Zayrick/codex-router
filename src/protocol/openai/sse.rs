@@ -154,7 +154,7 @@ impl SseFrameDecoder {
 }
 
 /// Codex-specific wrapper that parses data frames as JSON objects and ignores
-/// the terminal `[DONE]` marker, matching the original async generator.
+/// the terminal `[DONE]` marker.
 #[derive(Debug, Clone, Default)]
 pub struct SseDecoder {
     frames: SseFrameDecoder,

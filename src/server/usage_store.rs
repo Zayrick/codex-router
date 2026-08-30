@@ -1,6 +1,6 @@
 use crate::{
     application::{CodexUsageMonitorState, validate_codex_usage_monitor_state},
-    auth::SecretStore,
+    auth::StateStore,
     core::{ApiError, AppResult},
 };
 
@@ -8,16 +8,16 @@ const CODEX_USAGE_KEY: &str = "CODEX_USAGE";
 const MAX_CODEX_USAGE_CONFIG_CHARS: usize = 256 * 1024;
 
 pub struct CodexUsageStateRepository<'a> {
-    store: &'a dyn SecretStore,
+    store: &'a dyn StateStore,
 }
 
 impl<'a> CodexUsageStateRepository<'a> {
-    pub const fn new(store: &'a dyn SecretStore) -> Self {
+    pub const fn new(store: &'a dyn StateStore) -> Self {
         Self { store }
     }
 
     pub async fn read(&self) -> AppResult<Option<CodexUsageMonitorState>> {
-        let Some(serialized) = self.store.get(CODEX_USAGE_KEY, None).await? else {
+        let Some(serialized) = self.store.get(CODEX_USAGE_KEY).await? else {
             return Ok(None);
         };
         if serialized.len() > MAX_CODEX_USAGE_CONFIG_CHARS {

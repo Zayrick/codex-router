@@ -334,37 +334,15 @@ function projectWindow(window: UsageWindow, start: number, end: number, now: num
 }
 
 function parseSnapshot(value: unknown): UsageSnapshot | null {
-	if (!isRecord(value)) throw new Error("Invalid usage response");
-	if (value.snapshot === null) return null;
-	const sampledAt = validTimestamp(value.sampledAt);
-	if (sampledAt === null || !Array.isArray(value.windows)) throw new Error("Invalid usage snapshot");
-	const windows = value.windows.map(parseWindow).filter((entry): entry is UsageWindow => entry !== null);
-	return {
-		sampledAt,
-		planType: typeof value.planType === "string" ? value.planType : null,
-		windows,
-	};
-}
-
-function parseWindow(value: unknown): UsageWindow | null {
-	if (!isRecord(value) || typeof value.id !== "string" || typeof value.name !== "string") return null;
-	const kinds: QuotaKind[] = ["five_hour", "weekly", "monthly", "primary", "secondary"];
-	const categories: QuotaCategory[] = ["codex", "code_review", "additional"];
-	if (!kinds.includes(value.kind as QuotaKind) || !categories.includes(value.category as QuotaCategory)) return null;
-	return {
-		id: value.id,
-		name: value.name,
-		kind: value.kind as QuotaKind,
-		category: value.category as QuotaCategory,
-		usedPercent: optionalNumber(value.usedPercent),
-		remainingPercent: optionalNumber(value.remainingPercent),
-		limitWindowSeconds: optionalNumber(value.limitWindowSeconds),
-		resetAt: optionalNumber(value.resetAt),
-	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error("Invalid usage response");
+	}
+	const snapshot = value as Record<string, unknown>;
+	if (snapshot.snapshot === null) return null;
+	if (validTimestamp(snapshot.sampledAt) === null || !Array.isArray(snapshot.windows)) {
+		throw new Error("Invalid usage snapshot");
+	}
+	return value as UsageSnapshot;
 }
 
 function optionalNumber(value: unknown): number | null {

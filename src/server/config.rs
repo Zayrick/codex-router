@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::{
     application::CodexUsageMonitorState,
-    auth::{AuthProxyAccount, ClientApiKey, SecretStore, StoredOAuthCredentials},
+    auth::{AuthProxyAccount, ClientApiKey, StateStore, StoredOAuthCredentials},
     core::{ApiError, AppResult},
     upstream::codex::resolve_chatgpt_relay_url,
     upstream::{bark::parse_bark_push_url, dingtalk::signed_dingtalk_webhook},
@@ -161,8 +161,8 @@ impl ConfigStore {
 }
 
 #[async_trait]
-impl SecretStore for ConfigStore {
-    async fn get(&self, key: &str, _cache_ttl: Option<u64>) -> AppResult<Option<String>> {
+impl StateStore for ConfigStore {
+    async fn get(&self, key: &str) -> AppResult<Option<String>> {
         let config = self.config.read().await;
         let value = match key {
             OAUTH_KEY => config
@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn serializes_runtime_state_as_plaintext_toml() {
+    fn round_trips_runtime_state_in_toml() {
         let mut config = config();
         config.state.oauth = Some(StoredOAuthCredentials {
             version: 1,
@@ -422,8 +422,6 @@ mod tests {
             updated_at: "2033-05-18T03:33:20.000Z".into(),
         });
         let serialized = toml::to_string_pretty(&config).unwrap();
-        assert!(serialized.contains("plain-access-token"));
-        assert!(serialized.contains("plain-refresh-token"));
         let decoded: AppConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(
             decoded.state.oauth.unwrap().access_token,

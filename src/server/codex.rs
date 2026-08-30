@@ -85,7 +85,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         };
         let target = usage_url(&self.relay_origin)?;
         let response = self
-            .request(&target, Method::GET, usage_headers(&credentials), None)?
+            .request(&target, Method::GET, usage_headers(&credentials), None)
             .timeout(Duration::from_millis(CODEX_USAGE_REQUEST_TIMEOUT_MS))
             .send()
             .await
@@ -188,7 +188,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         require_success_body: bool,
     ) -> AppResult<reqwest::Response> {
         let response = self
-            .request(target, method, headers, body)?
+            .request(target, method, headers, body)
             .send()
             .await
             .map_err(|_| codex_unavailable())?;
@@ -207,7 +207,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         method: Method,
         headers: HeaderBag,
         body: Option<reqwest::Body>,
-    ) -> AppResult<reqwest::RequestBuilder> {
+    ) -> reqwest::RequestBuilder {
         let mut request = self.client.request(method, target.as_str());
         for (name, value) in headers.iter() {
             request = request.header(name, value);
@@ -215,7 +215,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         if let Some(body) = body {
             request = request.body(body);
         }
-        Ok(request)
+        request
     }
 }
 
@@ -257,7 +257,7 @@ async fn adapt_json_body<'a>(
 ) -> AppResult<PreparedProxyBody> {
     let content_encoding = headers.get("content-encoding").map(str::to_owned);
     let encoded = body::read_limited_body(source_headers, body, body::MAX_JSON_BODY_BYTES).await?;
-    let parsed = parse_json_body_with_source(Some(encoded), content_encoding.as_deref())?;
+    let parsed = parse_json_body_with_source(encoded, content_encoding.as_deref())?;
     let adapted = adapt(&parsed.body);
     if matches!(adapted, Cow::Borrowed(_)) {
         return Ok(PreparedProxyBody {
@@ -310,7 +310,9 @@ async fn adapt_live_bootstrap(
             .map_err(|_| invalid_live_request("The live multipart body is invalid."))?;
         match name.as_deref() {
             Some("sdp") if sdp.is_none() => {
-                sdp = Some(String::from_utf8_lossy(&bytes).into_owned());
+                let value = std::str::from_utf8(&bytes)
+                    .map_err(|_| invalid_live_request("The live 'sdp' field must be UTF-8."))?;
+                sdp = Some(value.to_owned());
             }
             Some("session") if session.is_none() => {
                 let value = serde_json::from_slice(&bytes).map_err(|_| {

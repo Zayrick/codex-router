@@ -29,5 +29,5 @@ name = "local"
 key = "sk-change-me-123!"
 enabled = true
 
-# OAuth, proxy accounts, proxy OAuth, and usage snapshots are added here by
-# the management API and maintenance task. They remain plaintext by design.
+# OAuth, proxy accounts, proxy OAuth, and usage snapshots are written here by
+# the management API and maintenance task.

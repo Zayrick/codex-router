@@ -7,17 +7,13 @@ use crate::{
 
 static CL100K_BASE: OnceLock<tiktoken::CoreBpe> = OnceLock::new();
 
-/// Vocabulary construction is cached per isolate. This is immutable process
-/// state, never request-scoped state, and avoids rebuilding a large BPE table
-/// for every token-count request.
+/// Caches the vocabulary once per process.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Cl100kTokenCounter;
 
 impl Cl100kTokenCounter {
     fn encoding() -> &'static tiktoken::CoreBpe {
-        // Calling the concrete constructor is intentional: `get_encoding`
-        // references every bundled vocabulary and forces all of them into the
-        // Wasm binary. This Worker needs only cl100k_base.
+        // The concrete constructor keeps unrelated vocabularies out of the binary.
         CL100K_BASE.get_or_init(tiktoken::encoding::cl100k_base)
     }
 

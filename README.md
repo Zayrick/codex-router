@@ -1,12 +1,8 @@
 # Codex Router
 
 Codex Router 是一个独立运行的 Rust API 网关，把 ChatGPT Codex 能力转换或映射为 OpenAI、
-Anthropic 与 Gemini 风格接口。它从原 Cloudflare Worker 项目迁移而来，但运行时不再依赖
-Cloudflare、Workers KV、Wrangler、Wasm、Node.js 或外部静态资源目录。
-
-现有协议转换、请求策略、SSE 呈现、OAuth、API Key 与额度监控逻辑均从参考项目复用并继续由
-原有测试覆盖。HTTP、WebSocket、定时任务和持久化已改为 Tokio、Axum、Reqwest 与本地 TOML
-配置文件。
+Anthropic 与 Gemini 风格接口。服务使用 Tokio、Axum 和 Reqwest，配置与运行状态保存在本地
+TOML 文件中，React 管理界面随发行二进制一起提供。
 
 ## 当前能力
 
@@ -16,15 +12,14 @@ Cloudflare、Workers KV、Wrangler、Wasm、Node.js 或外部静态资源目录�
 - `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket relay；
 - Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
 - OAuth 设备授权、下游 API Key、代理账户及代理账户独立 OAuth 的管理 JSON API；
-- 迁移自 Worker 的 React 管理页面与公开用量状态页面；
+- React 管理页面与公开用量状态页面；
 - 后台 OAuth 刷新、用量采集、reset watch、Bark 与钉钉通知；
-- 原生流式正文和双向 WebSocket bridge，不依赖 Worker `ReadableStream`。
+- 原生流式正文和双向 WebSocket bridge。
 
 `GET /status/usage` 提供公开用量页面；管理页面只在精确的
 `/<admin.path>/admin` 路径提供，附近路径不会暴露页面。发行构建会把带指纹的 React 资源直接
 嵌入 Rust 二进制，部署时不需要 Node.js、pnpm 或 `frontend` 目录。完整契约见
-[API 文档](docs/api.md)，旧 Worker 配置与 KV 的字段映射见
-[配置与迁移](docs/configuration.md)。
+[API 文档](docs/api.md)，运行与持久化设置见[配置文档](docs/configuration.md)。
 
 ## 运行
 
@@ -80,13 +75,12 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
 - 代理 OAuth 位于 `state.auth_proxy_oauth`；
 - 用量快照位于 `state.usage`。
 
-这些字段按要求以明文保存，不再使用 `DATA_ENCRYPTION_KEY` 或 AES-GCM。管理 API 和后台刷新写入
-状态时，会先写入权限为 `0600` 的临时文件，再原子替换原配置。成功写入会把 TOML 规范化，注释
-可能丢失；请保留单独的配置模板，不要在管理 API 写入期间同时手工编辑生产配置。手工修改静态
-设置后需要重启服务。
+这些字段直接保存在 `config.toml`。管理 API 和后台刷新写入状态时，会先写入权限为 `0600` 的
+临时文件，再原子替换原配置。成功写入会把 TOML 规范化，注释可能丢失；请保留单独的配置模板，
+不要在管理 API 写入期间同时手工编辑生产配置。手工修改静态设置后需要重启服务。
 
-管理会话和 OAuth 设备轮询状态不加密，只使用 HMAC-SHA256 防篡改；其中不包含持久化配置的
-加密层。改变 `admin.secret` 会立即使已有管理会话与未完成的设备授权 state 失效。
+管理会话和 OAuth 设备轮询状态使用 HMAC-SHA256 签名。改变 `admin.secret` 会立即使已有管理会话
+与未完成的设备授权 state 失效。
 
 ## 部署注意
 

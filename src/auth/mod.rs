@@ -1,4 +1,4 @@
-//! Authentication, plaintext persistence, and OAuth domain services.
+//! Authentication persistence and OAuth domain services.
 
 mod admin_session;
 mod api_keys;
@@ -42,4 +42,4 @@ pub use oauth_provider::{
 };
 pub(crate) use record_id::{derived_record_id, new_record_id, valid_record_id};
 pub use refresh::{OAuthRefreshResult, OAuthRefreshService, REFRESH_WINDOW_MS, oauth_refresh_due};
-pub use store::SecretStore;
+pub use store::StateStore;

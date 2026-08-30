@@ -1,4 +1,4 @@
-//! Encrypted device-authorization session orchestration.
+//! Signed device-authorization session orchestration.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

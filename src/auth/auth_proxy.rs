@@ -34,7 +34,7 @@ pub fn matching_auth_proxy_account<'a>(
 }
 
 pub fn validate_auth_proxy_account_input(value: &Value) -> AppResult<AuthProxyAccount> {
-    let id = new_record_id()?;
+    let id = new_record_id();
     validate_auth_proxy_account_with_id(value, id).map_err(|_| invalid_auth_proxy_account())
 }
 

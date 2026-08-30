@@ -5,12 +5,12 @@ use serde_json::{Value, json};
 use crate::core::{ApiError, AppResult, JsonObject, number_field, record_field, string_field};
 
 use super::error::{anthropic_error_payload, codex_event_error};
-use super::identifiers::{claude_tool_name, claude_tool_use_id};
 use super::response::{
     claude_stop_reason, claude_usage, claude_usage_object, failed_codex_response,
     incomplete_codex_stream, output_texts, reasoning_text,
 };
 use super::{AnthropicSseEvent, empty_object, into_object};
+use super::{claude_tool_name, claude_tool_use_id};
 
 const MAX_RETAINED_CHARS: usize = 8 * 1024 * 1024;
 const MAX_TOOL_CALLS: usize = 128;
@@ -34,8 +34,7 @@ struct ToolCallStream {
 /// Pure presentation state machine for Codex Responses events.
 ///
 /// A transport decodes upstream SSE JSON and feeds each value to [`Self::push`].
-/// Protocol failures are represented as a final Anthropic `error` event; no
-/// Worker stream or execution-context type crosses this boundary.
+/// Protocol failures are represented as a final Anthropic `error` event.
 #[derive(Debug, Clone)]
 pub struct MessagesStreamPresenter {
     requested_model: String,

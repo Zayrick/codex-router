@@ -94,9 +94,9 @@ pub const BLOCKED_PROXY_RESPONSE_HEADERS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeaderDto {
-    pub name: String,
-    pub value: String,
+struct HeaderDto {
+    name: String,
+    value: String,
 }
 
 /// Ordered, case-insensitive header DTO. Duplicate entries are retained.
@@ -163,16 +163,6 @@ impl HeadersDto {
             .iter()
             .map(|entry| (entry.name.as_str(), entry.value.as_str()))
     }
-
-    #[must_use]
-    pub fn as_slice(&self) -> &[HeaderDto] {
-        &self.entries
-    }
-
-    #[must_use]
-    pub fn into_entries(self) -> Vec<HeaderDto> {
-        self.entries
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,20 +171,13 @@ pub enum ResponseBodyDto {
     Bytes(Vec<u8>),
     /// The runtime must reuse the upstream body handle without buffering it.
     Passthrough,
-    /// The runtime supplies a stream and uses the generated SSE response head.
-    EventStream,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResponseDto {
     pub status: u16,
-    pub status_text: String,
     pub headers: HeadersDto,
     pub body: ResponseBodyDto,
-    /// Whether the runtime must preserve the upstream WebSocket handle.
-    pub websocket: bool,
-    /// Mirrors Workers' `encodeBody: "manual"` response option.
-    pub encode_body_manual: bool,
 }
 
 impl ResponseDto {
@@ -202,11 +185,8 @@ impl ResponseDto {
     pub fn new(status: u16, body: ResponseBodyDto) -> Self {
         Self {
             status,
-            status_text: String::new(),
             headers: HeadersDto::new(),
             body,
-            websocket: false,
-            encode_body_manual: false,
         }
     }
 }
@@ -227,24 +207,6 @@ pub fn json_response<T: Serialize + ?Sized>(value: &T, status: u16) -> AppResult
 }
 
 #[must_use]
-pub fn html_response(body: &str, status: u16, nonce: Option<&str>) -> ResponseDto {
-    let source = nonce.map_or_else(|| "'none'".to_owned(), |nonce| format!("'nonce-{nonce}'"));
-    let policy = format!(
-        "default-src 'none'; script-src {source}; style-src {source}; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
-    );
-    let mut response = ResponseDto::new(status, ResponseBodyDto::Bytes(body.as_bytes().to_vec()));
-    response
-        .headers
-        .set("Content-Type", "text/html; charset=utf-8");
-    response.headers.set("Cache-Control", "no-store");
-    response.headers.set("Content-Security-Policy", policy);
-    response.headers.set("Referrer-Policy", "same-origin");
-    response.headers.set("X-Content-Type-Options", "nosniff");
-    response.headers.set("X-Frame-Options", "SAMEORIGIN");
-    response
-}
-
-#[must_use]
 pub fn upstream_json_response(response: ResponseDto) -> ResponseDto {
     let content_type = response
         .headers
@@ -258,8 +220,6 @@ pub fn upstream_json_response(response: ResponseDto) -> ResponseDto {
     copy_codex_response_headers(&response.headers, &mut headers);
     ResponseDto {
         headers,
-        websocket: false,
-        encode_body_manual: false,
         ..response
     }
 }
@@ -285,8 +245,6 @@ pub fn upstream_error_response(response: ResponseDto) -> ResponseDto {
     }
     ResponseDto {
         headers,
-        websocket: false,
-        encode_body_manual: false,
         ..response
     }
 }
@@ -304,11 +262,7 @@ pub fn upstream_proxy_response(mut response: ResponseDto) -> ResponseDto {
         headers.append(name, value);
     }
     headers.set("Cache-Control", "no-store");
-    response.encode_body_manual = headers.contains("Content-Encoding");
     response.headers = headers;
-    if response.websocket {
-        response.body = ResponseBodyDto::Empty;
-    }
     response
 }
 
@@ -318,11 +272,10 @@ pub fn suppress_html_body(mut response: ResponseDto) -> ResponseDto {
         .headers
         .get("Content-Type")
         .is_some_and(is_html_content_type);
-    if is_html && !response.websocket {
+    if is_html {
         response.headers.remove("Content-Length");
         response.headers.remove("Content-Encoding");
         response.body = ResponseBodyDto::Empty;
-        response.encode_body_manual = false;
     }
     response
 }
@@ -337,26 +290,6 @@ pub fn is_html_content_type(value: &str) -> bool {
             media_type.eq_ignore_ascii_case("text/html")
                 || media_type.eq_ignore_ascii_case("application/xhtml+xml")
         })
-}
-
-#[must_use]
-pub fn chat_sse_response(source: Option<&HeadersDto>) -> ResponseDto {
-    event_stream_response(source)
-}
-
-#[must_use]
-pub fn event_stream_response(source: Option<&HeadersDto>) -> ResponseDto {
-    let mut response = ResponseDto::new(200, ResponseBodyDto::EventStream);
-    response
-        .headers
-        .set("Content-Type", "text/event-stream; charset=utf-8");
-    response
-        .headers
-        .set("Cache-Control", "no-cache, no-transform");
-    if let Some(source) = source {
-        copy_codex_response_headers(source, &mut response.headers);
-    }
-    response
 }
 
 #[must_use]
@@ -378,10 +311,6 @@ pub fn with_cors(mut response: ResponseDto, origin: &str) -> ResponseDto {
         CORS_EXPOSED_HEADERS.join(", "),
     );
     response.headers.set("Access-Control-Max-Age", "86400");
-    response.encode_body_manual = response.headers.contains("Content-Encoding");
-    if response.websocket {
-        response.body = ResponseBodyDto::Empty;
-    }
     response
 }
 
@@ -416,32 +345,33 @@ mod tests {
     fn upstream(headers: HeadersDto) -> ResponseDto {
         ResponseDto {
             status: 429,
-            status_text: "Too Many Requests".into(),
             headers,
             body: ResponseBodyDto::Passthrough,
-            websocket: false,
-            encode_body_manual: false,
         }
     }
 
     #[test]
-    fn builds_json_and_secure_nonce_html_responses() {
-        let json = json_response(&json!({"ok": true}), 201).expect("serializable JSON");
+    fn builds_json_and_cors_responses() {
+        let json = with_cors(
+            json_response(&json!({"ok": true}), 201).expect("serializable JSON"),
+            "",
+        );
         assert_eq!(
             json.headers.get("content-type"),
             Some("application/json; charset=utf-8")
         );
         assert_eq!(json.headers.get("cache-control"), Some("no-store"));
-
-        let html = html_response("<main>ok</main>", 200, Some("abc123"));
-        let csp = html.headers.get("content-security-policy").expect("CSP");
-        assert!(csp.contains("script-src 'nonce-abc123'"));
-        assert!(csp.contains("style-src 'nonce-abc123'"));
-        assert!(!csp.contains("unsafe-inline"));
+        assert_eq!(json.headers.get("access-control-allow-origin"), Some("*"));
+        assert_eq!(json.headers.get("access-control-max-age"), Some("86400"));
+        assert!(
+            json.headers
+                .get("access-control-allow-headers")
+                .is_some_and(|value| value.contains("Authorization"))
+        );
     }
 
     #[test]
-    fn filters_proxy_headers_and_marks_encoded_bodies_manual() {
+    fn filters_proxy_headers() {
         let response = upstream_proxy_response(upstream(HeadersDto::from_pairs([
             ("Content-Type", "application/json"),
             ("Content-Encoding", "zstd"),
@@ -453,24 +383,21 @@ mod tests {
         assert!(!response.headers.contains("cf-ray"));
         assert_eq!(response.headers.get("x-request-id"), Some("req_123"));
         assert_eq!(response.headers.get("cache-control"), Some("no-store"));
-        assert!(response.encode_body_manual);
     }
 
     #[test]
     fn suppresses_declared_html_without_changing_api_responses() {
-        let mut html = upstream(HeadersDto::from_pairs([
+        let html = upstream(HeadersDto::from_pairs([
             ("Content-Type", " Text/HTML ; charset=utf-8 "),
             ("Content-Length", "1024"),
             ("Content-Encoding", "gzip"),
             ("X-Request-Id", "req_123"),
         ]));
-        html.encode_body_manual = true;
         let html = suppress_html_body(html);
         assert_eq!(html.body, ResponseBodyDto::Empty);
         assert!(!html.headers.contains("content-length"));
         assert!(!html.headers.contains("content-encoding"));
         assert_eq!(html.headers.get("x-request-id"), Some("req_123"));
-        assert!(!html.encode_body_manual);
 
         let xhtml = suppress_html_body(upstream(HeadersDto::from_pairs([(
             "Content-Type",
@@ -483,28 +410,6 @@ mod tests {
             "application/json",
         )]));
         assert_eq!(suppress_html_body(json.clone()), json);
-    }
-
-    #[test]
-    fn preserves_websocket_metadata_but_drops_the_http_body() {
-        let mut response = upstream(HeadersDto::from_pairs([
-            ("Sec-WebSocket-Accept", "blocked"),
-            ("Sec-WebSocket-Protocol", "openai-responses-v1"),
-        ]));
-        response.status = 101;
-        response.websocket = true;
-        let response = with_cors(upstream_proxy_response(response), "https://client.example");
-        assert!(response.websocket);
-        assert_eq!(response.body, ResponseBodyDto::Empty);
-        assert!(!response.headers.contains("sec-websocket-accept"));
-        assert_eq!(
-            response.headers.get("sec-websocket-protocol"),
-            Some("openai-responses-v1")
-        );
-        assert_eq!(
-            response.headers.get("access-control-allow-origin"),
-            Some("https://client.example")
-        );
     }
 
     #[test]
@@ -522,32 +427,5 @@ mod tests {
         assert_eq!(response.headers.get("retry-after"), Some("2"));
         assert_eq!(response.headers.get("x-codex-turn-state"), Some("turn-1"));
         assert!(!response.headers.contains("x-secret"));
-    }
-
-    #[test]
-    fn sse_and_cors_headers_match_the_wire_contract() {
-        let source = HeadersDto::from_pairs([("X-Codex-Turn-State", " state ")]);
-        let response = with_cors(event_stream_response(Some(&source)), "");
-        assert_eq!(response.status, 200);
-        assert_eq!(response.body, ResponseBodyDto::EventStream);
-        assert_eq!(
-            response.headers.get("content-type"),
-            Some("text/event-stream; charset=utf-8")
-        );
-        assert_eq!(response.headers.get("x-codex-turn-state"), Some("state"));
-        assert_eq!(
-            response.headers.get("access-control-allow-origin"),
-            Some("*")
-        );
-        assert_eq!(
-            response.headers.get("access-control-max-age"),
-            Some("86400")
-        );
-        assert!(
-            response
-                .headers
-                .get("access-control-allow-headers")
-                .is_some_and(|value| value.contains("Authorization"))
-        );
     }
 }
