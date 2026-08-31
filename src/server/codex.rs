@@ -28,7 +28,9 @@ use crate::{
     },
 };
 
-use super::{body, oauth::current_time_ms, usage::UsageTracker, websocket};
+use super::{
+    body, chatgpt_proxy::ChatgptTransport, oauth::current_time_ms, usage::UsageTracker, websocket,
+};
 
 const MAX_LIVE_BOOTSTRAP_BODY_BYTES: usize = 16 * 1024 * 1024;
 
@@ -47,21 +49,15 @@ pub struct CodexUsageDocument {
 
 pub struct CodexClient<'repository, 'store> {
     oauth: &'repository OAuthRepository<'store>,
-    client: &'repository reqwest::Client,
-    relay_origin: String,
+    transport: &'repository ChatgptTransport,
 }
 
 impl<'repository, 'store> CodexClient<'repository, 'store> {
     pub fn new(
         oauth: &'repository OAuthRepository<'store>,
-        client: &'repository reqwest::Client,
-        relay_origin: impl Into<String>,
+        transport: &'repository ChatgptTransport,
     ) -> Self {
-        Self {
-            oauth,
-            client,
-            relay_origin: relay_origin.into(),
-        }
+        Self { oauth, transport }
     }
 
     pub async fn fetch_models(
@@ -71,7 +67,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
     ) -> AppResult<reqwest::Response> {
         let credentials = self.credentials().await?;
         let source = header_bag(source_headers);
-        let target = resolve_models_url(&self.relay_origin, client_url, Some(&source))?;
+        let target = resolve_models_url(client_url, Some(&source))?;
         let headers = codex_headers(&credentials, "application/json", Some(&source), false);
         self.send(&target, Method::GET, headers, None, true).await
     }
@@ -83,7 +79,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             token: stored.access_token,
             account_id: stored.account_id,
         };
-        let target = usage_url(&self.relay_origin)?;
+        let target = usage_url()?;
         let response = self
             .request(&target, Method::GET, usage_headers(&credentials), None)
             .timeout(Duration::from_millis(CODEX_USAGE_REQUEST_TIMEOUT_MS))
@@ -111,7 +107,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
     ) -> AppResult<reqwest::Response> {
         let credentials = self.credentials().await?;
         let source = header_bag(source_headers);
-        let target = responses_url(&self.relay_origin)?;
+        let target = responses_url()?;
         let headers = codex_headers(&credentials, "text/event-stream", Some(&source), true);
         let adapted = apply_converted_response_egress_policy(body);
         let body = serde_json::to_vec(adapted.as_ref()).map_err(|_| json_serialization_error())?;
@@ -135,8 +131,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         let credentials = self.credentials().await?;
         let (parts, body) = request.into_parts();
         let source = header_bag(&parts.headers);
-        let target =
-            resolve_codex_proxy_url(&self.relay_origin, client_url, parts.method.as_str())?;
+        let target = resolve_codex_proxy_url(client_url, parts.method.as_str())?;
         let prepared = prepare_proxy_body(
             body,
             &parts.headers,
@@ -165,7 +160,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
     ) -> AppResult<Response> {
         let credentials = self.credentials().await?;
         let source = header_bag(source_headers);
-        let target = resolve_codex_proxy_url(&self.relay_origin, client_url, method.as_str())?;
+        let target = resolve_codex_proxy_url(client_url, method.as_str())?;
         let headers = proxy_request_headers(&source, &credentials, target.path(), true);
         websocket::proxy(
             upgrade,
@@ -173,6 +168,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             headers,
             route == CodexProxyRoute::Responses,
             tracker,
+            self.transport.proxy(),
         )
         .await
     }
@@ -214,7 +210,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         headers: HeaderBag,
         body: Option<reqwest::Body>,
     ) -> reqwest::RequestBuilder {
-        let mut request = self.client.request(method, target.as_str());
+        let mut request = self.transport.client().request(method, target.as_str());
         for (name, value) in headers.iter() {
             request = request.header(name, value);
         }

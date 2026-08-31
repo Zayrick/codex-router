@@ -5,6 +5,7 @@ use crate::core::{ApiError, AppResult};
 use super::HeaderBag;
 
 pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.144.1";
+pub const CHATGPT_ORIGIN: &str = "https://chatgpt.com";
 pub const CODEX_MODELS_PATH: &str = "/backend-api/codex/models";
 pub const CODEX_RESPONSES_PATH: &str = "/backend-api/codex/responses";
 const CODEX_ROOT: &str = "/backend-api/codex";
@@ -42,13 +43,10 @@ pub fn is_codex_proxy_request_allowed(
     method != "OPTIONS" && method != "CONNECT"
 }
 
-pub fn resolve_codex_proxy_url(
-    relay_origin: &str,
-    client_url: &Url,
-    method: &str,
-) -> AppResult<Url> {
+pub fn resolve_codex_proxy_url(client_url: &Url, method: &str) -> AppResult<Url> {
     if method == "GET" && is_realtime_sideband_path(client_url.path()) {
-        let mut target = Url::parse(REALTIME_SIDEBAND_ORIGIN).map_err(|_| invalid_relay_url())?;
+        let mut target =
+            Url::parse(REALTIME_SIDEBAND_ORIGIN).map_err(|_| invalid_upstream_url())?;
         target.set_path(client_url.path());
         if client_url.path() == "/v1/realtime" {
             let call_id = client_url
@@ -68,7 +66,7 @@ pub fn resolve_codex_proxy_url(
         .query()
         .map(|query| format!("?{query}"))
         .unwrap_or_default();
-    let mut target = resolve_chatgpt_relay_url(relay_origin, &pathname, &search)?;
+    let mut target = resolve_chatgpt_url(&pathname, &search)?;
     if method == "POST" && matches!(client_url.path(), "/v1/live" | "/v1/realtime/calls") {
         let has_intent = target.query_pairs().any(|(name, _)| name == "intent");
         let has_architecture = target.query_pairs().any(|(name, _)| name == "architecture");
@@ -99,12 +97,8 @@ pub fn proxy_path(pathname: &str, method: &str) -> String {
     pathname.to_owned()
 }
 
-pub fn resolve_models_url(
-    relay_origin: &str,
-    client_url: &Url,
-    client_headers: Option<&HeaderBag>,
-) -> AppResult<Url> {
-    let mut target = resolve_chatgpt_relay_url(relay_origin, CODEX_MODELS_PATH, "")?;
+pub fn resolve_models_url(client_url: &Url, client_headers: Option<&HeaderBag>) -> AppResult<Url> {
+    let mut target = resolve_chatgpt_url(CODEX_MODELS_PATH, "")?;
     let query_version = client_url
         .query_pairs()
         .find(|(name, _)| name == "client_version")
@@ -129,23 +123,17 @@ pub fn resolve_models_url(
     Ok(target)
 }
 
-pub fn responses_url(relay_origin: &str) -> AppResult<Url> {
-    resolve_chatgpt_relay_url(relay_origin, CODEX_RESPONSES_PATH, "")
+pub fn responses_url() -> AppResult<Url> {
+    resolve_chatgpt_url(CODEX_RESPONSES_PATH, "")
 }
 
-pub fn usage_url(relay_origin: &str) -> AppResult<Url> {
-    resolve_chatgpt_relay_url(relay_origin, super::CODEX_USAGE_PATH, "")
+pub fn usage_url() -> AppResult<Url> {
+    resolve_chatgpt_url(super::CODEX_USAGE_PATH, "")
 }
 
-pub fn resolve_chatgpt_relay_url(origin: &str, pathname: &str, search: &str) -> AppResult<Url> {
-    let base = Url::parse(origin).map_err(|_| invalid_relay_url())?;
-    if base.scheme() != "https" || base.origin().ascii_serialization() != origin {
-        return Err(invalid_relay_url());
-    }
-    let mut target = base.join(pathname).map_err(|_| invalid_relay_url())?;
-    if target.origin().ascii_serialization() != origin {
-        return Err(invalid_relay_url());
-    }
+pub fn resolve_chatgpt_url(pathname: &str, search: &str) -> AppResult<Url> {
+    let mut target = Url::parse(CHATGPT_ORIGIN).map_err(|_| invalid_upstream_url())?;
+    target.set_path(pathname);
     target.set_query(if search.is_empty() {
         None
     } else {
@@ -200,8 +188,8 @@ fn valid_route_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
-fn invalid_relay_url() -> ApiError {
-    ApiError::new(500, "CHATGPT_RELAY_URL must be an HTTPS origin.")
-        .with_kind("configuration_error")
-        .with_code("invalid_chatgpt_relay_url")
+fn invalid_upstream_url() -> ApiError {
+    ApiError::new(500, "The ChatGPT upstream URL could not be constructed.")
+        .with_kind("upstream_error")
+        .with_code("invalid_chatgpt_upstream_url")
 }

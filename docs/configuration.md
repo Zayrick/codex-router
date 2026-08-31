@@ -8,10 +8,21 @@ Codex Router 从 `config.toml` 读取运行设置和持久状态。可复制 `co
 
 `server.bind` 必须是 IP socket address，例如 `127.0.0.1:8787` 或 `0.0.0.0:8787`。
 `server.public_origin` 是客户端实际访问的精确 HTTP/HTTPS origin，不允许路径、Query 或尾部斜杠。
-它用于构造 relay 请求 URL 和校验管理写请求的 `Origin`。
+它用于解析入站请求路径和校验管理写请求的 `Origin`。
 
-`upstream.chatgpt_relay_url` 必须是与 `server.public_origin` 不同的精确 HTTPS origin。relay 属于
-高信任边界，会看到 OAuth、账户 ID、提示、工具参数、上传内容和模型输出。
+ChatGPT 上游固定为 `https://chatgpt.com`，不再支持自定义 relay origin。默认直接连接；需要代理时
+可配置可选的 `upstream.chatgpt_proxy`：
+
+```toml
+[upstream]
+chatgpt_proxy = "socks5h://127.0.0.1:1080"
+```
+
+该字段只接受不带路径、Query 或 Fragment 的 `socks5://` 或 `socks5h://` URL，未写端口时默认
+使用 `1080`。`socks5` 在本机解析目标域名，`socks5h` 由代理解析；HTTP、SSE 和 WebSocket
+上游连接使用同一配置。代理需要用户名和密码时可写成
+`socks5h://user:password@127.0.0.1:1080`，特殊字符必须进行 URL percent-encoding。代理凭据会以
+明文保存在配置文件中。
 
 通知字段都是可选的。钉钉 Webhook 与签名 secret 必须同时配置；只提供其中一个会导致启动失败。
 

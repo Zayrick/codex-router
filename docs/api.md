@@ -57,24 +57,25 @@ CORS。
 | `/v1/alpha/search` | 透明传输 | 映射到 `/backend-api/codex/alpha/search` |
 | `POST /v1/live` | 原生映射 | 映射到 Codex Realtime call bootstrap，并补充缺失的默认查询参数 |
 | `POST /v1/realtime/calls` | 原生映射 | 与 `/v1/live` 使用相同的 bootstrap 逻辑 |
-| `GET /v1/live/{call_id}` + WebSocket Upgrade | 透明传输 | 直连 `api.openai.com` 的 Live sideband |
-| `GET /v1/realtime?call_id=…` + WebSocket Upgrade | 透明传输 | 校验 `call_id` 后直连 Realtime sideband |
-| `GET /v1/realtime/calls/{call_id}` + WebSocket Upgrade | 透明传输 | 直连对应 Realtime sideband |
+| `GET /v1/live/{call_id}` + WebSocket Upgrade | 透明传输 | 连接 `api.openai.com` 的 Live sideband |
+| `GET /v1/realtime?call_id=…` + WebSocket Upgrade | 透明传输 | 校验 `call_id` 后连接 Realtime sideband |
+| `GET /v1/realtime/calls/{call_id}` + WebSocket Upgrade | 透明传输 | 连接对应 Realtime sideband |
 一般透明代理路径拒绝 `CONNECT`；`OPTIONS` 由预检逻辑处理。除表中明确限制方法的路径外，
 路由层允许其他 HTTP 方法，上游能力仍由目标 action 决定。
 
 ### Backend API 与透明转发
 
 路由按请求路径和方法选择，不按入站 Host 分流。`/backend-api` 路径族直接以原方法、路径、
-Query、流式正文和端到端 header 转发到 `CHATGPT_RELAY_URL`，并返回 relay 的 HTTP、SSE 或
-WebSocket 响应。该路径族不执行下游 API Key 鉴权或协议转换。
+Query、流式正文和端到端 header 转发到固定的 `https://chatgpt.com` 上游，并返回 HTTP、SSE 或
+WebSocket 响应。配置 `upstream.chatgpt_proxy` 时这些连接通过 SOCKS5 建立。该路径族不执行下游
+API Key 鉴权或协议转换。
 
 `/backend-api` 请求中的 `ChatGPT-Account-ID` 精确匹配一条已启用代理账户记录时，服务优先
 使用该记录自己的有效 OAuth；该记录尚未登录、Token 已过期或凭据缺少账户 ID 时自动回退到主
 Codex OAuth。两者都会替换请求中已有的 `Authorization` 和 `ChatGPT-Account-ID`。记录已停用或
 未匹配时按原认证信息转发。
 
-未注册的其他 HTTP 路径同样透明转发到 relay，并保留 `Authorization`、
+未注册的其他 HTTP 路径同样透明转发到 ChatGPT 上游，并保留 `Authorization`、
 `ChatGPT-Account-ID`、Cookie 和其他端到端 header。健康检查、状态页、隐藏管理路径和已注册
 协议 API 按各自的本地路由处理。
 

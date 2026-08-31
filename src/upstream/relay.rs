@@ -1,8 +1,8 @@
 use url::Url;
 
-use crate::core::{ApiError, AppResult};
+use crate::core::AppResult;
 
-use super::codex::{CodexCredentials, HeaderBag, is_websocket_upgrade, resolve_chatgpt_relay_url};
+use super::codex::{CodexCredentials, HeaderBag, is_websocket_upgrade, resolve_chatgpt_url};
 
 pub const ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
 const BACKEND_API_ROOT: &str = "/backend-api";
@@ -11,21 +11,12 @@ pub fn is_backend_api_path(pathname: &str) -> bool {
     pathname == BACKEND_API_ROOT || pathname.starts_with("/backend-api/")
 }
 
-pub fn resolve_relay_url(relay_origin: &str, client_url: &Url) -> AppResult<Url> {
+pub fn resolve_chatgpt_upstream_url(client_url: &Url) -> AppResult<Url> {
     let search = client_url
         .query()
         .map(|query| format!("?{query}"))
         .unwrap_or_default();
-    let target = resolve_chatgpt_relay_url(relay_origin, client_url.path(), &search)?;
-    if target.origin() == client_url.origin() {
-        return Err(ApiError::new(
-            500,
-            "The request origin and CHATGPT_RELAY_URL must not be the same origin.",
-        )
-        .with_kind("configuration_error")
-        .with_code("relay_loop"));
-    }
-    Ok(target)
+    resolve_chatgpt_url(client_url.path(), &search)
 }
 
 pub fn relay_request_headers(
@@ -112,18 +103,15 @@ mod tests {
     }
 
     #[test]
-    fn builds_target_url_and_rejects_a_recursive_relay() {
+    fn builds_fixed_chatgpt_target_url() {
         let client = Url::parse(
             "https://worker.example/backend-api/codex/models?client_version=1.2.3&channel=stable",
         )
         .unwrap();
         assert_eq!(
-            resolve_relay_url("https://relay.example", &client)
-                .unwrap()
-                .as_str(),
-            "https://relay.example/backend-api/codex/models?client_version=1.2.3&channel=stable"
+            resolve_chatgpt_upstream_url(&client).unwrap().as_str(),
+            "https://chatgpt.com/backend-api/codex/models?client_version=1.2.3&channel=stable"
         );
-        assert!(resolve_relay_url("https://worker.example", &client).is_err());
     }
 
     #[test]

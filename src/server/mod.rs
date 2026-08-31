@@ -4,6 +4,7 @@ mod account;
 mod admin;
 mod api;
 mod body;
+mod chatgpt_proxy;
 mod codex;
 pub mod config;
 mod frontend;

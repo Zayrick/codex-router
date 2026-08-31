@@ -54,9 +54,12 @@ cargo run --release -- --config config.toml
 
 - `admin.path`：隐藏管理 API 的 URL 段；
 - `admin.secret`：管理登录密钥；
-- `upstream.chatgpt_relay_url`：受信任的精确 HTTPS relay origin；
 - `usage_tracking.database_path`：Token 用量 SQLite 文件，默认位于配置文件旁的 `usage.sqlite3`；
 - `state.api_keys`：至少一个启用的下游 API Key，或启动后通过管理 API 创建。
+
+ChatGPT 上游固定为 `https://chatgpt.com`。默认直接连接；如需通过 SOCKS5 出站，在 `[upstream]`
+中配置 `chatgpt_proxy = "socks5h://127.0.0.1:1080"`。普通 HTTP/SSE 和 WebSocket 会使用同一代理；
+完整格式与 DNS 解析差异见[配置文档](docs/configuration.md)。
 
 验证本地接口：
 
@@ -90,8 +93,8 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
 
 ## 部署注意
 
-- `upstream.chatgpt_relay_url` 会收到 OAuth Bearer、ChatGPT 账户 ID、提示内容和模型输出，必须由
-  部署者控制并审计；
+- `upstream.chatgpt_proxy` 如包含认证信息，应与 OAuth 和 API Key 一样作为密钥保护；SOCKS5
+  连接上的 ChatGPT 应用流量仍使用端到端 TLS；
 - `server.public_origin` 必须是客户端看到的精确 origin，并用于管理 API 同源校验；
 - 管理 Cookie 始终带 `Secure`，生产和浏览器管理场景应通过 HTTPS 反向代理访问；
 - 反向代理需要允许 WebSocket Upgrade，并关闭 SSE 响应缓冲；

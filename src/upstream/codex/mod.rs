@@ -22,10 +22,10 @@ pub use subscription::{
     invalid_codex_usage_response,
 };
 pub use url_policy::{
-    CODEX_MODELS_PATH, CODEX_RESPONSES_PATH, DEFAULT_CODEX_CLIENT_VERSION, is_codex_native_target,
-    is_codex_proxy_path, is_codex_proxy_request_allowed, is_live_proxy_path,
-    is_realtime_proxy_path, is_realtime_sideband_path, proxy_path, resolve_chatgpt_relay_url,
-    resolve_codex_proxy_url, resolve_models_url, responses_url, usage_url,
+    CHATGPT_ORIGIN, CODEX_MODELS_PATH, CODEX_RESPONSES_PATH, DEFAULT_CODEX_CLIENT_VERSION,
+    is_codex_native_target, is_codex_proxy_path, is_codex_proxy_request_allowed,
+    is_live_proxy_path, is_realtime_proxy_path, is_realtime_sideband_path, proxy_path,
+    resolve_chatgpt_url, resolve_codex_proxy_url, resolve_models_url, responses_url, usage_url,
 };
 
 #[cfg(test)]

@@ -16,10 +16,10 @@ use crate::{
     application::CodexUsageMonitorState,
     auth::{AuthProxyAccount, ClientApiKey, StateStore, StoredOAuthCredentials},
     core::{ApiError, AppResult},
-    upstream::codex::resolve_chatgpt_relay_url,
     upstream::{bark::parse_bark_push_url, dingtalk::signed_dingtalk_webhook},
 };
 
+use super::chatgpt_proxy::ChatgptProxy;
 use super::pricing::{ModelPrice, normalized_model_prices, validate_model_prices};
 
 const OAUTH_KEY: &str = "oauth";
@@ -92,7 +92,8 @@ pub struct AdminConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamConfig {
-    pub chatgpt_relay_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chatgpt_proxy: Option<String>,
     #[serde(default = "default_codex_resets_url")]
     pub codex_resets_url: String,
 }
@@ -324,10 +325,8 @@ fn validate_config(config: &AppConfig) -> Result<()> {
     if config.admin.secret.trim().is_empty() {
         bail!("admin.secret must not be empty");
     }
-    resolve_chatgpt_relay_url(&config.upstream.chatgpt_relay_url, "/", "")
-        .map_err(|_| anyhow::anyhow!("upstream.chatgpt_relay_url must be an exact HTTPS origin"))?;
-    if config.server.public_origin == config.upstream.chatgpt_relay_url {
-        bail!("server.public_origin and upstream.chatgpt_relay_url must differ");
+    if let Some(proxy) = config.upstream.chatgpt_proxy.as_deref() {
+        ChatgptProxy::parse(proxy).context("upstream.chatgpt_proxy is invalid")?;
     }
     let resets = Url::parse(&config.upstream.codex_resets_url)
         .context("upstream.codex_resets_url must be a valid URL")?;
@@ -465,7 +464,7 @@ mod tests {
                 secret: "admin-secret".into(),
             },
             upstream: UpstreamConfig {
-                chatgpt_relay_url: "https://relay.example".into(),
+                chatgpt_proxy: None,
                 codex_resets_url: default_codex_resets_url(),
             },
             usage_tracking: UsageTrackingConfig::default(),
@@ -475,15 +474,27 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_origins_and_cors_headers() {
+    fn rejects_invalid_origins_proxies_and_cors_headers() {
         let mut value = config();
         value.server.public_origin = "https://router.example/path".into();
         assert!(validate_config(&value).is_err());
         value.server.public_origin = "https://router.example".into();
-        value.upstream.chatgpt_relay_url = "https://relay.example/path".into();
+        value.upstream.chatgpt_proxy = Some("http://proxy.example:1080".into());
         assert!(validate_config(&value).is_err());
-        value.upstream.chatgpt_relay_url = "https://relay.example".into();
+        value.upstream.chatgpt_proxy = Some("socks5://proxy.example:1080".into());
         value.server.cors_origin = "https://client.example\ninvalid".into();
         assert!(validate_config(&value).is_err());
+    }
+
+    #[test]
+    fn persists_only_configured_chatgpt_proxies() {
+        let mut value = config();
+        let direct = toml::to_string(&value).unwrap();
+        assert!(!direct.contains("chatgpt_proxy"));
+
+        value.upstream.chatgpt_proxy = Some("socks5h://user:password@proxy.example:1080".into());
+        validate_config(&value).unwrap();
+        let proxied = toml::to_string(&value).unwrap();
+        assert!(proxied.contains("chatgpt_proxy = \"socks5h://user:password@proxy.example:1080\""));
     }
 }

@@ -193,25 +193,19 @@ fn resolves_realtime_sideband_and_native_proxy_urls() {
     ] {
         let client = Url::parse(&format!("https://worker.example{client}")).unwrap();
         assert_eq!(
-            resolve_codex_proxy_url("https://codex-relay.test", &client, "GET")
-                .unwrap()
-                .as_str(),
+            resolve_codex_proxy_url(&client, "GET").unwrap().as_str(),
             expected
         );
     }
     let live = Url::parse("https://worker.example/v1/live?voice=marin").unwrap();
     assert_eq!(
-        resolve_codex_proxy_url("https://codex-relay.test", &live, "POST")
-            .unwrap()
-            .as_str(),
-        "https://codex-relay.test/backend-api/codex/realtime/calls?voice=marin&intent=quicksilver&architecture=avas"
+        resolve_codex_proxy_url(&live, "POST").unwrap().as_str(),
+        "https://chatgpt.com/backend-api/codex/realtime/calls?voice=marin&intent=quicksilver&architecture=avas"
     );
     let search = Url::parse("https://worker.example/v1/alpha/search?locale=en").unwrap();
     assert_eq!(
-        resolve_codex_proxy_url("https://codex-relay.test", &search, "POST")
-            .unwrap()
-            .as_str(),
-        "https://codex-relay.test/backend-api/codex/alpha/search?locale=en"
+        resolve_codex_proxy_url(&search, "POST").unwrap().as_str(),
+        "https://chatgpt.com/backend-api/codex/alpha/search?locale=en"
     );
 }
 
@@ -252,40 +246,29 @@ fn model_query_policy_keeps_only_version_and_channel() {
     .unwrap();
     assert_eq!(
         resolve_models_url(
-            "https://codex-relay.test",
             &client,
             Some(&HeaderBag::from_pairs([("Version", "0.144.1")]))
         )
         .unwrap()
         .as_str(),
-        "https://codex-relay.test/backend-api/codex/models?client_version=0.200.0&channel=stable&channel=beta"
+        "https://chatgpt.com/backend-api/codex/models?client_version=0.200.0&channel=stable&channel=beta"
     );
     let client = Url::parse("https://worker.example/v1/models").unwrap();
     assert_eq!(
-        resolve_models_url("https://codex-relay.test", &client, None)
-            .unwrap()
-            .query(),
+        resolve_models_url(&client, None).unwrap().query(),
         Some("client_version=0.144.1")
     );
 }
 
 #[test]
-fn rejects_nonstandard_relay_origins() {
-    for origin in [
-        "relay.example.com",
-        "https://relay.example.com/",
-        " http://relay.example.com ",
-        "http://relay.example.com",
-        "https://user:pass@relay.example.com",
-        "https://relay.example.com/backend-api/codex/responses",
-        "https://relay.example.com?target=chatgpt",
-        "https://relay.example.com#target",
-    ] {
-        assert!(
-            resolve_chatgpt_relay_url(origin, CODEX_MODELS_PATH, "").is_err(),
-            "{origin}"
-        );
-    }
+fn chatgpt_upstream_origin_is_fixed() {
+    assert_eq!(CHATGPT_ORIGIN, "https://chatgpt.com");
+    assert_eq!(
+        resolve_chatgpt_url(CODEX_MODELS_PATH, "?client_version=0.144.1")
+            .unwrap()
+            .as_str(),
+        "https://chatgpt.com/backend-api/codex/models?client_version=0.144.1"
+    );
 }
 
 #[test]

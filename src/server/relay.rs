@@ -14,13 +14,15 @@ use crate::{
     core::{ApiError, AppResult},
     upstream::{
         codex::CodexCredentials,
-        relay::{ACCOUNT_ID_HEADER, is_backend_api_path, relay_request_headers, resolve_relay_url},
+        relay::{
+            ACCOUNT_ID_HEADER, is_backend_api_path, relay_request_headers,
+            resolve_chatgpt_upstream_url,
+        },
     },
 };
 
 use super::{
     codex::header_bag,
-    config::AppConfig,
     oauth::current_time_ms,
     response,
     state::AppState,
@@ -37,10 +39,9 @@ pub async fn handle_relay(
     request: Request<Body>,
     client_url: Url,
     upgrade: Option<WebSocketUpgrade>,
-    config: &AppConfig,
     state: &AppState,
 ) -> Response {
-    match dispatch_relay(request, &client_url, upgrade, config, state).await {
+    match dispatch_relay(request, &client_url, upgrade, state).await {
         Ok(output) => output,
         Err(error) => response::api_error(&error),
     }
@@ -50,7 +51,6 @@ async fn dispatch_relay(
     request: Request<Body>,
     client_url: &Url,
     upgrade: Option<WebSocketUpgrade>,
-    config: &AppConfig,
     state: &AppState,
 ) -> AppResult<Response> {
     let replacement = if is_backend_api_path(client_url.path()) {
@@ -63,15 +63,7 @@ async fn dispatch_relay(
     } else {
         None
     };
-    forward_relay(
-        request,
-        client_url,
-        upgrade,
-        &config.upstream.chatgpt_relay_url,
-        replacement.as_ref(),
-        state,
-    )
-    .await
+    forward_relay(request, client_url, upgrade, replacement.as_ref(), state).await
 }
 
 async fn replacement_credentials(
@@ -108,7 +100,6 @@ async fn forward_relay(
     request: Request<Body>,
     client_url: &Url,
     upgrade: Option<WebSocketUpgrade>,
-    relay_origin: &str,
     replacement: Option<&RelayReplacement>,
     state: &AppState,
 ) -> AppResult<Response> {
@@ -118,7 +109,7 @@ async fn forward_relay(
         &source,
         replacement.map(|replacement| &replacement.credentials),
     );
-    let target = resolve_relay_url(relay_origin, client_url)?;
+    let target = resolve_chatgpt_upstream_url(client_url)?;
     let tracker = replacement
         .filter(|_| is_codex_usage_path(client_url.path()))
         .map(|replacement| {
@@ -137,10 +128,21 @@ async fn forward_relay(
             }
         });
     if let Some(upgrade) = upgrade {
-        return websocket::proxy(upgrade, target, headers, false, tracker).await;
+        return websocket::proxy(
+            upgrade,
+            target,
+            headers,
+            false,
+            tracker,
+            state.chatgpt.proxy(),
+        )
+        .await;
     }
 
-    let mut outgoing = state.client.request(parts.method.clone(), target.as_str());
+    let mut outgoing = state
+        .chatgpt
+        .client()
+        .request(parts.method.clone(), target.as_str());
     for (name, value) in headers.iter() {
         outgoing = outgoing.header(name, value);
     }
@@ -167,9 +169,9 @@ fn relay_fetch_error(error: reqwest::Error) -> ApiError {
             .with_kind("request_timeout")
             .with_code("request_aborted");
     }
-    ApiError::new(502, "Unable to reach the configured ChatGPT relay.")
+    ApiError::new(502, "Unable to reach the ChatGPT upstream.")
         .with_kind("upstream_error")
-        .with_code("relay_unavailable")
+        .with_code("chatgpt_upstream_unavailable")
 }
 
 fn missing_oauth_account_id() -> ApiError {

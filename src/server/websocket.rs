@@ -7,10 +7,12 @@ use axum::{
     response::Response,
 };
 use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{
-    connect_async,
+    MaybeTlsStream, WebSocketStream, client_async_tls, connect_async,
     tungstenite::{
-        Message as UpstreamMessage, client::IntoClientRequest,
+        Error as TungsteniteError, Message as UpstreamMessage, client::IntoClientRequest,
+        handshake::client::Response as HandshakeResponse,
         protocol::CloseFrame as UpstreamCloseFrame,
     },
 };
@@ -22,7 +24,7 @@ use crate::{
     upstream::codex::HeaderBag,
 };
 
-use super::{response, usage::UsageTracker};
+use super::{chatgpt_proxy::ChatgptProxy, response, usage::UsageTracker};
 
 pub async fn proxy(
     upgrade: WebSocketUpgrade,
@@ -30,6 +32,7 @@ pub async fn proxy(
     headers: HeaderBag,
     adapt_responses: bool,
     tracker: Option<UsageTracker>,
+    proxy: Option<&ChatgptProxy>,
 ) -> AppResult<Response> {
     match target.scheme() {
         "https" => target
@@ -54,9 +57,38 @@ pub async fn proxy(
         request.headers_mut().append(name, value);
     }
 
-    let (upstream, handshake) = match connect_async(request).await {
+    if let Some(proxy) = proxy {
+        let stream = proxy
+            .connect(&target)
+            .await
+            .map_err(|_| websocket_unavailable())?;
+        return upgraded_response(
+            upgrade,
+            client_async_tls(request, stream).await,
+            adapt_responses,
+            tracker,
+        );
+    }
+    upgraded_response(
+        upgrade,
+        connect_async(request).await,
+        adapt_responses,
+        tracker,
+    )
+}
+
+fn upgraded_response<S>(
+    upgrade: WebSocketUpgrade,
+    connection: Result<(WebSocketStream<MaybeTlsStream<S>>, HandshakeResponse), TungsteniteError>,
+    adapt_responses: bool,
+    tracker: Option<UsageTracker>,
+) -> AppResult<Response>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (upstream, handshake) = match connection {
         Ok(result) => result,
-        Err(tokio_tungstenite::tungstenite::Error::Http(rejection)) => {
+        Err(TungsteniteError::Http(rejection)) => {
             return Ok(rejection_response(*rejection));
         }
         Err(_) => return Err(websocket_unavailable()),
@@ -74,14 +106,14 @@ pub async fn proxy(
     Ok(upgrade.on_upgrade(move |client| bridge(client, upstream, adapt_responses, tracker)))
 }
 
-async fn bridge(
+async fn bridge<S>(
     client: WebSocket,
-    upstream: tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    upstream: WebSocketStream<MaybeTlsStream<S>>,
     adapt_responses: bool,
     tracker: Option<UsageTracker>,
-) {
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (mut client_sender, mut client_receiver) = client.split();
     let (mut upstream_sender, mut upstream_receiver) = upstream.split();
 

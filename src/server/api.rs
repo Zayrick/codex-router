@@ -32,17 +32,7 @@ pub async fn handle_api(
     identity: UsageIdentity,
 ) -> Response {
     let family = route.family();
-    match dispatch(
-        route,
-        request,
-        &client_url,
-        websocket,
-        config,
-        state,
-        identity,
-    )
-    .await
-    {
+    match dispatch(route, request, &client_url, websocket, state, identity).await {
         Ok(output) => response::with_cors(output, &config.server.cors_origin),
         Err(error)
             if error.status == 404
@@ -74,7 +64,6 @@ async fn dispatch(
     request: Request<Body>,
     client_url: &Url,
     websocket: Option<WebSocketUpgrade>,
-    config: &AppConfig,
     state: &AppState,
     identity: UsageIdentity,
 ) -> AppResult<Response> {
@@ -102,11 +91,7 @@ async fn dispatch(
     }
 
     let oauth = OAuthRepository::new(state.config.as_ref());
-    let client = CodexClient::new(
-        &oauth,
-        &state.client,
-        config.upstream.chatgpt_relay_url.clone(),
-    );
+    let client = CodexClient::new(&oauth, &state.chatgpt);
     match route {
         ApiRoute::Models => {
             let upstream = client.fetch_models(client_url, request.headers()).await?;

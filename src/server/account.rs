@@ -180,7 +180,7 @@ async fn account_dashboard(
         &primary_oauth
     };
 
-    let quota = quota_snapshot(selected_oauth, use_account_oauth, config, state, now_ms).await;
+    let quota = quota_snapshot(selected_oauth, use_account_oauth, state, now_ms).await;
     let bounds = (range == UsageRange::Cycle)
         .then(|| {
             quota
@@ -217,12 +217,11 @@ async fn account_dashboard(
 async fn quota_snapshot(
     oauth: &OAuthRepository<'_>,
     live: bool,
-    config: &AppConfig,
     state: &AppState,
     now_ms: i64,
 ) -> Option<PublicQuotaSnapshot> {
     let result = if live {
-        live_quota_snapshot(oauth, config, state, now_ms).await
+        live_quota_snapshot(oauth, state, now_ms).await
     } else {
         cached_quota_snapshot(state).await
     };
@@ -241,15 +240,10 @@ async fn quota_snapshot(
 
 async fn live_quota_snapshot(
     oauth: &OAuthRepository<'_>,
-    config: &AppConfig,
     state: &AppState,
     now_ms: i64,
 ) -> AppResult<Option<PublicQuotaSnapshot>> {
-    let client = CodexClient::new(
-        oauth,
-        &state.client,
-        config.upstream.chatgpt_relay_url.clone(),
-    );
+    let client = CodexClient::new(oauth, &state.chatgpt);
     let usage = client.fetch_usage().await?;
     let subscription =
         codex_subscription_from_usage(&usage.payload, usage.metadata, now_ms as f64)?;

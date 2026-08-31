@@ -17,7 +17,7 @@ mime_guess = "2.0.5"
 multer = "3.1.0"
 notify = "8.2.0"
 percent-encoding = "2.3.2"
-reqwest = { version = "0.13.4", default-features = false, features = ["charset", "http2", "json", "rustls", "stream"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["charset", "http2", "json", "rustls", "socks", "stream"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rust-embed = { version = "8.12.0", features = ["interpolate-folder-path"] }
 ruzstd = "0.9.0"

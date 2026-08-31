@@ -13,7 +13,9 @@ path = "change-this-hidden-path"
 secret = "change-this-admin-secret"
 
 [upstream]
-chatgpt_relay_url = "https://relay.example.com"
+# ChatGPT upstream is fixed at https://chatgpt.com. Omit this setting for a
+# direct connection. socks5h resolves upstream hostnames through the proxy.
+# chatgpt_proxy = "socks5h://127.0.0.1:1080"
 codex_resets_url = "https://codex-resets.com/api/v1/status"
 
 [usage_tracking]

@@ -121,11 +121,7 @@ async fn monitor_usage(
     oauth: &OAuthRepository<'_>,
     now_ms: i64,
 ) -> AppResult<()> {
-    let client = CodexClient::new(
-        oauth,
-        &state.client,
-        config.upstream.chatgpt_relay_url.clone(),
-    );
+    let client = CodexClient::new(oauth, &state.chatgpt);
     let usage = client.fetch_usage().await?;
     let subscription =
         codex_subscription_from_usage(&usage.payload, usage.metadata, now_ms as f64)?;
