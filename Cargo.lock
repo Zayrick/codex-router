@@ -257,6 +257,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "http-body-util",
+ "hyper-util",
  "mime_guess",
  "multer",
  "notify",

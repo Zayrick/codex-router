@@ -1,13 +1,11 @@
 use url::Url;
 
-use crate::core::{ApiError, AppResult};
-
 use super::HeaderBag;
 
 pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.144.1";
-pub const CHATGPT_ORIGIN: &str = "https://chatgpt.com";
 pub const CODEX_MODELS_PATH: &str = "/backend-api/codex/models";
 pub const CODEX_RESPONSES_PATH: &str = "/backend-api/codex/responses";
+const CHATGPT_ORIGIN: &str = "https://chatgpt.com";
 const CODEX_ROOT: &str = "/backend-api/codex";
 const REALTIME_SIDEBAND_ORIGIN: &str = "https://api.openai.com";
 
@@ -43,10 +41,10 @@ pub fn is_codex_proxy_request_allowed(
     method != "OPTIONS" && method != "CONNECT"
 }
 
-pub fn resolve_codex_proxy_url(client_url: &Url, method: &str) -> AppResult<Url> {
+pub fn resolve_codex_proxy_url(client_url: &Url, method: &str) -> Url {
     if method == "GET" && is_realtime_sideband_path(client_url.path()) {
         let mut target =
-            Url::parse(REALTIME_SIDEBAND_ORIGIN).map_err(|_| invalid_upstream_url())?;
+            Url::parse(REALTIME_SIDEBAND_ORIGIN).expect("Realtime sideband origin is valid");
         target.set_path(client_url.path());
         if client_url.path() == "/v1/realtime" {
             let call_id = client_url
@@ -59,14 +57,10 @@ pub fn resolve_codex_proxy_url(client_url: &Url, method: &str) -> AppResult<Url>
                 .append_pair("intent", "quicksilver")
                 .append_pair("call_id", &call_id);
         }
-        return Ok(target);
+        return target;
     }
     let pathname = proxy_path(client_url.path(), method);
-    let search = client_url
-        .query()
-        .map(|query| format!("?{query}"))
-        .unwrap_or_default();
-    let mut target = resolve_chatgpt_url(&pathname, &search)?;
+    let mut target = resolve_chatgpt_url(&pathname, client_url.query());
     if method == "POST" && matches!(client_url.path(), "/v1/live" | "/v1/realtime/calls") {
         let has_intent = target.query_pairs().any(|(name, _)| name == "intent");
         let has_architecture = target.query_pairs().any(|(name, _)| name == "architecture");
@@ -78,7 +72,7 @@ pub fn resolve_codex_proxy_url(client_url: &Url, method: &str) -> AppResult<Url>
             query.append_pair("architecture", "avas");
         }
     }
-    Ok(target)
+    target
 }
 
 pub fn proxy_path(pathname: &str, method: &str) -> String {
@@ -97,8 +91,8 @@ pub fn proxy_path(pathname: &str, method: &str) -> String {
     pathname.to_owned()
 }
 
-pub fn resolve_models_url(client_url: &Url, client_headers: Option<&HeaderBag>) -> AppResult<Url> {
-    let mut target = resolve_chatgpt_url(CODEX_MODELS_PATH, "")?;
+pub fn resolve_models_url(client_url: &Url, client_headers: Option<&HeaderBag>) -> Url {
+    let mut target = resolve_chatgpt_url(CODEX_MODELS_PATH, None);
     let query_version = client_url
         .query_pairs()
         .find(|(name, _)| name == "client_version")
@@ -120,26 +114,22 @@ pub fn resolve_models_url(client_url: &Url, client_headers: Option<&HeaderBag>) 
             target.query_pairs_mut().append_pair(&name, &value);
         }
     }
-    Ok(target)
+    target
 }
 
-pub fn responses_url() -> AppResult<Url> {
-    resolve_chatgpt_url(CODEX_RESPONSES_PATH, "")
+pub fn responses_url() -> Url {
+    resolve_chatgpt_url(CODEX_RESPONSES_PATH, None)
 }
 
-pub fn usage_url() -> AppResult<Url> {
-    resolve_chatgpt_url(super::CODEX_USAGE_PATH, "")
+pub fn usage_url() -> Url {
+    resolve_chatgpt_url(super::CODEX_USAGE_PATH, None)
 }
 
-pub fn resolve_chatgpt_url(pathname: &str, search: &str) -> AppResult<Url> {
-    let mut target = Url::parse(CHATGPT_ORIGIN).map_err(|_| invalid_upstream_url())?;
+pub fn resolve_chatgpt_url(pathname: &str, query: Option<&str>) -> Url {
+    let mut target = Url::parse(CHATGPT_ORIGIN).expect("ChatGPT origin is valid");
     target.set_path(pathname);
-    target.set_query(if search.is_empty() {
-        None
-    } else {
-        Some(search.strip_prefix('?').unwrap_or(search))
-    });
-    Ok(target)
+    target.set_query(query);
+    target
 }
 
 pub fn is_codex_native_target(pathname: &str) -> bool {
@@ -186,10 +176,4 @@ fn valid_route_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn invalid_upstream_url() -> ApiError {
-    ApiError::new(500, "The ChatGPT upstream URL could not be constructed.")
-        .with_kind("upstream_error")
-        .with_code("invalid_chatgpt_upstream_url")
 }

@@ -10,8 +10,8 @@ Codex Router 从 `config.toml` 读取运行设置和持久状态。可复制 `co
 `server.public_origin` 是客户端实际访问的精确 HTTP/HTTPS origin，不允许路径、Query 或尾部斜杠。
 它用于解析入站请求路径和校验管理写请求的 `Origin`。
 
-ChatGPT 上游固定为 `https://chatgpt.com`，不再支持自定义 relay origin。默认直接连接；需要代理时
-可配置可选的 `upstream.chatgpt_proxy`：
+ChatGPT 请求发往 `https://chatgpt.com`。默认直接连接；需要代理时可配置
+`upstream.chatgpt_proxy`：
 
 ```toml
 [upstream]

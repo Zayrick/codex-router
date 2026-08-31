@@ -13,11 +13,8 @@ use crate::{
     },
     core::{ApiError, AppResult},
     upstream::{
-        codex::CodexCredentials,
-        relay::{
-            ACCOUNT_ID_HEADER, is_backend_api_path, relay_request_headers,
-            resolve_chatgpt_upstream_url,
-        },
+        codex::{CodexCredentials, resolve_chatgpt_url},
+        relay::{ACCOUNT_ID_HEADER, is_backend_api_path, relay_request_headers},
     },
 };
 
@@ -109,7 +106,7 @@ async fn forward_relay(
         &source,
         replacement.map(|replacement| &replacement.credentials),
     );
-    let target = resolve_chatgpt_upstream_url(client_url)?;
+    let target = resolve_chatgpt_url(client_url.path(), client_url.query());
     let tracker = replacement
         .filter(|_| is_codex_usage_path(client_url.path()))
         .map(|replacement| {

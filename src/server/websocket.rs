@@ -7,12 +7,10 @@ use axum::{
     response::Response,
 };
 use futures_util::{SinkExt, StreamExt};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, client_async_tls, connect_async,
     tungstenite::{
         Error as TungsteniteError, Message as UpstreamMessage, client::IntoClientRequest,
-        handshake::client::Response as HandshakeResponse,
         protocol::CloseFrame as UpstreamCloseFrame,
     },
 };
@@ -57,35 +55,15 @@ pub async fn proxy(
         request.headers_mut().append(name, value);
     }
 
-    if let Some(proxy) = proxy {
+    let connection = if let Some(proxy) = proxy {
         let stream = proxy
             .connect(&target)
             .await
             .map_err(|_| websocket_unavailable())?;
-        return upgraded_response(
-            upgrade,
-            client_async_tls(request, stream).await,
-            adapt_responses,
-            tracker,
-        );
-    }
-    upgraded_response(
-        upgrade,
-        connect_async(request).await,
-        adapt_responses,
-        tracker,
-    )
-}
-
-fn upgraded_response<S>(
-    upgrade: WebSocketUpgrade,
-    connection: Result<(WebSocketStream<MaybeTlsStream<S>>, HandshakeResponse), TungsteniteError>,
-    adapt_responses: bool,
-    tracker: Option<UsageTracker>,
-) -> AppResult<Response>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
+        client_async_tls(request, stream).await
+    } else {
+        connect_async(request).await
+    };
     let (upstream, handshake) = match connection {
         Ok(result) => result,
         Err(TungsteniteError::Http(rejection)) => {
@@ -106,14 +84,12 @@ where
     Ok(upgrade.on_upgrade(move |client| bridge(client, upstream, adapt_responses, tracker)))
 }
 
-async fn bridge<S>(
+async fn bridge(
     client: WebSocket,
-    upstream: WebSocketStream<MaybeTlsStream<S>>,
+    upstream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     adapt_responses: bool,
     tracker: Option<UsageTracker>,
-) where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
+) {
     let (mut client_sender, mut client_receiver) = client.split();
     let (mut upstream_sender, mut upstream_receiver) = upstream.split();
 

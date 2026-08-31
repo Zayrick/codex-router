@@ -1,14 +1,11 @@
-use std::{
-    io,
-    net::{IpAddr, SocketAddr},
-};
+use std::io;
 
 use anyhow::{Result, anyhow, bail};
+use axum::http::Uri;
+use hyper_util::client::legacy::connect::{HttpConnector, proxy::SocksV5};
 use percent_encoding::percent_decode_str;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpStream, lookup_host},
-};
+use tokio::net::{TcpStream, lookup_host};
+use tower::Service;
 use url::{Host, Url};
 
 #[derive(Clone)]
@@ -33,28 +30,16 @@ impl ChatgptTransport {
 
 #[derive(Clone)]
 pub(crate) struct ChatgptProxy {
-    url: Url,
-    host: ProxyHost,
-    port: u16,
+    http_proxy: reqwest::Proxy,
+    proxy_uri: Uri,
     remote_dns: bool,
     auth: Option<ProxyAuth>,
-}
-
-#[derive(Clone)]
-enum ProxyHost {
-    Domain(String),
-    Ip(IpAddr),
 }
 
 #[derive(Clone)]
 struct ProxyAuth {
     username: String,
     password: String,
-}
-
-enum SocksTarget {
-    Domain(String, u16),
-    Ip(SocketAddr),
 }
 
 impl ChatgptProxy {
@@ -71,18 +56,21 @@ impl ChatgptProxy {
         if !matches!(url.path(), "" | "/") || url.query().is_some() || url.fragment().is_some() {
             bail!("proxy URL must not contain a path, query, or fragment");
         }
-        let host = match url
+        let proxy_host = match url
             .host()
             .ok_or_else(|| anyhow!("proxy URL must include a host"))?
         {
-            Host::Domain(value) => ProxyHost::Domain(value.to_owned()),
-            Host::Ipv4(value) => ProxyHost::Ip(value.into()),
-            Host::Ipv6(value) => ProxyHost::Ip(value.into()),
+            Host::Domain(value) => value.to_owned(),
+            Host::Ipv4(value) => value.to_string(),
+            Host::Ipv6(value) => format!("[{value}]"),
         };
         let port = url.port().unwrap_or(1080);
         if port == 0 {
             bail!("proxy port must be greater than zero");
         }
+        let proxy_uri = format!("socks5://{proxy_host}:{port}")
+            .parse()
+            .map_err(|_| anyhow!("proxy URL is invalid"))?;
         let auth = match (url.username(), url.password()) {
             ("", None) => None,
             (username, Some(password)) if !username.is_empty() && !password.is_empty() => {
@@ -99,18 +87,18 @@ impl ChatgptProxy {
             }
             _ => bail!("proxy username and password must be provided together"),
         };
+        let http_proxy = reqwest::Proxy::all(url.as_str())
+            .map_err(|_| anyhow!("failed to configure the SOCKS5 proxy"))?;
         Ok(Self {
-            url,
-            host,
-            port,
+            http_proxy,
+            proxy_uri,
             remote_dns,
             auth,
         })
     }
 
-    pub fn reqwest_proxy(&self) -> Result<reqwest::Proxy> {
-        reqwest::Proxy::all(self.url.as_str())
-            .map_err(|_| anyhow!("failed to configure the SOCKS5 proxy"))
+    pub fn http_proxy(&self) -> reqwest::Proxy {
+        self.http_proxy.clone()
     }
 
     pub async fn connect(&self, target: &Url) -> io::Result<TcpStream> {
@@ -125,7 +113,11 @@ impl ChatgptProxy {
                 let addresses = lookup_host((host, port)).await?;
                 let mut last_error = None;
                 for address in addresses {
-                    match self.connect_target(&SocksTarget::Ip(address)).await {
+                    let host = match address.ip() {
+                        std::net::IpAddr::V4(value) => value.to_string(),
+                        std::net::IpAddr::V6(value) => format!("[{value}]"),
+                    };
+                    match self.connect_target(&host, address.port()).await {
                         Ok(stream) => return Ok(stream),
                         Err(error) => last_error = Some(error),
                     }
@@ -134,93 +126,26 @@ impl ChatgptProxy {
                     io::Error::new(io::ErrorKind::NotFound, "upstream hostname did not resolve")
                 }))
             }
-            Host::Domain(host) => {
-                self.connect_target(&SocksTarget::Domain(host.to_owned(), port))
-                    .await
-            }
-            Host::Ipv4(address) => {
-                self.connect_target(&SocksTarget::Ip(SocketAddr::new(address.into(), port)))
-                    .await
-            }
-            Host::Ipv6(address) => {
-                self.connect_target(&SocksTarget::Ip(SocketAddr::new(address.into(), port)))
-                    .await
-            }
+            Host::Domain(host) => self.connect_target(host, port).await,
+            Host::Ipv4(address) => self.connect_target(&address.to_string(), port).await,
+            Host::Ipv6(address) => self.connect_target(&format!("[{address}]"), port).await,
         }
     }
 
-    async fn connect_target(&self, target: &SocksTarget) -> io::Result<TcpStream> {
-        let mut stream = match &self.host {
-            ProxyHost::Domain(host) => TcpStream::connect((host.as_str(), self.port)).await?,
-            ProxyHost::Ip(host) => TcpStream::connect(SocketAddr::new(*host, self.port)).await?,
-        };
-        let method = if self.auth.is_some() { 0x02 } else { 0x00 };
-        stream.write_all(&[0x05, 0x01, method]).await?;
-        let mut greeting = [0_u8; 2];
-        stream.read_exact(&mut greeting).await?;
-        if greeting != [0x05, method] {
-            return Err(proxy_protocol_error(
-                "SOCKS5 proxy rejected authentication method",
-            ));
-        }
+    async fn connect_target(&self, host: &str, port: u16) -> io::Result<TcpStream> {
+        let target = format!("https://{host}:{port}")
+            .parse()
+            .map_err(|_| invalid_input("WebSocket upstream URL is invalid"))?;
+        let mut connector = HttpConnector::new();
+        connector.enforce_http(false);
+        let mut socks = SocksV5::new(self.proxy_uri.clone(), connector);
         if let Some(auth) = &self.auth {
-            let mut request = Vec::with_capacity(3 + auth.username.len() + auth.password.len());
-            request.extend_from_slice(&[0x01, auth.username.len() as u8]);
-            request.extend_from_slice(auth.username.as_bytes());
-            request.push(auth.password.len() as u8);
-            request.extend_from_slice(auth.password.as_bytes());
-            stream.write_all(&request).await?;
-            let mut response = [0_u8; 2];
-            stream.read_exact(&mut response).await?;
-            if response != [0x01, 0x00] {
-                return Err(proxy_protocol_error("SOCKS5 proxy authentication failed"));
-            }
+            socks = socks.with_auth(auth.username.clone(), auth.password.clone());
         }
-
-        let mut request = Vec::with_capacity(32);
-        request.extend_from_slice(&[0x05, 0x01, 0x00]);
-        match target {
-            SocksTarget::Domain(host, port) => {
-                let length = u8::try_from(host.len())
-                    .map_err(|_| invalid_input("WebSocket upstream hostname is too long"))?;
-                request.extend_from_slice(&[0x03, length]);
-                request.extend_from_slice(host.as_bytes());
-                request.extend_from_slice(&port.to_be_bytes());
-            }
-            SocksTarget::Ip(SocketAddr::V4(address)) => {
-                request.push(0x01);
-                request.extend_from_slice(&address.ip().octets());
-                request.extend_from_slice(&address.port().to_be_bytes());
-            }
-            SocksTarget::Ip(SocketAddr::V6(address)) => {
-                request.push(0x04);
-                request.extend_from_slice(&address.ip().octets());
-                request.extend_from_slice(&address.port().to_be_bytes());
-            }
-        }
-        stream.write_all(&request).await?;
-
-        let mut response = [0_u8; 4];
-        stream.read_exact(&mut response).await?;
-        if response[0] != 0x05 || response[2] != 0x00 {
-            return Err(proxy_protocol_error("invalid SOCKS5 connect response"));
-        }
-        if response[1] != 0x00 {
-            return Err(proxy_protocol_error(socks5_status_message(response[1])));
-        }
-        let address_length = match response[3] {
-            0x01 => 4,
-            0x03 => {
-                let mut length = [0_u8; 1];
-                stream.read_exact(&mut length).await?;
-                usize::from(length[0])
-            }
-            0x04 => 16,
-            _ => return Err(proxy_protocol_error("invalid SOCKS5 address type")),
-        };
-        let mut ignored = vec![0_u8; address_length + 2];
-        stream.read_exact(&mut ignored).await?;
-        Ok(stream)
+        Service::call(&mut socks, target)
+            .await
+            .map(|stream| stream.into_inner())
+            .map_err(|error| io::Error::new(io::ErrorKind::ConnectionRefused, error.to_string()))
     }
 }
 
@@ -235,27 +160,10 @@ fn invalid_input(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-fn proxy_protocol_error(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::ConnectionRefused, message)
-}
-
-const fn socks5_status_message(status: u8) -> &'static str {
-    match status {
-        0x01 => "SOCKS5 proxy reported a general failure",
-        0x02 => "SOCKS5 proxy denied the connection",
-        0x03 => "SOCKS5 proxy reported network unreachable",
-        0x04 => "SOCKS5 proxy reported host unreachable",
-        0x05 => "SOCKS5 proxy reported connection refused",
-        0x06 => "SOCKS5 proxy reported TTL expired",
-        0x07 => "SOCKS5 proxy does not support CONNECT",
-        0x08 => "SOCKS5 proxy does not support the address type",
-        _ => "SOCKS5 proxy returned an unknown error",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn validates_socks5_proxy_urls() {
@@ -265,9 +173,7 @@ mod tests {
             "socks5://user:password@proxy.example:1081",
             "socks5://user:p%40ss@proxy.example",
         ] {
-            ChatgptProxy::parse(value)
-                .and_then(|proxy| proxy.reqwest_proxy().map(|_| ()))
-                .unwrap_or_else(|error| panic!("{value}: {error}"));
+            ChatgptProxy::parse(value).unwrap_or_else(|error| panic!("{value}: {error}"));
         }
         for value in [
             "",
@@ -284,7 +190,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn performs_authenticated_socks5_websocket_connect() {
+    async fn opens_an_authenticated_socks5_tunnel() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {

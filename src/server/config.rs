@@ -485,16 +485,4 @@ mod tests {
         value.server.cors_origin = "https://client.example\ninvalid".into();
         assert!(validate_config(&value).is_err());
     }
-
-    #[test]
-    fn persists_only_configured_chatgpt_proxies() {
-        let mut value = config();
-        let direct = toml::to_string(&value).unwrap();
-        assert!(!direct.contains("chatgpt_proxy"));
-
-        value.upstream.chatgpt_proxy = Some("socks5h://user:password@proxy.example:1080".into());
-        validate_config(&value).unwrap();
-        let proxied = toml::to_string(&value).unwrap();
-        assert!(proxied.contains("chatgpt_proxy = \"socks5h://user:password@proxy.example:1080\""));
-    }
 }

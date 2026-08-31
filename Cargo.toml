@@ -13,6 +13,7 @@ bytes = "1.12.1"
 futures-util = "0.3.34"
 hmac = "0.13.0"
 http-body-util = "0.1.5"
+hyper-util = { version = "0.1.20", features = ["client-legacy", "client-proxy", "tokio"] }
 mime_guess = "2.0.5"
 multer = "3.1.0"
 notify = "8.2.0"

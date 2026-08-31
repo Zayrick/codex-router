@@ -111,7 +111,7 @@ async fn public_account_input(request: Request<Body>) -> AppResult<(String, Usag
         }
     }
     let credential = credential
-        .filter(|value| (1..=512).contains(&value.encode_utf16().count()))
+        .filter(|value| (1..=512).contains(&value.len()))
         .ok_or_else(invalid_account_credential_input)?;
     let range = range
         .as_deref()

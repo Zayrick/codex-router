@@ -36,7 +36,7 @@ impl AppState {
             .context("upstream.chatgpt_proxy is invalid")?;
         let chatgpt_client = if let Some(proxy) = proxy.as_ref() {
             client_builder()
-                .proxy(proxy.reqwest_proxy()?)
+                .proxy(proxy.http_proxy())
                 .build()
                 .context("failed to create proxied ChatGPT HTTP client")?
         } else {

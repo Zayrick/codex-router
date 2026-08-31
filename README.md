@@ -9,7 +9,7 @@ TOML 文件中，下游 Token 用量保存在 SQLite 中，React 管理界面随
 - OpenAI Models、Responses、Chat Completions 与 legacy Completions；
 - Anthropic Messages 与本地 token count；
 - Gemini Models、generateContent、streamGenerateContent 与 countTokens；
-- `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket relay；
+- `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket 转发；
 - Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
 - OAuth 设备授权、下游 API Key、代理账户及代理账户独立 OAuth 的管理 JSON API；
 - React 管理页面与账户用量查询页；
@@ -57,9 +57,9 @@ cargo run --release -- --config config.toml
 - `usage_tracking.database_path`：Token 用量 SQLite 文件，默认位于配置文件旁的 `usage.sqlite3`；
 - `state.api_keys`：至少一个启用的下游 API Key，或启动后通过管理 API 创建。
 
-ChatGPT 上游固定为 `https://chatgpt.com`。默认直接连接；如需通过 SOCKS5 出站，在 `[upstream]`
-中配置 `chatgpt_proxy = "socks5h://127.0.0.1:1080"`。普通 HTTP/SSE 和 WebSocket 会使用同一代理；
-完整格式与 DNS 解析差异见[配置文档](docs/configuration.md)。
+ChatGPT 请求发往 `https://chatgpt.com`。默认直接连接；如需通过 SOCKS5 出站，在 `[upstream]`
+中配置 `chatgpt_proxy = "socks5h://127.0.0.1:1080"`。HTTP、SSE 和 WebSocket 会使用同一代理；完整
+格式与 DNS 解析差异见[配置文档](docs/configuration.md)。
 
 验证本地接口：
 

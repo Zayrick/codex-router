@@ -1,22 +1,10 @@
-use url::Url;
-
-use crate::core::AppResult;
-
-use super::codex::{CodexCredentials, HeaderBag, is_websocket_upgrade, resolve_chatgpt_url};
+use super::codex::{CodexCredentials, HeaderBag, is_websocket_upgrade};
 
 pub const ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
 const BACKEND_API_ROOT: &str = "/backend-api";
 
 pub fn is_backend_api_path(pathname: &str) -> bool {
     pathname == BACKEND_API_ROOT || pathname.starts_with("/backend-api/")
-}
-
-pub fn resolve_chatgpt_upstream_url(client_url: &Url) -> AppResult<Url> {
-    let search = client_url
-        .query()
-        .map(|query| format!("?{query}"))
-        .unwrap_or_default();
-    resolve_chatgpt_url(client_url.path(), &search)
 }
 
 pub fn relay_request_headers(
@@ -100,18 +88,6 @@ mod tests {
         assert!(is_backend_api_path("/backend-api/codex/models"));
         assert!(!is_backend_api_path("/backend-api-legacy"));
         assert!(!is_backend_api_path("/assets/backend-api"));
-    }
-
-    #[test]
-    fn builds_fixed_chatgpt_target_url() {
-        let client = Url::parse(
-            "https://worker.example/backend-api/codex/models?client_version=1.2.3&channel=stable",
-        )
-        .unwrap();
-        assert_eq!(
-            resolve_chatgpt_upstream_url(&client).unwrap().as_str(),
-            "https://chatgpt.com/backend-api/codex/models?client_version=1.2.3&channel=stable"
-        );
     }
 
     #[test]

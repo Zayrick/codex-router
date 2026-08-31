@@ -4,7 +4,7 @@
 
 Codex Router 通过协议转换、Codex 原生映射和透明传输提供多种客户端接口。本文描述的是当前
 仓库代码与测试所保证的行为；具体模型、额度和私有 Codex action 是否可用，仍取决于 OpenAI
-账户、ChatGPT relay 和上游服务。
+账户与 ChatGPT 上游服务。
 
 兼容级别定义如下：
 
@@ -40,7 +40,7 @@ CORS。
 | --- | --- | --- |
 | `GET /healthz` | 无 | 配置文件中的 OAuth 可读取且未过期时返回空正文 `204`；其他情况返回空正文 `404` |
 
-健康检查不验证 relay 可达性，也不发起上游请求。
+健康检查不验证 ChatGPT 上游可达性，也不发起上游请求。
 
 ## 3. OpenAI 与 Codex 路由
 
@@ -155,7 +155,7 @@ suffix、seed、user 等传统 Completions 控件不会转发。
 Anthropic 与 Gemini token-count 路径使用本地 `cl100k_base` tokenizer，对转换后的 Codex
 input、工具 schema 和工具结果进行估算。结果适用于预检和预算，不保证与供应商 tokenizer
 逐 token 一致，也不应用于账单核对。这两个路径仍要求下游 API Key，但不要求有效 OAuth 或
-relay。
+访问 ChatGPT 上游。
 
 ## 8. 正文、流与 WebSocket
 
@@ -191,7 +191,7 @@ URL 或自定义子协议。
 
 ## 10. 透明路径的兼容边界
 
-服务不解析未注册路径和 `/backend-api/*` 的协议正文，也不保证 relay 对相应 action 的
+服务不解析未注册路径和 `/backend-api/*` 的协议正文，也不保证上游对相应 action 的
 稳定性、可用性、鉴权方式或响应格式。UDP RTP/RTCP 等非 HTTP 能力不在转发范围内。
 
 ## 11. 公开账户用量页
