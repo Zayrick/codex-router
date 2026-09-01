@@ -83,48 +83,6 @@
 	--sidebar-ring: var(--primary);
 }
 
-* {
-	box-sizing: border-box;
-}
-
-html {
-	min-width: 320px;
-	min-height: 100%;
-}
-
-body {
-	margin: 0;
-	min-width: 320px;
-	min-height: 100vh;
-	min-height: 100svh;
-	background: var(--page);
-}
-
-button,
-input {
-	font: inherit;
-}
-
-button,
-a {
-	-webkit-tap-highlight-color: transparent;
-}
-
-::selection {
-	color: var(--text);
-	background: var(--primary-border);
-}
-
-:focus-visible {
-	outline: 3px solid color-mix(in srgb, var(--primary) 30%, transparent);
-	outline-offset: 2px;
-}
-
-#root {
-	min-height: 100vh;
-	min-height: 100svh;
-}
-
 @media (prefers-color-scheme: dark) {
 	:root {
 		color: #f3f0eb;
@@ -207,21 +165,47 @@ a {
 }
 
 @layer base {
+	/* Keep resets in the base layer so component utilities can override them. */
 	* {
+		box-sizing: border-box;
 		@apply border-border outline-ring/50;
+	}
+	html {
+		min-width: 320px;
+		min-height: 100%;
+		@apply font-sans;
+	}
+	body {
+		margin: 0;
+		min-width: 320px;
+		min-height: 100vh;
+		min-height: 100svh;
+		background: var(--page);
+		@apply bg-background text-foreground;
+	}
+	button,
+	input {
+		font: inherit;
 	}
 	button,
 	a {
 		color: inherit;
+		-webkit-tap-highlight-color: transparent;
 	}
-	body {
-		@apply bg-background text-foreground;
+	::selection {
+		color: var(--text);
+		background: var(--primary-border);
+	}
+	:focus-visible {
+		outline: 3px solid color-mix(in srgb, var(--primary) 30%, transparent);
+		outline-offset: 2px;
 	}
 	button:not(:disabled),
 	[role="button"]:not(:disabled) {
 		cursor: pointer;
 	}
-	html {
-		@apply font-sans;
+	#root {
+		min-height: 100vh;
+		min-height: 100svh;
 	}
 }

@@ -26,10 +26,6 @@
 
 /* Account list */
 
-.account-groups-card {
-	min-width: 0;
-}
-
 .dashboard-heading-action {
 	flex: 0 0 auto;
 }
@@ -37,20 +33,6 @@
 .codex-account-list {
 	display: grid;
 	gap: 1rem;
-}
-
-.codex-account-card {
-	padding-bottom: 0;
-	transition: opacity 160ms ease, border-color 160ms ease;
-}
-
-.codex-account-card.is-disabled {
-	opacity: 0.68;
-	border-style: dashed;
-}
-
-.codex-account-card-header {
-	min-width: 0;
 }
 
 .codex-account-subtitle {
@@ -82,11 +64,6 @@
 	justify-content: flex-end;
 }
 
-.unified-empty-state {
-	gap: 0.5rem;
-	min-height: 10rem;
-}
-
 .device-login-content {
 	display: grid;
 	gap: 0.75rem;
@@ -96,12 +73,6 @@
 	color: var(--text-tertiary);
 	font-size: 0.65rem;
 	text-align: center;
-}
-
-.device-code-button {
-	justify-content: space-between;
-	gap: 0.75rem;
-	padding: 0.75rem;
 }
 
 .device-code-button code {
@@ -121,10 +92,6 @@
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
 	gap: 0.75rem;
-}
-
-.account-group-card {
-	min-width: 0;
 }
 
 .account-group-members {
@@ -149,33 +116,12 @@
 	font-size: 0.62rem;
 }
 
-.disabled-member {
-	opacity: 0.62;
-	border-style: dashed;
-}
-
 .account-group-actions {
 	display: flex;
 	flex: 0 0 auto;
 	flex-direction: row;
 	align-items: center;
 	gap: 0.4rem;
-}
-
-.account-groups-empty {
-	min-height: 8rem;
-}
-
-.identity-empty-state {
-	min-height: 10rem;
-}
-
-.route-state-badge {
-	max-width: 12rem;
-	overflow: hidden;
-	font-size: 0.57rem;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .route-state-badge.assigned {
@@ -191,15 +137,6 @@
 }
 
 /* Identity lists */
-
-.identity-table-wrap {
-	background: var(--surface);
-}
-
-.unified-identity-table {
-	width: 100%;
-	table-layout: fixed;
-}
 
 .unified-identity-table th:nth-child(1) { width: 18%; }
 .unified-identity-table th:nth-child(2) { width: 27%; }
@@ -247,17 +184,6 @@
 	opacity: 0.62;
 }
 
-.usage-events-table td strong,
-.usage-events-table td small {
-	display: block;
-}
-
-.usage-events-table td small {
-	margin-top: 0.12rem;
-	color: var(--text-tertiary);
-	font-size: 0.58rem;
-}
-
 @media (max-width: 46rem) {
 	.dashboard-heading-action,
 	.dashboard-heading-action > [data-slot="button"] {
@@ -268,11 +194,6 @@
 		width: 100%;
 		justify-content: flex-start;
 		justify-self: start;
-	}
-
-	.device-code-button {
-		align-items: flex-start;
-		flex-direction: column;
 	}
 
 	.device-code-button code {

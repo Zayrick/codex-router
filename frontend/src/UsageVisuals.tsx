@@ -187,7 +187,7 @@ function ActivityCard({
 	const columns = Math.max(1, Math.ceil(series.length / 7));
 	const minimumWidth = columns * 8 + Math.max(0, columns - 1) * 3;
 	return (
-		<Card className={`usage-activity-card ${className}`}>
+		<Card className={`usage-activity-card grid min-w-0 gap-3 p-3 ${className}`}>
 			<header className="usage-activity-card-header">
 				<div>
 					<h3>{title}</h3>
@@ -200,7 +200,7 @@ function ActivityCard({
 			</header>
 			<div className="activity-card-visual">
 				{series.length > 0 ? (
-					<ScrollArea className="activity-heatmap-scroll" scrollbars="horizontal">
+					<ScrollArea className="activity-heatmap-scroll w-full" scrollbars="horizontal">
 						<div className="p-[0.35rem]">
 							<div
 								aria-label={ariaLabel}
@@ -217,7 +217,7 @@ function ActivityCard({
 									return (
 										<span
 											aria-label={cell.title}
-											className={`activity-cell ${cell.className}${future ? " activity-cell-future" : ""}`}
+										className={`activity-cell ${future ? "activity-cell-future" : cell.className}`}
 											key={point.startAt}
 											title={cell.title}
 										/>
@@ -301,7 +301,7 @@ function LineTrendCard({
 	const futureStart = coordinates.at(-1)?.x ?? left;
 	const total = actual.reduce((sum, entry) => sum + entry.value, 0);
 	return (
-		<Card className="line-trend-card">
+		<Card className="line-trend-card min-w-0 gap-3 p-3">
 		<header>
 			<div><h3>{title}</h3><p>{subtitle}</p></div>
 			<strong style={{ color }}>{formatValue(total)}</strong>
@@ -380,7 +380,7 @@ function DonutBreakdownCard({
 	const total = values.reduce((sum, value) => sum + Math.max(0, value), 0);
 	const segments = donutSegments(values, total);
 	return (
-		<Card className={`donut-card${split ? " donut-card-split" : ""}`}>
+		<Card className={`donut-card grid min-w-0 gap-3 p-3${split ? " donut-card-split" : ""}`}>
 		<header>
 			<div>
 				<h3>{title}</h3>

@@ -139,9 +139,9 @@ export default function ManagementShell({
 									aria-controls="management-sidebar"
 									aria-expanded={mobileOpen}
 									aria-label="打开导航"
-									className="workspace-menu-button"
+									className="hidden shrink-0 max-[60rem]:inline-flex"
 									onClick={() => setMobileOpen(true)}
-									size="icon"
+									size="icon-lg"
 									type="button"
 									variant="outline"
 								>
@@ -212,7 +212,7 @@ function SidebarContent({
 			</nav>
 
 			<div className="sidebar-footer">
-				<Button className="sidebar-logout justify-start" onClick={onLogout} title="退出" type="button" variant="ghost">
+				<Button className="min-h-11 w-full justify-start [&_svg]:size-[1.1rem]" onClick={onLogout} title="退出" type="button" variant="ghost">
 					<ShellIcon name="logout" />
 					<span>退出管理</span>
 				</Button>
@@ -247,7 +247,7 @@ function NavItem({
 }) {
 	const active = activePage === page;
 	return (
-		<Button asChild className="sidebar-nav-item h-auto justify-start" variant={active ? "secondary" : "ghost"}>
+		<Button asChild className="h-auto min-h-[2.55rem] w-full justify-start" variant={active ? "secondary" : "ghost"}>
 			<a
 				aria-current={active ? "page" : undefined}
 				href={managementPageHref(basePath, page)}

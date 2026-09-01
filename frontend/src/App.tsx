@@ -852,7 +852,7 @@ function Overview({
 						<ActivityHeatmaps now={now} stacked usage={usage} />
 						<DownstreamCostDonut usage={usage} />
 					</>
-				) : <Card className="center-state overview-visual-loading"><Spinner />正在读取当前周期…</Card>}
+				) : <Card className="min-h-72 flex-row items-center justify-center gap-[.55rem] p-3 text-[.78rem] text-muted-foreground"><Spinner />正在读取当前周期…</Card>}
 			</section>
 		</div>
 	);
@@ -870,7 +870,7 @@ function OverviewMetricCard({
 	value: string;
 }) {
 	return (
-		<Button className="overview-metric-card h-auto" onClick={onClick} type="button" variant="outline">
+		<Button className="overview-metric-card grid h-auto min-h-29 min-w-0 content-between justify-stretch justify-items-start gap-[.55rem] p-3 text-left max-[60rem]:min-h-27" onClick={onClick} type="button" variant="outline">
 			<span>{label}</span>
 			<strong>{value}</strong>
 			<small>{detail}</small>
@@ -991,10 +991,10 @@ function UsagePanel({
 					<ActivityHeatmaps now={now} usage={usage} />
 					<UsageLineCharts now={now} usage={usage} />
 					<UsageBreakdownDonuts usage={usage} />
-					<Card className="usage-events" size="sm">
+					<Card className="min-w-0 p-3" size="sm">
 						<div className="usage-section-heading"><strong>最近请求</strong></div>
-						<ScrollArea className="table-wrap" scrollbars="horizontal">
-							<Table className="usage-events-table">
+						<ScrollArea className="rounded-[.72rem] border" scrollbars="horizontal">
+							<Table className="usage-events-table min-w-[50rem] table-auto [&_th]:px-[.7rem] [&_th]:py-[.62rem] [&_td]:px-[.7rem] [&_td]:py-[.62rem] [&_th]:text-[.68rem] [&_td]:text-[.68rem]">
 								<TableHeader><TableRow><TableHead>时间</TableHead><TableHead>调用身份</TableHead><TableHead>路由目标</TableHead><TableHead>模型</TableHead><TableHead>Token</TableHead><TableHead>成本</TableHead></TableRow></TableHeader>
 								<TableBody>{usage.recentEvents.map((event) => (
 									<TableRow key={event.id}>
@@ -1017,7 +1017,7 @@ function UsagePanel({
 }
 
 function UsageMetric({ label, value, detail, tone }: { label: string; value: string; detail?: string | undefined; tone: "blue" | "teal" | "violet" | "orange" }) {
-	return <Card className={`usage-metric usage-metric-${tone}`} size="sm"><span>{label}</span><strong>{value}</strong>{detail ? <small>{detail}</small> : null}</Card>;
+	return <Card className={`usage-metric usage-metric-${tone} relative grid min-h-[6.5rem] min-w-0 content-between gap-[.3rem] p-3`} size="sm"><span>{label}</span><strong>{value}</strong>{detail ? <small>{detail}</small> : null}</Card>;
 }
 
 type IdentityEntry = ClientApiKey | AuthProxyAccount;
@@ -1054,7 +1054,7 @@ function IdentityTable({
 
 	if (entries.length === 0) {
 		return (
-			<Empty className="identity-empty-state border" aria-label={isKey ? "API Keys" : "下游账户"}>
+			<Empty className="min-h-40 border" aria-label={isKey ? "API Keys" : "下游账户"}>
 				<EmptyHeader>
 					<EmptyMedia variant="icon">{isKey ? <KeyRoundIcon /> : <UsersIcon />}</EmptyMedia>
 					<EmptyTitle>{isKey ? "暂无 API Key" : "暂无下游账户"}</EmptyTitle>
@@ -1065,8 +1065,8 @@ function IdentityTable({
 	}
 
 	return (
-		<ScrollArea className="table-wrap identity-table-wrap" aria-label={isKey ? "API Keys" : "下游账户"} role="region" scrollbars="horizontal">
-			<Table className="unified-identity-table">
+		<ScrollArea className="rounded-[.72rem] border bg-card" aria-label={isKey ? "API Keys" : "下游账户"} role="region" scrollbars="horizontal">
+			<Table className="unified-identity-table table-fixed">
 				<TableHeader><TableRow><TableHead>名称</TableHead><TableHead>{isKey ? "Key" : "account_id"}</TableHead><TableHead>账户 / 账户组</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
 				<TableBody>{entries.map((entry) => {
 					const route = routes.find((item) => item.consumerType === kind && item.consumerId === entry.id);
@@ -1102,7 +1102,7 @@ function IdentityTable({
 									</div>
 								) : <code title={(entry as AuthProxyAccount).accountId}>{(entry as AuthProxyAccount).accountId}</code>}
 							</TableCell>
-							<TableCell><Badge className={`route-state-badge ${route ? "assigned" : "unassigned"}`} variant={route ? "secondary" : "outline"}>{route ? routeTargetName(route, targets.accounts, targets.groups) : "未分配"}</Badge></TableCell>
+							<TableCell><Badge className={`route-state-badge max-w-48 overflow-hidden text-[.57rem] text-ellipsis whitespace-nowrap ${route ? "assigned" : "unassigned"}`} variant={route ? "secondary" : "outline"}>{route ? routeTargetName(route, targets.accounts, targets.groups) : "未分配"}</Badge></TableCell>
 							<TableCell>
 								<Switch
 									aria-label={`${entry.enabled ? "停用" : "启用"} ${entry.name}`}
@@ -1353,7 +1353,7 @@ function LoginView({ error, loading, onSubmit }: { error: string | null; loading
 								</InputGroupAddon>
 							</InputGroup>
 						</Field>
-						<Button className="auth-submit" disabled={loading || !secret} size="lg" type="submit">{loading ? <Spinner /> : null}{loading ? "登录中…" : "登录"}</Button>
+						<Button className="mt-1 min-h-[3.05rem] w-full" disabled={loading || !secret} size="lg" type="submit">{loading ? <Spinner /> : null}{loading ? "登录中…" : "登录"}</Button>
 					</form>
 				</main>
 			</div>

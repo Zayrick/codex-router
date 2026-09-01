@@ -90,7 +90,7 @@ export default function CodexAccounts({
 	return (
 		<>
 			{accounts.length === 0 ? (
-				<Empty className="unified-empty-state border" aria-label="Codex 账户">
+				<Empty className="min-h-40 gap-2 border" aria-label="Codex 账户">
 					<EmptyHeader>
 						<EmptyMedia variant="icon"><UsersIcon /></EmptyMedia>
 						<EmptyTitle>暂无 Codex 账户</EmptyTitle>
@@ -170,8 +170,8 @@ function CodexAccountCard({
 	const email = account.oauth?.email;
 
 	return (
-		<Card className={`account-card codex-account-card gap-0${account.enabled ? "" : " is-disabled"}`} size="sm">
-				<CardHeader className="codex-account-card-header border-b max-[46rem]:grid-cols-1">
+		<Card className={`gap-0 pb-0 transition-opacity${account.enabled ? "" : " opacity-[.68]"}`} size="sm">
+				<CardHeader className="min-w-0 border-b max-[46rem]:grid-cols-1">
 					<CardTitle className="truncate" title={email ?? account.name}>{email || account.name}</CardTitle>
 					<CardDescription className="codex-account-subtitle">
 						{email ? <small>{account.name}</small> : null}
@@ -200,7 +200,7 @@ function CodexAccountCard({
 					</CardAction>
 				</CardHeader>
 
-			<CardContent className="account-quota-section grid gap-0 p-0" aria-label={`${email || account.name} 的账户配额`}>
+			<CardContent className="grid gap-0 p-0" aria-label={`${email || account.name} 的账户配额`}>
 				{loading && !subscription ? (
 					<div className="center-state account-quota-loading" role="status">
 						<Spinner />
@@ -215,14 +215,14 @@ function CodexAccountCard({
 				) : null}
 				{subscription?.windows.length ? (
 					<QuotaTimeline
-						className={loading ? "account-quota-timeline is-refreshing rounded-none ring-0" : "account-quota-timeline rounded-none ring-0"}
+						className={loading ? "rounded-none opacity-[.62] ring-0 transition-opacity motion-reduce:transition-none" : "rounded-none ring-0 transition-opacity motion-reduce:transition-none"}
 						now={now}
 						planType={plan}
 						sampledAt={subscription.fetchedAt}
 						windows={subscription.windows}
 					/>
 				) : !loading && !error ? (
-					<Empty className="account-quota-empty rounded-none">
+					<Empty className="min-h-28 rounded-none">
 						<EmptyHeader><EmptyDescription>暂无额度数据</EmptyDescription></EmptyHeader>
 					</Empty>
 				) : null}
@@ -363,7 +363,7 @@ function DeviceLoginDialog({
 				{loading && !flow ? <div className="center-state"><Spinner /><span>获取登录码…</span></div> : null}
 				{flow ? (
 					<div className="device-login-content">
-						<Button className="device-code-button h-auto w-full border-dashed" onClick={() => void copyCode()} type="button" variant="outline">
+						<Button className="device-code-button h-auto w-full justify-between gap-3 border-dashed p-3 max-[46rem]:flex-col max-[46rem]:items-start" onClick={() => void copyCode()} type="button" variant="outline">
 							<code>{flow.authorization.userCode}</code>
 							<span>{copied ? "已复制" : "点击复制"}</span>
 							<CopyIcon className="sr-only" />

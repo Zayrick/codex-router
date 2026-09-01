@@ -93,7 +93,7 @@ export default function AccountGroups({
 	}
 
 	return (
-		<Card className="account-groups-card" aria-labelledby="account-groups-title">
+		<Card className="min-w-0" aria-labelledby="account-groups-title">
 			<CardHeader className="max-sm:grid-cols-1">
 				<CardTitle id="account-groups-title">账户组</CardTitle>
 				<CardDescription>将多个 Codex 账户组成调度池，再分配给 API Key 或下游账户。</CardDescription>
@@ -107,7 +107,7 @@ export default function AccountGroups({
 
 			<CardContent>
 				{groups.length === 0 ? (
-					<Empty className="account-groups-empty border">
+					<Empty className="min-h-32 border">
 						<EmptyHeader>
 							<EmptyTitle>暂无账户组</EmptyTitle>
 							<EmptyDescription>创建后即可在 API Key 和下游账户中直接选择。</EmptyDescription>
@@ -161,7 +161,7 @@ function AccountGroupCard({
 		.filter((account): account is CodexAccount => Boolean(account));
 
 	return (
-		<Card className="account-group-card" size="sm">
+		<Card className="min-w-0" size="sm">
 			<CardHeader>
 				<CardTitle className="truncate" title={group.name}>{group.name}</CardTitle>
 				<CardDescription className="truncate">{strategyLabel(group.strategy)} · {group.strategy === "fallback" ? "调用身份保持" : group.sessionAffinity ? `会话保持 ${formatTtl(group.sessionAffinityTtl)}` : "无会话保持"}</CardDescription>
@@ -177,7 +177,7 @@ function AccountGroupCard({
 			</CardHeader>
 			<CardContent className="account-group-members">
 				{members.map((account) => (
-					<Badge className={account.enabled ? "" : "disabled-member"} key={account.id} variant="outline">
+					<Badge className={account.enabled ? "" : "border-dashed opacity-[.62]"} key={account.id} variant="outline">
 						{account.name}
 					</Badge>
 				))}

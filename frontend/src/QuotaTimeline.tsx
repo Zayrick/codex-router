@@ -1,6 +1,7 @@
 import { useMemo, type CSSProperties } from "react";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 import "./QuotaTimeline.css";
 
 const HOUR_MS = 60 * 60 * 1_000;
@@ -59,13 +60,9 @@ export default function QuotaTimeline({
 	);
 	const days = useMemo(() => dayTicks(span.start, span.end), [span]);
 	const nowLeft = percentAt(now, span.start, span.end);
-	const timelineClassName = className
-		? `timeline-card ${className}`
-		: "timeline-card";
-
 	return (
-		<Card className={`${timelineClassName} gap-0 py-0`}>
-			<ScrollArea className="timeline-scroll" scrollbars="horizontal">
+		<Card className={cn("gap-0 py-0", className)}>
+			<ScrollArea scrollbars="horizontal">
 				<div
 					className="timeline-grid"
 					style={{

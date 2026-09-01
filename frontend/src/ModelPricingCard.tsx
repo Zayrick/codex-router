@@ -94,7 +94,7 @@ export default function ModelPricingCard({
 	}
 
 	return (
-		<Card className="pricing-card" aria-labelledby="pricing-title">
+		<Card aria-labelledby="pricing-title">
 		<CardHeader className="border-b max-sm:grid-cols-1">
 			<CardTitle id="pricing-title">模型价格</CardTitle>
 			<CardDescription>按每百万 Token 的美元单价计算成本，配置会写入服务器的 <code>config.toml</code>。</CardDescription>
@@ -130,6 +130,7 @@ export default function ModelPricingCard({
 								}
 							}}
 							placeholder={availableModels[0] ?? "输入模型 ID"}
+							className="px-[.7rem] py-0 text-[.72rem]"
 							value={newModel}
 						/>
 						<datalist id="pricing-used-models">
@@ -140,8 +141,8 @@ export default function ModelPricingCard({
 				</div>
 
 				{drafts.length > 0 ? (
-					<ScrollArea className="pricing-table-wrap" scrollbars="horizontal">
-						<Table className="pricing-table">
+					<ScrollArea className="rounded-[.62rem] border" scrollbars="horizontal">
+						<Table className="pricing-table min-w-[58rem] table-fixed [&_th]:p-[.55rem] [&_td]:p-[.55rem] [&_th]:text-[.67rem] [&_td]:text-[.67rem] [&_th:first-child]:w-[22%] [&_th:last-child]:w-18">
 							<TableHeader>
 								<TableRow>
 									<TableHead>模型</TableHead>
@@ -173,7 +174,7 @@ export default function ModelPricingCard({
 						</Table>
 					</ScrollArea>
 				) : (
-					<Empty className="pricing-empty border">
+					<Empty className="min-h-32 border">
 						<EmptyHeader>
 							<EmptyMedia variant="icon"><CircleDollarSignIcon /></EmptyMedia>
 							<EmptyTitle>尚未配置模型价格</EmptyTitle>
@@ -195,7 +196,7 @@ export default function ModelPricingCard({
 function PriceInput({ label, onChange, value }: { label: string; onChange: (value: string) => void; value: number }) {
 	return (
 		<TableCell data-label={label}>
-			<Input aria-label={label} min="0" onChange={(event) => onChange(event.target.value)} step="0.0001" type="number" value={value} />
+			<Input aria-label={label} className="px-[.45rem] py-0 text-[.72rem] tabular-nums" min="0" onChange={(event) => onChange(event.target.value)} step="0.0001" type="number" value={value} />
 		</TableCell>
 	);
 }

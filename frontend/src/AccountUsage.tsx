@@ -179,7 +179,7 @@ function AccountUsage() {
 						</Button>
 					</div>
 					<div className="public-account-heading">
-						<Badge className="public-account-kind" variant="outline">
+						<Badge className="mb-2 text-[.56rem] font-[760] tracking-[.08em]" variant="outline">
 							{snapshot.account.identityType === "auth_proxy" ? "ACCOUNT ID" : "API KEY"}
 						</Badge>
 						<h1>用量信息</h1>
@@ -187,16 +187,16 @@ function AccountUsage() {
 					</div>
 				</header>
 
-				{error ? <Alert className="public-account-alert" variant="destructive"><TriangleAlertIcon /><AlertDescription>{error}</AlertDescription></Alert> : null}
+				{error ? <Alert className="mb-3 text-[.76rem]" variant="destructive"><TriangleAlertIcon /><AlertDescription>{error}</AlertDescription></Alert> : null}
 
 				<div className={loading ? "public-account-content is-refreshing" : "public-account-content"}>
-					<Card className="public-account-range-bar" aria-label="统计时间范围">
+					<Card className="min-w-0 flex-row items-center justify-between gap-3 p-3 max-[58rem]:flex-col max-[58rem]:items-start" aria-label="统计时间范围">
 						<div className="public-account-range-copy">
 							<strong>统计范围</strong>
 							<span>{formatDateRange(usage.startAt, usage.endAt)}</span>
 						</div>
 						<div className="public-account-range-actions">
-							<ScrollArea className="public-account-range-scroll" aria-label="选择统计时间范围" scrollbars="horizontal">
+							<ScrollArea className="w-max min-w-0 max-w-full max-[58rem]:w-full max-[42rem]:flex-1" aria-label="选择统计时间范围" scrollbars="horizontal">
 								<ToggleGroup
 									className="min-w-max"
 									disabled={loading}
@@ -231,7 +231,7 @@ function AccountUsage() {
 					</Card>
 
 					<div className="public-account-overview">
-						<Card className="public-account-metrics" aria-label="账户用量指标">
+						<Card className="public-account-metrics grid min-w-0 grid-rows-[auto_repeat(3,minmax(0,1fr))] gap-0 p-3 max-[58rem]:grid-cols-3 max-[58rem]:grid-rows-[auto_minmax(0,1fr)] max-[42rem]:grid-cols-1" aria-label="账户用量指标">
 							<header><span>账户指标</span><small>{rangeLabel(usage.range)}</small></header>
 							<AccountMetric label="请求次数" value={formatCount(totals.requests)} />
 							<AccountMetric
@@ -253,17 +253,17 @@ function AccountUsage() {
 						</section>
 					</div>
 
-					<section className="public-account-quota" aria-label="账户额度时间条">
+					<section className="min-w-0" aria-label="账户额度时间条">
 						{snapshot.quota && snapshot.quota.windows.length > 0 ? (
 							<QuotaTimeline
-								className="public-account-quota-timeline"
+								className="min-w-0"
 								now={now}
 								planType={snapshot.quota.planType}
 								sampledAt={snapshot.quota.sampledAt}
 								windows={snapshot.quota.windows}
 							/>
 						) : (
-							<Empty className="public-account-quota-empty border"><EmptyHeader><EmptyDescription>额度时间条尚未完成首次同步。</EmptyDescription></EmptyHeader></Empty>
+							<Empty className="min-h-30 border text-[.72rem]"><EmptyHeader><EmptyDescription>额度时间条尚未完成首次同步。</EmptyDescription></EmptyHeader></Empty>
 						)}
 					</section>
 				</div>
@@ -338,7 +338,7 @@ function AccountLookupView({ error, loading, onSubmit }: AccountLookupViewProps)
 								</InputGroupAddon>
 							</InputGroup>
 						</Field>
-						<Button className="auth-submit" disabled={loading} size="lg" type="submit">
+						<Button className="mt-1 min-h-[3.05rem] w-full" disabled={loading} size="lg" type="submit">
 							{loading ? <Spinner /> : null}
 							{loading ? "查询中…" : "查看账户用量"}
 						</Button>

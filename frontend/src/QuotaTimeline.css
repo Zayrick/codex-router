@@ -1,11 +1,3 @@
-.timeline-card {
-	overflow: hidden;
-}
-
-.timeline-scroll {
-	overflow: hidden;
-}
-
 .timeline-grid {
 	position: relative;
 	display: grid;
@@ -278,10 +270,6 @@
 }
 
 @media (max-width: 720px) {
-	.timeline-card {
-		border-radius: 14px;
-	}
-
 	.timeline-grid {
 		grid-template-columns: 52px repeat(var(--lane-count), minmax(60px, 1fr));
 		grid-template-rows: auto var(--timeline-height);
