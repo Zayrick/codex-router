@@ -1,4 +1,12 @@
 import { useId, useMemo, useState, type CSSProperties } from "react";
+import {
+	Select,
+	SelectContent,
+	SelectGroup,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import type {
 	UsageDashboard,
 	UsageIdentityRow,
@@ -375,10 +383,17 @@ function DonutBreakdownCard({
 				<p>{subtitle ?? "按 Token 或成本查看占比"}</p>
 			</div>
 			{fixedMetric ? null : (
-				<select aria-label={`${title}统计指标`} onChange={(event) => setSelectedMetric(event.target.value as DonutMetric)} value={metric}>
-					<option value="tokens">Token</option>
-					<option value="cost">成本</option>
-				</select>
+				<Select onValueChange={(value) => setSelectedMetric(value as DonutMetric)} value={metric}>
+					<SelectTrigger aria-label={`${title}统计指标`} size="sm">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent align="end" position="popper">
+						<SelectGroup>
+							<SelectItem value="tokens">Token</SelectItem>
+							<SelectItem value="cost">成本</SelectItem>
+						</SelectGroup>
+					</SelectContent>
+				</Select>
 			)}
 		</header>
 		{total > 0 ? (

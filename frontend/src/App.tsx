@@ -5,6 +5,16 @@ import {
 	useState,
 	type FormEvent,
 } from "react";
+import {
+	Select,
+	SelectContent,
+	SelectGroup,
+	SelectItem,
+	SelectLabel,
+	SelectSeparator,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import AccountGroups from "./AccountGroups";
 import CodexAccounts from "./CodexAccounts";
 import {
@@ -49,6 +59,8 @@ const MIN_API_KEY_LENGTH = 11;
 const MAX_API_KEY_LENGTH = 512;
 const GENERATED_API_KEY_LENGTH = 20;
 const MAX_ACCOUNT_ID_LENGTH = 256;
+const ALL_USAGE_IDENTITIES_VALUE = "__all_usage_identities__";
+const UNASSIGNED_ROUTE_TARGET_VALUE = "__unassigned_route_target__";
 const INTEGER_FORMAT = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
 const COMPACT_NUMBER_FORMAT = new Intl.NumberFormat("zh-CN", {
 	notation: "compact",
@@ -833,8 +845,65 @@ function UsagePanel({
 		<section className="card usage-card" aria-label="用量详情">
 			<div className="card-header unified-section-header">
 				<div className="usage-card-actions">
-					<label className="usage-identity-control"><span>筛选对象</span><select disabled={loading} onChange={(event) => onIdentityChange(parseUsageIdentityValue(event.target.value))} value={usageIdentityValue(identity)}><option value="">全部</option>{apiKeys.length ? <optgroup label="API Keys">{apiKeys.map((entry) => <option key={entry.id} value={usageIdentityValue({ identityType: "api_key", identityId: entry.id })}>{entry.name}</option>)}</optgroup> : null}{accounts.length ? <optgroup label="下游账户">{accounts.map((entry) => <option key={entry.id} value={usageIdentityValue({ identityType: "auth_proxy", identityId: entry.id })}>{entry.name}</option>)}</optgroup> : null}{codexAccounts.length ? <optgroup label="Codex 账户">{codexAccounts.map((entry) => <option key={entry.id} value={usageIdentityValue({ identityType: "codex_account", identityId: entry.id })}>{entry.name}</option>)}</optgroup> : null}{groups.length ? <optgroup label="账户组">{groups.map((entry) => <option key={entry.id} value={usageIdentityValue({ identityType: "account_group", identityId: entry.id })}>{entry.name}</option>)}</optgroup> : null}</select></label>
-					<label className="usage-range-control"><span>统计范围</span><select disabled={loading} onChange={(event) => onRangeChange(event.target.value as UsageRange)} value={range}><option value="cycle">当前周期</option><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="all">全部</option></select></label>
+					<div className="usage-identity-control">
+						<span id="usage-identity-label">筛选对象</span>
+						<Select
+							disabled={loading}
+							onValueChange={(value) => onIdentityChange(value === ALL_USAGE_IDENTITIES_VALUE ? null : parseUsageIdentityValue(value))}
+							value={usageIdentityValue(identity) || ALL_USAGE_IDENTITIES_VALUE}
+						>
+							<SelectTrigger aria-labelledby="usage-identity-label" className="w-[clamp(13rem,30vw,23rem)] max-w-full data-[size=default]:h-[2.35rem] max-[48rem]:w-full">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent align="end" position="popper">
+								<SelectGroup>
+									<SelectItem value={ALL_USAGE_IDENTITIES_VALUE}>全部</SelectItem>
+								</SelectGroup>
+								{apiKeys.length || accounts.length || codexAccounts.length || groups.length ? <SelectSeparator /> : null}
+								{apiKeys.length ? (
+									<SelectGroup>
+										<SelectLabel>API Keys</SelectLabel>
+										{apiKeys.map((entry) => <SelectItem key={entry.id} value={usageIdentityValue({ identityType: "api_key", identityId: entry.id })}>{entry.name}</SelectItem>)}
+									</SelectGroup>
+								) : null}
+								{accounts.length ? (
+									<SelectGroup>
+										<SelectLabel>下游账户</SelectLabel>
+										{accounts.map((entry) => <SelectItem key={entry.id} value={usageIdentityValue({ identityType: "auth_proxy", identityId: entry.id })}>{entry.name}</SelectItem>)}
+									</SelectGroup>
+								) : null}
+								{codexAccounts.length ? (
+									<SelectGroup>
+										<SelectLabel>Codex 账户</SelectLabel>
+										{codexAccounts.map((entry) => <SelectItem key={entry.id} value={usageIdentityValue({ identityType: "codex_account", identityId: entry.id })}>{entry.name}</SelectItem>)}
+									</SelectGroup>
+								) : null}
+								{groups.length ? (
+									<SelectGroup>
+										<SelectLabel>账户组</SelectLabel>
+										{groups.map((entry) => <SelectItem key={entry.id} value={usageIdentityValue({ identityType: "account_group", identityId: entry.id })}>{entry.name}</SelectItem>)}
+									</SelectGroup>
+								) : null}
+							</SelectContent>
+						</Select>
+					</div>
+					<div className="usage-range-control">
+						<span id="usage-range-label">统计范围</span>
+						<Select disabled={loading} onValueChange={(value) => onRangeChange(value as UsageRange)} value={range}>
+							<SelectTrigger aria-labelledby="usage-range-label" className="data-[size=default]:h-[2.35rem] max-[28rem]:w-full">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent align="end" position="popper">
+								<SelectGroup>
+									<SelectItem value="cycle">当前周期</SelectItem>
+									<SelectItem value="24h">最近 24 小时</SelectItem>
+									<SelectItem value="7d">最近 7 天</SelectItem>
+									<SelectItem value="30d">最近 30 天</SelectItem>
+									<SelectItem value="all">全部</SelectItem>
+								</SelectGroup>
+							</SelectContent>
+						</Select>
+					</div>
 					<button aria-label="刷新用量" className="icon-button" disabled={loading} onClick={onRefresh} type="button"><RefreshIcon spinning={loading} /></button>
 				</div>
 			</div>
@@ -1094,25 +1163,38 @@ function AccountTargetSelect({
 }) {
 	return (
 		<label className="route-target-field" htmlFor="identity-account-target">
-			<span>账户或账户组</span>
-			<select
+			<span id="identity-account-target-label">账户或账户组</span>
+			<Select
 				disabled={loading}
-				id="identity-account-target"
-				onChange={(event) => onChange(parseRouteTargetValue(event.target.value))}
-				value={routeTargetValue(target)}
+				onValueChange={(value) => onChange(parseRouteTargetValue(value === UNASSIGNED_ROUTE_TARGET_VALUE ? "" : value))}
+				value={routeTargetValue(target) || UNASSIGNED_ROUTE_TARGET_VALUE}
 			>
-				<option value="">未分配</option>
-				<optgroup label="账户组">
-					{groups.map((group) => <option key={group.id} value={`group:${group.id}`}>{group.name}</option>)}
-				</optgroup>
-				<optgroup label="单个 Codex 账户">
-					{accounts.map((account) => (
-						<option disabled={!account.enabled} key={account.id} value={`account:${account.id}`}>
-							{account.name}{account.enabled ? "" : "（已禁用）"}
-						</option>
-					))}
-				</optgroup>
-			</select>
+				<SelectTrigger aria-labelledby="identity-account-target-label" className="w-full data-[size=default]:h-[3.15rem]" id="identity-account-target">
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent position="popper">
+					<SelectGroup>
+						<SelectItem value={UNASSIGNED_ROUTE_TARGET_VALUE}>未分配</SelectItem>
+					</SelectGroup>
+					{groups.length || accounts.length ? <SelectSeparator /> : null}
+					{groups.length ? (
+						<SelectGroup>
+							<SelectLabel>账户组</SelectLabel>
+							{groups.map((group) => <SelectItem key={group.id} value={`group:${group.id}`}>{group.name}</SelectItem>)}
+						</SelectGroup>
+					) : null}
+					{accounts.length ? (
+						<SelectGroup>
+							<SelectLabel>单个 Codex 账户</SelectLabel>
+							{accounts.map((account) => (
+								<SelectItem disabled={!account.enabled} key={account.id} value={`account:${account.id}`}>
+									{account.name}{account.enabled ? "" : "（已禁用）"}
+								</SelectItem>
+							))}
+						</SelectGroup>
+					) : null}
+				</SelectContent>
+			</Select>
 			<small>{groups.length === 0 && accounts.length === 0 ? "请先在 Codex 账户页添加账户或账户组。" : unassignedHint}</small>
 		</label>
 	);

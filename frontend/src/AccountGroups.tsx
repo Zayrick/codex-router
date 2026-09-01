@@ -1,4 +1,12 @@
 import { useState, type FormEvent } from "react";
+import {
+	Select,
+	SelectContent,
+	SelectGroup,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import type {
 	AccountGroup,
 	AccountGroupStrategy,
@@ -186,16 +194,23 @@ function GroupEditorDialog({
 						<input autoFocus disabled={saving} id="group-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：production-pool" required type="text" value={name} />
 					</label>
 					<div className="strategy-field">
-						<span>负载均衡策略</span>
-						<select
+						<span id="group-strategy-label">负载均衡策略</span>
+						<Select
 							disabled={saving}
-							onChange={(event) => setStrategy(event.target.value as AccountGroupStrategy)}
+							onValueChange={(value) => setStrategy(value as AccountGroupStrategy)}
 							value={strategy}
 						>
-							{STRATEGY_OPTIONS.map((option) => (
-								<option key={option.value} value={option.value}>{option.label}</option>
-							))}
-						</select>
+							<SelectTrigger aria-labelledby="group-strategy-label" className="w-full data-[size=default]:h-[3.15rem]">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent position="popper">
+								<SelectGroup>
+									{STRATEGY_OPTIONS.map((option) => (
+										<SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+									))}
+								</SelectGroup>
+							</SelectContent>
+						</Select>
 						<small>{strategyHint(strategy)}</small>
 					</div>
 					<fieldset className="group-member-picker">

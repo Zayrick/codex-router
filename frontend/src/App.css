@@ -852,31 +852,6 @@
 	white-space: nowrap;
 }
 
-.usage-range-control select,
-.usage-identity-control select {
-	height: 2.35rem;
-	padding: 0 2rem 0 0.72rem;
-	color: var(--text);
-	background: var(--surface-subtle);
-	border: 1px solid var(--border);
-	border-radius: 0.5rem;
-	font-size: 0.76rem;
-	font-weight: 650;
-	cursor: pointer;
-}
-
-.usage-identity-control select {
-	width: clamp(13rem, 30vw, 23rem);
-	max-width: 100%;
-}
-
-.usage-range-control select:focus,
-.usage-identity-control select:focus {
-	border-color: var(--primary);
-	outline: none;
-	box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent);
-}
-
 .usage-alert {
 	margin: 0 0 0.8rem;
 }
@@ -1703,17 +1678,6 @@ td strong {
 	gap: 0.85rem;
 }
 
-.donut-card select {
-	height: 2rem;
-	padding: 0 1.65rem 0 0.65rem;
-	color: var(--text);
-	background: var(--surface);
-	border: 1px solid var(--border);
-	border-radius: 0.5rem;
-	font-size: 0.67rem;
-	font-weight: 680;
-}
-
 .donut-content {
 	display: grid;
 	grid-template-columns: minmax(9rem, 0.7fr) minmax(10rem, 1fr);
@@ -2207,10 +2171,6 @@ td strong {
 		flex: 1 1 17rem;
 	}
 
-	.usage-identity-control select {
-		width: 100%;
-	}
-
 	.usage-summary-grid {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
@@ -2362,9 +2322,7 @@ td strong {
 
 	.usage-card-actions,
 	.usage-range-control,
-	.usage-range-control select,
-	.usage-identity-control,
-	.usage-identity-control select {
+	.usage-identity-control {
 		width: 100%;
 	}
 
