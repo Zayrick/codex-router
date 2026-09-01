@@ -15,6 +15,10 @@ use tokio::{
 const DEV_CHILD_ENV: &str = "CODEX_ROUTER_DEV_CHILD";
 const DISABLE_DEV_ENV: &str = "CODEX_ROUTER_NO_DEV";
 const VITE_HOST: &str = "127.0.0.1:5173";
+#[cfg(windows)]
+const PNPM: &str = "pnpm.cmd";
+#[cfg(not(windows))]
+const PNPM: &str = "pnpm";
 
 pub fn should_supervise() -> bool {
     std::env::var_os(DEV_CHILD_ENV).is_none() && std::env::var_os(DISABLE_DEV_ENV).is_none()
@@ -82,7 +86,7 @@ pub async fn run() -> Result<()> {
 }
 
 async fn install_frontend_dependencies(frontend: &Path) -> Result<()> {
-    let status = Command::new("pnpm")
+    let status = Command::new(PNPM)
         .args(["install", "--frozen-lockfile", "--prefer-offline"])
         .current_dir(frontend)
         .status()
