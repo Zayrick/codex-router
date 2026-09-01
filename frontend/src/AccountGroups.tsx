@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
 	Dialog,
 	DialogClose,
@@ -10,6 +12,18 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import {
+	Field,
+	FieldContent,
+	FieldDescription,
+	FieldGroup,
+	FieldLabel,
+	FieldLegend,
+	FieldSeparator,
+	FieldSet,
+	FieldTitle,
+} from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
 	Select,
 	SelectContent,
 	SelectGroup,
@@ -18,7 +32,9 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import type {
 	AccountGroup,
 	AccountGroupStrategy,
@@ -178,6 +194,7 @@ function GroupEditorDialog({
 	const [strategy, setStrategy] = useState<AccountGroupStrategy>(initial.strategy);
 	const [sessionAffinity, setSessionAffinity] = useState(initial.sessionAffinity);
 	const [ttl, setTtl] = useState(initial.sessionAffinityTtl);
+	const selectedAccountCount = accounts.filter((account) => accountIds.includes(account.id)).length;
 
 	function submit(event: FormEvent<HTMLFormElement>): void {
 		event.preventDefault();
@@ -200,76 +217,169 @@ function GroupEditorDialog({
 
 	return (
 		<Dialog open onOpenChange={(open) => { if (!open && !saving) onCancel(); }}>
-			<DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col p-0 sm:max-w-xl" showCloseButton={!saving}>
-				<ScrollArea className="min-h-0 flex-1">
-					<div className="grid gap-4 p-4">
-						<DialogHeader>
-							<DialogTitle>{entry === "new" ? "添加账户组" : "编辑账户组"}</DialogTitle>
-							<DialogDescription>配置组内账户、负载均衡策略与会话保持。</DialogDescription>
-						</DialogHeader>
-						<form className="editor-form" onSubmit={submit}>
-					<label htmlFor="group-name">
-						<span>组名称</span>
-						<input autoFocus disabled={saving} id="group-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：production-pool" required type="text" value={name} />
-					</label>
-					<div className="strategy-field">
-						<span id="group-strategy-label">负载均衡策略</span>
-						<Select
-							disabled={saving}
-							onValueChange={(value) => setStrategy(value as AccountGroupStrategy)}
-							value={strategy}
-						>
-							<SelectTrigger aria-labelledby="group-strategy-label" className="w-full data-[size=default]:h-[3.15rem]">
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent position="popper">
-								<SelectGroup>
-									{STRATEGY_OPTIONS.map((option) => (
-										<SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-									))}
-								</SelectGroup>
-							</SelectContent>
-						</Select>
-						<small>{strategyHint(strategy)}</small>
-					</div>
-					<ScrollArea className={accounts.length > 4 ? "group-member-picker h-60" : "group-member-picker"}>
-						<fieldset className="group-member-picker-fieldset">
-							<legend>组内账户</legend>
-							{accounts.length === 0 ? <p>暂无 Codex 账户</p> : accounts.map((account) => (
-								<label className={account.enabled ? "" : "disabled-member"} key={account.id}>
-									<input checked={accountIds.includes(account.id)} disabled={saving} onChange={() => toggleAccount(account.id)} type="checkbox" />
-									<span>
-										<strong>{account.name}</strong>
-										{account.oauth?.email || !account.enabled ? <small>{account.enabled ? account.oauth?.email : "已禁用"}</small> : null}
-									</span>
-								</label>
-							))}
-						</fieldset>
-					</ScrollArea>
-					{strategy !== "fallback" ? (
-						<>
-							<div className="switch-row group-affinity-switch">
-								<label htmlFor="group-session-affinity"><strong>会话保持</strong><small>同一会话优先使用同一账户</small></label>
-								<Switch checked={sessionAffinity} disabled={saving} id="group-session-affinity" onCheckedChange={setSessionAffinity} />
-							</div>
-							{sessionAffinity ? (
-								<div className="strategy-field">
-									<span id="group-affinity-ttl-label">保持时间</span>
-									<div className="ttl-control">
-										<input aria-labelledby="group-affinity-ttl-label" disabled={saving || ttl === "unlimited"} id="group-affinity-ttl" maxLength={64} onChange={(event) => setTtl(event.target.value)} placeholder="例如：1h、7d" required type="text" value={ttl === "unlimited" ? "" : ttl} />
-										<label><input checked={ttl === "unlimited"} disabled={saving} onChange={(event) => setTtl(event.target.checked ? "unlimited" : "1h")} type="checkbox" />不限期</label>
-									</div>
+			<DialogContent className="flex h-[min(48rem,calc(100svh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl" showCloseButton={!saving}>
+				<DialogHeader className="shrink-0 border-b px-6 py-5 pr-14 text-left">
+					<DialogTitle>{entry === "new" ? "添加账户组" : "编辑账户组"}</DialogTitle>
+					<DialogDescription>将账户整理为一个可复用的路由池，并设置请求分配方式。</DialogDescription>
+				</DialogHeader>
+
+				<form aria-busy={saving} className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={submit}>
+					<ScrollArea className="h-full min-h-0 flex-1">
+						<FieldGroup className="gap-6 p-6">
+							<Field>
+								<FieldLabel htmlFor="group-name">组名称</FieldLabel>
+								<Input
+									autoFocus
+									disabled={saving}
+									id="group-name"
+									maxLength={100}
+									onChange={(event) => setName(event.target.value)}
+									placeholder="例如：production-pool"
+									required
+									type="text"
+									value={name}
+								/>
+								<FieldDescription>用于在 API Key 和下游账户的路由设置中识别这个组。</FieldDescription>
+							</Field>
+
+							<FieldSeparator />
+
+							<FieldSet>
+								<FieldLegend className="mb-0">组内账户</FieldLegend>
+								<div className="flex items-start justify-between gap-3">
+									<FieldDescription className="m-0">请求只会在所选账户之间调度。</FieldDescription>
+									<Badge variant={selectedAccountCount > 0 ? "secondary" : "outline"}>
+										{selectedAccountCount} / {accounts.length} 已选
+									</Badge>
 								</div>
-							) : null}
-						</>
-					) : null}
-							<DialogFooter>
-								<DialogClose asChild><Button disabled={saving} type="button" variant="outline">取消</Button></DialogClose>
-								<Button disabled={saving || !name.trim() || (strategy !== "fallback" && sessionAffinity && !ttl.trim())} type="submit">{saving ? <span className="spinner" /> : null}{saving ? "保存中…" : "保存"}</Button>
-							</DialogFooter>
-						</form>
-					</div>
-				</ScrollArea>
+
+								{accounts.length === 0 ? (
+									<div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+										暂无 Codex 账户，请先添加账户后再配置成员。
+									</div>
+								) : (
+									<FieldGroup data-slot="checkbox-group" className="gap-2">
+										{accounts.map((account) => (
+											<FieldLabel
+												className={cn(
+													"cursor-pointer has-[:disabled]:cursor-not-allowed has-data-checked:bg-transparent dark:has-data-checked:bg-transparent",
+													!account.enabled && "border-dashed",
+												)}
+												key={account.id}
+											>
+												<Field orientation="horizontal" data-disabled={saving || undefined}>
+													<Checkbox
+														aria-label={`选择账户 ${account.name}`}
+														checked={accountIds.includes(account.id)}
+														className={TRANSPARENT_CHECKBOX_CLASS}
+														disabled={saving}
+														onCheckedChange={() => toggleAccount(account.id)}
+													/>
+													<FieldContent className="min-w-0">
+														<FieldTitle className="max-w-full"><span className="truncate">{account.name}</span></FieldTitle>
+														<FieldDescription className="line-clamp-1">{account.oauth?.email ?? "Codex 账户"}</FieldDescription>
+													</FieldContent>
+													{!account.enabled ? <Badge variant="outline">已禁用</Badge> : null}
+												</Field>
+											</FieldLabel>
+										))}
+									</FieldGroup>
+								)}
+							</FieldSet>
+
+							<FieldSeparator />
+
+							<FieldSet>
+								<FieldLegend>调度方式</FieldLegend>
+								<FieldDescription>决定新请求如何选择组内账户，以及是否复用上一次选择。</FieldDescription>
+								<FieldGroup className="gap-4">
+									<Field>
+										<FieldLabel id="group-strategy-label">负载均衡策略</FieldLabel>
+										<Select
+											disabled={saving}
+											onValueChange={(value) => setStrategy(value as AccountGroupStrategy)}
+											value={strategy}
+										>
+											<SelectTrigger
+												aria-describedby="group-strategy-description"
+												aria-labelledby="group-strategy-label"
+												className="w-full"
+											>
+												<SelectValue />
+											</SelectTrigger>
+											<SelectContent position="popper">
+												<SelectGroup>
+													{STRATEGY_OPTIONS.map((option) => (
+														<SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+													))}
+												</SelectGroup>
+											</SelectContent>
+										</Select>
+										<FieldDescription id="group-strategy-description">{strategyHint(strategy)}</FieldDescription>
+									</Field>
+
+									{strategy !== "fallback" ? (
+										<>
+											<Field className="rounded-lg border p-3" data-disabled={saving || undefined} orientation="horizontal">
+												<FieldContent>
+													<FieldLabel htmlFor="group-session-affinity">会话保持</FieldLabel>
+													<FieldDescription id="group-session-affinity-description">同一会话优先使用同一账户，减少上下文切换。</FieldDescription>
+												</FieldContent>
+												<Switch
+													aria-describedby="group-session-affinity-description"
+													checked={sessionAffinity}
+													disabled={saving}
+													id="group-session-affinity"
+													onCheckedChange={setSessionAffinity}
+												/>
+											</Field>
+
+											{sessionAffinity ? (
+												<div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+													<Field>
+														<FieldLabel htmlFor="group-affinity-ttl">保持时间</FieldLabel>
+														<Input
+															aria-describedby="group-affinity-ttl-description"
+															disabled={saving || ttl === "unlimited"}
+															id="group-affinity-ttl"
+															maxLength={64}
+															onChange={(event) => setTtl(event.target.value)}
+															placeholder="例如：1h、7d"
+															required={ttl !== "unlimited"}
+															type="text"
+															value={ttl === "unlimited" ? "" : ttl}
+														/>
+														<FieldDescription id="group-affinity-ttl-description">支持 30m、1h、7d 等时长格式。</FieldDescription>
+													</Field>
+													<Field className="w-auto" data-disabled={saving || undefined} orientation="horizontal">
+														<Checkbox
+															checked={ttl === "unlimited"}
+															className={TRANSPARENT_CHECKBOX_CLASS}
+															disabled={saving}
+															id="group-affinity-unlimited"
+															onCheckedChange={(checked) => setTtl(checked ? "unlimited" : "1h")}
+														/>
+														<FieldLabel className="whitespace-nowrap" htmlFor="group-affinity-unlimited">不限期</FieldLabel>
+													</Field>
+												</div>
+											) : null}
+										</>
+									) : null}
+								</FieldGroup>
+							</FieldSet>
+						</FieldGroup>
+					</ScrollArea>
+
+					<DialogFooter className="m-0 shrink-0 rounded-none px-6 py-4">
+						<DialogClose asChild>
+							<Button disabled={saving} type="button" variant="outline">取消</Button>
+						</DialogClose>
+						<Button disabled={saving || !name.trim() || (strategy !== "fallback" && sessionAffinity && !ttl.trim())} type="submit">
+							{saving ? <Spinner /> : null}
+							{saving ? "保存中…" : entry === "new" ? "创建账户组" : "保存更改"}
+						</Button>
+					</DialogFooter>
+				</form>
 			</DialogContent>
 		</Dialog>
 	);
@@ -298,6 +408,8 @@ const STRATEGY_OPTIONS = [
 	value: AccountGroupStrategy;
 	label: string;
 }>;
+
+const TRANSPARENT_CHECKBOX_CLASS = "data-checked:bg-transparent data-checked:text-foreground dark:data-checked:bg-transparent";
 
 function strategyLabel(value: AccountGroupStrategy): string {
 	if (value === "weighted-round-robin") return "额度加权轮询";

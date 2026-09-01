@@ -334,94 +334,6 @@
 	line-height: 1.5;
 }
 
-.strategy-field {
-	display: grid;
-	gap: 0.42rem;
-}
-
-.strategy-field > span:first-child {
-	color: var(--text);
-	font-size: 0.82rem;
-	font-weight: 650;
-}
-
-.strategy-field > small {
-	color: var(--text-tertiary);
-	font-size: 0.62rem;
-	line-height: 1.5;
-}
-
-.group-member-picker {
-	max-height: 15rem;
-	background: var(--surface-subtle);
-	border: 1px solid var(--border);
-	border-radius: 0.7rem;
-}
-
-.group-member-picker-fieldset {
-	display: grid;
-	min-width: 0;
-	gap: 0.45rem;
-	margin: 0;
-	padding: 0.75rem;
-	border: 0;
-}
-
-.group-member-picker-fieldset legend {
-	padding: 0 0.3rem;
-	font-size: 0.72rem;
-	font-weight: 650;
-}
-
-.group-member-picker-fieldset > label {
-	display: flex;
-	align-items: center;
-	gap: 0.65rem;
-	padding: 0.55rem;
-	background: var(--surface);
-	border: 1px solid var(--border);
-	border-radius: 0.55rem;
-}
-
-.group-member-picker > label > span {
-	display: grid;
-	gap: 0.1rem;
-}
-
-.group-member-picker strong {
-	font-size: 0.7rem;
-}
-
-.group-member-picker small {
-	color: var(--text-tertiary);
-	font-size: 0.59rem;
-}
-
-.group-affinity-switch > label {
-	display: grid;
-	gap: 0.13rem;
-}
-
-.group-affinity-switch small {
-	color: var(--text-tertiary);
-	font-size: 0.6rem;
-}
-
-.ttl-control {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto;
-	gap: 0.65rem;
-	align-items: center;
-}
-
-.ttl-control > label {
-	display: flex;
-	align-items: center;
-	gap: 0.35rem;
-	font-size: 0.68rem;
-	white-space: nowrap;
-}
-
 /* Identity lists */
 
 .identity-table-wrap {
@@ -545,10 +457,6 @@
 
 	.table-actions {
 		margin-top: 0.35rem;
-	}
-
-	.ttl-control {
-		grid-template-columns: minmax(0, 1fr);
 	}
 
 	.device-code-button {

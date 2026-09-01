@@ -110,14 +110,6 @@ a {
 	-webkit-tap-highlight-color: transparent;
 }
 
-button {
-	color: inherit;
-}
-
-a {
-	color: inherit;
-}
-
 ::selection {
 	color: var(--text);
 	background: var(--primary-border);
@@ -217,6 +209,10 @@ a {
 @layer base {
 	* {
 		@apply border-border outline-ring/50;
+	}
+	button,
+	a {
+		color: inherit;
 	}
 	body {
 		@apply bg-background text-foreground;
