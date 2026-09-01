@@ -8,8 +8,7 @@ use crate::core::{ApiError, AppResult};
 
 use super::{StateStore, oauth_ports::OAuthCredentialsStore};
 
-const OAUTH_KEY: &str = "oauth";
-const AUTH_PROXY_OAUTH_KEY_PREFIX: &str = "oauth:auth-proxy:";
+pub(crate) const CODEX_ACCOUNT_OAUTH_KEY_PREFIX: &str = "oauth:codex-account:";
 const DEFAULT_TOKEN_LIFETIME_MS: i64 = 55 * 60 * 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +31,7 @@ pub struct StoredOAuthCredentials {
 #[serde(rename_all = "camelCase")]
 pub struct OAuthStatus {
     pub email: Option<String>,
+    pub account_id: Option<String>,
     pub expires_at: i64,
 }
 
@@ -41,17 +41,10 @@ pub struct OAuthRepository<'a> {
 }
 
 impl<'a> OAuthRepository<'a> {
-    pub fn new(store: &'a dyn StateStore) -> Self {
+    pub fn new(store: &'a dyn StateStore, record_id: &str) -> Self {
         Self {
             store,
-            storage_key: OAUTH_KEY.into(),
-        }
-    }
-
-    pub fn for_auth_proxy_account(store: &'a dyn StateStore, record_id: &str) -> Self {
-        Self {
-            store,
-            storage_key: format!("{AUTH_PROXY_OAUTH_KEY_PREFIX}{record_id}"),
+            storage_key: format!("{CODEX_ACCOUNT_OAUTH_KEY_PREFIX}{record_id}"),
         }
     }
 
@@ -101,33 +94,6 @@ impl<'a> OAuthRepository<'a> {
         }
         Ok(credentials)
     }
-
-    async fn valid_credentials(&self, now_ms: i64) -> AppResult<Option<StoredOAuthCredentials>> {
-        let Some(credentials) = self.read().await? else {
-            return Ok(None);
-        };
-        if credentials.expires_at <= now_ms {
-            return Ok(None);
-        }
-        Ok(Some(credentials))
-    }
-}
-
-pub async fn auth_proxy_credentials_or_primary(
-    auth_proxy: &OAuthRepository<'_>,
-    primary: &OAuthRepository<'_>,
-    now_ms: i64,
-) -> AppResult<StoredOAuthCredentials> {
-    if let Some(credentials) = auth_proxy.valid_credentials(now_ms).await?
-        && credentials
-            .account_id
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|value| !value.is_empty())
-    {
-        return Ok(credentials);
-    }
-    primary.require_valid(now_ms).await
 }
 
 #[async_trait]
@@ -152,6 +118,7 @@ impl OAuthCredentialsStore for OAuthRepository<'_> {
 pub fn oauth_status(credentials: &StoredOAuthCredentials) -> OAuthStatus {
     OAuthStatus {
         email: credentials.email.clone(),
+        account_id: credentials.account_id.clone(),
         expires_at: credentials.expires_at,
     }
 }

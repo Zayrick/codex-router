@@ -121,14 +121,17 @@ pub enum AdminRoute {
     Login,
     Logout,
     State,
-    Subscription,
+    CodexAccountSubscription,
     Usage,
     PricingGet,
     PricingUpdate,
     PricingSync,
-    OAuthStart,
-    OAuthPoll,
-    OAuthDelete,
+    CodexAccountUpdate,
+    CodexAccountDelete,
+    CodexAccountOAuthStart,
+    CodexAccountOAuthPoll,
+    AccountRoutingGet,
+    AccountRoutingUpdate,
     ApiKeysGet,
     ApiKeysCreate,
     ApiKeysUpdate,
@@ -136,9 +139,6 @@ pub enum AdminRoute {
     AuthProxyCreate,
     AuthProxyUpdate,
     AuthProxyDelete,
-    AuthProxyOAuthStart,
-    AuthProxyOAuthPoll,
-    AuthProxyOAuthDelete,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,14 +164,17 @@ pub fn match_admin_route(
         ("POST", "login") => AdminRoute::Login,
         ("POST", "logout") => AdminRoute::Logout,
         ("GET", "state") => AdminRoute::State,
-        ("GET", "subscription") => AdminRoute::Subscription,
+        ("GET", "codex-accounts/subscription") => AdminRoute::CodexAccountSubscription,
         ("GET", "usage") => AdminRoute::Usage,
         ("GET", "pricing") => AdminRoute::PricingGet,
         ("PUT", "pricing") => AdminRoute::PricingUpdate,
         ("POST", "pricing/sync") => AdminRoute::PricingSync,
-        ("POST", "oauth/device") => AdminRoute::OAuthStart,
-        ("POST", "oauth/device/poll") => AdminRoute::OAuthPoll,
-        ("DELETE", "oauth") => AdminRoute::OAuthDelete,
+        ("PUT", "codex-accounts") => AdminRoute::CodexAccountUpdate,
+        ("DELETE", "codex-accounts") => AdminRoute::CodexAccountDelete,
+        ("POST", "codex-accounts/oauth/device") => AdminRoute::CodexAccountOAuthStart,
+        ("POST", "codex-accounts/oauth/device/poll") => AdminRoute::CodexAccountOAuthPoll,
+        ("GET", "account-routing") => AdminRoute::AccountRoutingGet,
+        ("PUT", "account-routing") => AdminRoute::AccountRoutingUpdate,
         ("GET", "api-keys") => AdminRoute::ApiKeysGet,
         ("POST", "api-keys") => AdminRoute::ApiKeysCreate,
         ("PUT", "api-keys") => AdminRoute::ApiKeysUpdate,
@@ -179,9 +182,6 @@ pub fn match_admin_route(
         ("POST", "auth-proxy") => AdminRoute::AuthProxyCreate,
         ("PUT", "auth-proxy") => AdminRoute::AuthProxyUpdate,
         ("DELETE", "auth-proxy") => AdminRoute::AuthProxyDelete,
-        ("POST", "auth-proxy/oauth/device") => AdminRoute::AuthProxyOAuthStart,
-        ("POST", "auth-proxy/oauth/device/poll") => AdminRoute::AuthProxyOAuthPoll,
-        ("DELETE", "auth-proxy/oauth") => AdminRoute::AuthProxyOAuthDelete,
         _ => return None,
     };
     Some(MatchedAdminRoute { base_path, route })
@@ -270,28 +270,21 @@ mod tests {
             })
         );
         assert_eq!(
-            match_admin_route("POST", "/secret/admin/auth-proxy/oauth/device", "secret"),
-            Some(MatchedAdminRoute {
-                base_path: "/secret/admin".into(),
-                route: AdminRoute::AuthProxyOAuthStart,
-            })
-        );
-        assert_eq!(
             match_admin_route(
                 "POST",
-                "/secret/admin/auth-proxy/oauth/device/poll",
-                "secret",
+                "/secret/admin/codex-accounts/oauth/device",
+                "secret"
             ),
             Some(MatchedAdminRoute {
                 base_path: "/secret/admin".into(),
-                route: AdminRoute::AuthProxyOAuthPoll,
+                route: AdminRoute::CodexAccountOAuthStart,
             })
         );
         assert_eq!(
-            match_admin_route("DELETE", "/secret/admin/auth-proxy/oauth", "secret"),
+            match_admin_route("GET", "/secret/admin/account-routing", "secret"),
             Some(MatchedAdminRoute {
                 base_path: "/secret/admin".into(),
-                route: AdminRoute::AuthProxyOAuthDelete,
+                route: AdminRoute::AccountRoutingGet,
             })
         );
         assert_eq!(

@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 
 use super::{
+    account_router::AccountRouter,
     chatgpt_proxy::{ChatgptProxy, ChatgptTransport},
     config::ConfigStore,
     usage::UsageStore,
@@ -14,6 +15,7 @@ pub struct AppState {
     pub client: reqwest::Client,
     pub chatgpt: ChatgptTransport,
     pub usage: UsageStore,
+    pub account_router: AccountRouter,
 }
 
 impl AppState {
@@ -45,11 +47,16 @@ impl AppState {
         let chatgpt = ChatgptTransport::new(chatgpt_client, proxy);
         let usage_path = config.resolve_path(&snapshot.usage_tracking.database_path);
         let usage = UsageStore::open(usage_path)?;
+        let account_router = AccountRouter::default();
+        account_router
+            .restore_quota_snapshots(config.as_ref())
+            .await?;
         Ok(Self {
             config,
             client,
             chatgpt,
             usage,
+            account_router,
         })
     }
 }

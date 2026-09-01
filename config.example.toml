@@ -45,6 +45,5 @@ name = "local"
 key = "sk-change-me-123!"
 enabled = true
 
-# OAuth, proxy accounts, proxy OAuth, and subscription usage snapshots are
-# written here by the management API and maintenance task. Downstream token
-# events are stored in the SQLite database configured above.
+# Account, routing, OAuth, and quota state is managed by the service.
+# Token events are stored in SQLite.

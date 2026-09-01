@@ -4,28 +4,36 @@ import {
 	useRef,
 	useState,
 	type FormEvent,
-	type ReactNode,
 } from "react";
+import AccountGroups from "./AccountGroups";
+import CodexAccounts from "./CodexAccounts";
 import {
 	AdminApiClient,
 	AdminApiError,
 	AdminSessionExpiredError,
+	type AccountGroup,
+	type AdminState,
 	type AuthProxyAccount,
 	type AuthProxyAccountInput,
 	type ClientApiKey,
 	type ClientApiKeyInput,
-	type DeviceAuthorization,
+	type CodexAccount,
+	type CodexAccountDeviceAuthorization,
+	type CodexAccountUpdate,
 	type ModelPrice,
-	type OAuthStatus,
+	type RouteAssignment,
+	type RouteConsumerType,
 	type SubscriptionInfo,
-	type SubscriptionMetadata,
 	type UsageDashboard,
-	type UsageCycleBounds,
 	type UsageIdentityFilter,
+	type UsageIdentityType,
 	type UsageRange,
 } from "./admin-api";
+import ManagementShell, {
+	ProductMark,
+	type ManagementPage,
+} from "./ManagementShell";
 import ModelPricingCard from "./ModelPricingCard";
-import QuotaTimeline from "./QuotaTimeline";
 import {
 	ActivityHeatmaps,
 	DownstreamCostDonut,
@@ -33,132 +41,95 @@ import {
 	UsageLineCharts,
 } from "./UsageVisuals";
 import { formatCost } from "./usage-format";
-import ManagementShell, {
-	ProductMark,
-	type ManagementPage,
-} from "./ManagementShell";
 import "./App.css";
+import "./UnifiedRouting.css";
 
 const MANAGEMENT_PATH_PATTERN = /^\/[A-Za-z0-9_-]{1,128}\/admin\/?$/;
 const MIN_API_KEY_LENGTH = 11;
 const MAX_API_KEY_LENGTH = 512;
 const GENERATED_API_KEY_LENGTH = 20;
 const MAX_ACCOUNT_ID_LENGTH = 256;
-const API_KEY_INPUT_PATTERN = String.raw`(?=.*[A-Za-z])(?=.*[0-9])(?=.*[^A-Za-z0-9\s]).{${MIN_API_KEY_LENGTH},${MAX_API_KEY_LENGTH}}`;
 const INTEGER_FORMAT = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
 const COMPACT_NUMBER_FORMAT = new Intl.NumberFormat("zh-CN", {
 	notation: "compact",
 	maximumFractionDigits: 2,
 });
 
+const EMPTY_STATE: AdminState = {
+	codexAccounts: [],
+	apiKeys: [],
+	authProxyAccounts: [],
+	accountGroups: [],
+	routes: [],
+};
+
 type Screen = "loading" | "login" | "dashboard" | "invalid-path";
 type Notice = { tone: "success" | "error"; text: string };
 type EditableKey = ClientApiKey | "new" | null;
-type EditableAuthProxyAccount = AuthProxyAccount | "new" | null;
+type EditableProxy = AuthProxyAccount | "new" | null;
+type RouteTargetSelection = Pick<RouteAssignment, "targetType" | "targetId"> | null;
 
 function App() {
 	const basePath = useMemo(() => managementBasePath(window.location.pathname), []);
-	const api = useMemo(
-		() => (basePath ? new AdminApiClient(basePath) : null),
-		[basePath],
-	);
-	const [screen, setScreen] = useState<Screen>(
-		basePath ? "loading" : "invalid-path",
-	);
+	const api = useMemo(() => basePath ? new AdminApiClient(basePath) : null, [basePath]);
+	const [screen, setScreen] = useState<Screen>(basePath ? "loading" : "invalid-path");
+	const [activePage, setActivePage] = useState<ManagementPage>(() => managementPageFromSearch(window.location.search));
+	const [data, setData] = useState<AdminState>(EMPTY_STATE);
 	const [loginLoading, setLoginLoading] = useState(false);
 	const [loginError, setLoginError] = useState<string | null>(null);
-	const [oauth, setOAuth] = useState<OAuthStatus | null>(null);
-	const [oauthRemoving, setOAuthRemoving] = useState(false);
-	const [subscription, setSubscription] = useState<
-		SubscriptionInfo | SubscriptionMetadata | null
-	>(null);
-	const [subscriptionLoading, setSubscriptionLoading] = useState(false);
-	const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
+	const [notice, setNotice] = useState<Notice | null>(null);
+	const [now, setNow] = useState(() => Date.now());
+
 	const [usage, setUsage] = useState<UsageDashboard | null>(null);
 	const [overviewUsage, setOverviewUsage] = useState<UsageDashboard | null>(null);
 	const [usageRange, setUsageRange] = useState<UsageRange>("cycle");
-	const [usageIdentity, setUsageIdentity] =
-		useState<UsageIdentityFilter | null>(null);
+	const [usageIdentity, setUsageIdentity] = useState<UsageIdentityFilter | null>(null);
 	const [usageLoading, setUsageLoading] = useState(false);
 	const [usageError, setUsageError] = useState<string | null>(null);
+
 	const [modelPrices, setModelPrices] = useState<ModelPrice[]>([]);
 	const [usedModels, setUsedModels] = useState<string[]>([]);
 	const [pricingLoading, setPricingLoading] = useState(false);
 	const [pricingSaving, setPricingSaving] = useState(false);
 	const [pricingSyncing, setPricingSyncing] = useState(false);
 	const [pricingError, setPricingError] = useState<string | null>(null);
-	const [activePage, setActivePage] = useState<ManagementPage>(() =>
-		managementPageFromSearch(window.location.search),
-	);
-	const [apiKeys, setApiKeys] = useState<ClientApiKey[]>([]);
-	const [authProxyAccounts, setAuthProxyAccounts] = useState<AuthProxyAccount[]>([]);
-	const [authProxyRefreshing, setAuthProxyRefreshing] = useState(false);
-	const [authProxyToggling, setAuthProxyToggling] = useState<ReadonlySet<string>>(
-		() => new Set(),
-	);
-	const [authProxyEditor, setAuthProxyEditor] =
-		useState<EditableAuthProxyAccount>(null);
-	const [authProxySaving, setAuthProxySaving] = useState(false);
-	const [pendingAuthProxyDelete, setPendingAuthProxyDelete] =
-		useState<AuthProxyAccount | null>(null);
-	const [authProxyDeleting, setAuthProxyDeleting] = useState(false);
-	const [authProxyOAuthAccount, setAuthProxyOAuthAccount] =
-		useState<AuthProxyAccount | null>(null);
-	const [authProxyOAuthAuthorization, setAuthProxyOAuthAuthorization] =
-		useState<DeviceAuthorization | null>(null);
-	const [authProxyOAuthLoading, setAuthProxyOAuthLoading] = useState(false);
-	const [authProxyOAuthError, setAuthProxyOAuthError] = useState<string | null>(null);
-	const [authProxyOAuthRemoving, setAuthProxyOAuthRemoving] = useState<string | null>(null);
-	const [keysRefreshing, setKeysRefreshing] = useState(false);
-	const [keysToggling, setKeysToggling] = useState<ReadonlySet<string>>(
-		() => new Set(),
-	);
-	const [keyEditor, setKeyEditor] = useState<EditableKey>(null);
-	const [keySaving, setKeySaving] = useState(false);
-	const [pendingDelete, setPendingDelete] = useState<ClientApiKey | null>(null);
-	const [keyDeleting, setKeyDeleting] = useState(false);
-	const [deviceAuthorization, setDeviceAuthorization] =
-		useState<DeviceAuthorization | null>(null);
+
+	const [subscriptions, setSubscriptions] = useState<Record<string, SubscriptionInfo>>({});
+	const [subscriptionLoading, setSubscriptionLoading] = useState<ReadonlySet<string>>(() => new Set());
+	const [subscriptionErrors, setSubscriptionErrors] = useState<Record<string, string>>({});
+	const [busyAccounts, setBusyAccounts] = useState<ReadonlySet<string>>(() => new Set());
+	const [deviceFlow, setDeviceFlow] = useState<CodexAccountDeviceAuthorization | null>(null);
 	const [deviceLoading, setDeviceLoading] = useState(false);
 	const [deviceError, setDeviceError] = useState<string | null>(null);
-	const [notice, setNotice] = useState<Notice | null>(null);
-	const [now, setNow] = useState(() => Date.now());
+
+	const [accountGroupsSaving, setAccountGroupsSaving] = useState(false);
+	const [keyEditor, setKeyEditor] = useState<EditableKey>(null);
+	const [keySaving, setKeySaving] = useState(false);
+	const [busyKeys, setBusyKeys] = useState<ReadonlySet<string>>(() => new Set());
+	const [proxyEditor, setProxyEditor] = useState<EditableProxy>(null);
+	const [proxySaving, setProxySaving] = useState(false);
+	const [busyProxies, setBusyProxies] = useState<ReadonlySet<string>>(() => new Set());
 
 	const mountedRef = useRef(false);
-	const initializedRef = useRef(false);
-	const deviceRequestInFlightRef = useRef(false);
-	const authProxyDeviceRequestInFlightRef = useRef(false);
-	const authProxyDeviceFlowRef = useRef(0);
-	const keyTogglingRef = useRef<Set<string>>(new Set());
-	const authProxyTogglingRef = useRef<Set<string>>(new Set());
-	const pollTimerRef = useRef<number | null>(null);
-	const authProxyPollTimerRef = useRef<number | null>(null);
 	const usageRequestRef = useRef(0);
+	const deviceFlowRef = useRef(0);
+	const deviceTimerRef = useRef<number | null>(null);
+	const subscriptionInFlightRef = useRef<Set<string>>(new Set());
 	const initializeRef = useRef(initialize);
+	const refreshSubscriptionRef = useRef(refreshSubscription);
 
 	useEffect(() => {
 		initializeRef.current = initialize;
+		refreshSubscriptionRef.current = refreshSubscription;
 	});
 
 	useEffect(() => {
 		mountedRef.current = true;
+		if (api) void initializeRef.current();
 		return () => {
 			mountedRef.current = false;
-			if (pollTimerRef.current !== null) {
-				window.clearTimeout(pollTimerRef.current);
-				pollTimerRef.current = null;
-			}
-			if (authProxyPollTimerRef.current !== null) {
-				window.clearTimeout(authProxyPollTimerRef.current);
-				authProxyPollTimerRef.current = null;
-			}
+			clearDeviceTimer();
 		};
-	}, []);
-
-	useEffect(() => {
-		if (initializedRef.current || !api) return;
-		initializedRef.current = true;
-		void initializeRef.current();
 	}, [api]);
 
 	useEffect(() => {
@@ -176,45 +147,41 @@ function App() {
 	}, [screen]);
 
 	useEffect(() => {
-		const onPopState = () => {
-			setActivePage(managementPageFromSearch(window.location.search));
-		};
+		const onPopState = () => setActivePage(managementPageFromSearch(window.location.search));
 		window.addEventListener("popstate", onPopState);
 		return () => window.removeEventListener("popstate", onPopState);
 	}, []);
 
 	useEffect(() => {
-		if (screen !== "dashboard") return;
-		document.title = `${managementPageTitle(activePage)} · Codex Router`;
+		if (screen === "dashboard") document.title = `${managementPageTitle(activePage)} · Codex Router`;
 	}, [activePage, screen]);
+
+	useEffect(() => {
+		if (screen !== "dashboard" || activePage !== "account") return;
+		for (const account of data.codexAccounts) {
+			if (account.enabled && !subscriptions[account.id]) void refreshSubscriptionRef.current(account);
+		}
+	}, [activePage, data.codexAccounts, screen, subscriptions]);
 
 	async function initialize(): Promise<void> {
 		if (!api) return;
 		try {
 			const state = await api.getState();
 			if (!mountedRef.current) return;
-			setOAuth(state.oauth);
-			setSubscription(state.subscription);
-			setApiKeys(state.apiKeys);
-			setAuthProxyAccounts(state.authProxyAccounts);
+			setData(state);
 			setScreen("dashboard");
 			setLoginError(null);
-			if (state.oauth) {
-				void refreshSubscription(true);
-			} else {
-				void beginDeviceLogin();
-			}
-			void refreshUsage("cycle", null, null);
-			void refreshOverviewUsage(null);
+			void refreshUsage("cycle", null);
+			void refreshOverviewUsage();
 			void refreshPricing();
 		} catch (error) {
 			if (!mountedRef.current) return;
 			if (error instanceof AdminSessionExpiredError) {
 				resetForLogin();
-				return;
+			} else {
+				setScreen("login");
+				setLoginError(errorMessage(error, "无法读取管理状态，请稍后重试。"));
 			}
-			setScreen("login");
-			setLoginError(errorMessage(error, "无法读取管理状态，请稍后重试。"));
 		}
 	}
 
@@ -249,72 +216,68 @@ function App() {
 		if (mountedRef.current) resetForLogin();
 	}
 
-	async function refreshSubscription(force = false): Promise<void> {
-		if (!api || subscriptionLoading || (!force && !oauth)) return;
-		setSubscriptionLoading(true);
-		setSubscriptionError(null);
-		try {
-			const next = await api.getSubscription();
-			if (!mountedRef.current) return;
-			setSubscription(next);
-			setNow(Date.now());
-			const bounds = codexCycleBounds(next);
-			void refreshOverviewUsage(bounds);
-			if (usageRange === "cycle") {
-				void refreshUsage("cycle", usageIdentity, bounds);
-			}
-		} catch (error) {
-			if (!mountedRef.current) return;
-			if (handleSessionFailure(error)) return;
-			setSubscriptionError(
-				errorMessage(error, "读取订阅与额度失败，请稍后重试。"),
-			);
-		} finally {
-			if (mountedRef.current) setSubscriptionLoading(false);
-		}
+	function handleSessionFailure(error: unknown): boolean {
+		if (!(error instanceof AdminSessionExpiredError)) return false;
+		resetForLogin();
+		return true;
+	}
+
+	function resetForLogin(): void {
+		cancelDeviceLogin();
+		setData(EMPTY_STATE);
+		setUsage(null);
+		setOverviewUsage(null);
+		setSubscriptions({});
+		setScreen("login");
+	}
+
+	function navigateManagementPage(page: ManagementPage): void {
+		if (page === activePage) return;
+		const url = new URL(window.location.href);
+		if (page === "overview") url.searchParams.delete("page");
+		else url.searchParams.set("page", page);
+		window.history.pushState(null, "", url);
+		setActivePage(page);
 	}
 
 	async function refreshUsage(
 		range = usageRange,
 		identity = usageIdentity,
-		boundsOverride: UsageCycleBounds | null | undefined = undefined,
 	): Promise<void> {
 		if (!api) return;
 		const requestId = ++usageRequestRef.current;
 		setUsageLoading(true);
 		setUsageError(null);
 		try {
-			const bounds = range === "cycle"
-				? boundsOverride === undefined ? codexCycleBounds(subscription) : boundsOverride
-				: null;
-			const next = await api.getUsage(range, identity, bounds);
-			if (!mountedRef.current) return;
-			if (requestId !== usageRequestRef.current) return;
+			const next = await api.getUsage(range, identity);
+			if (!mountedRef.current || requestId !== usageRequestRef.current) return;
 			setUsage(next);
 		} catch (error) {
 			if (!mountedRef.current || requestId !== usageRequestRef.current) return;
-			if (handleSessionFailure(error)) return;
-			setUsageError(errorMessage(error, "读取 Token 用量失败，请稍后重试。"));
+			if (!handleSessionFailure(error)) setUsageError(errorMessage(error, "读取 Token 用量失败。"));
 		} finally {
-			if (mountedRef.current && requestId === usageRequestRef.current) {
-				setUsageLoading(false);
-			}
+			if (mountedRef.current && requestId === usageRequestRef.current) setUsageLoading(false);
 		}
 	}
 
-	async function refreshOverviewUsage(
-		boundsOverride: UsageCycleBounds | null | undefined = undefined,
-	): Promise<void> {
+	async function refreshOverviewUsage(): Promise<void> {
 		if (!api) return;
 		try {
-			const bounds = boundsOverride === undefined
-				? codexCycleBounds(subscription)
-				: boundsOverride;
-			const next = await api.getUsage("cycle", null, bounds);
+			const next = await api.getUsage("cycle");
 			if (mountedRef.current) setOverviewUsage(next);
 		} catch (error) {
 			if (mountedRef.current) handleSessionFailure(error);
 		}
+	}
+
+	function changeUsageRange(range: UsageRange): void {
+		setUsageRange(range);
+		void refreshUsage(range, usageIdentity);
+	}
+
+	function changeUsageIdentity(identity: UsageIdentityFilter | null): void {
+		setUsageIdentity(identity);
+		void refreshUsage(usageRange, identity);
 	}
 
 	async function refreshPricing(): Promise<void> {
@@ -327,8 +290,7 @@ function App() {
 			setModelPrices(next.prices);
 			setUsedModels(next.usedModels);
 		} catch (error) {
-			if (!mountedRef.current || handleSessionFailure(error)) return;
-			setPricingError(errorMessage(error, "读取模型价格失败。"));
+			if (mountedRef.current && !handleSessionFailure(error)) setPricingError(errorMessage(error, "读取模型价格失败。"));
 		} finally {
 			if (mountedRef.current) setPricingLoading(false);
 		}
@@ -342,13 +304,11 @@ function App() {
 			const next = await api.replacePricing(prices);
 			if (!mountedRef.current) return;
 			setModelPrices(next);
-			showNotice("模型价格已保存到服务器配置。", "success");
-			void refreshOverviewUsage();
+			showNotice("模型价格已保存。", "success");
 			void refreshUsage();
+			void refreshOverviewUsage();
 		} catch (error) {
-			if (!handleSessionFailure(error)) {
-				setPricingError(errorMessage(error, "保存模型价格失败。"));
-			}
+			if (!handleSessionFailure(error)) setPricingError(errorMessage(error, "保存模型价格失败。"));
 		} finally {
 			if (mountedRef.current) setPricingSaving(false);
 		}
@@ -362,158 +322,180 @@ function App() {
 			const result = await api.syncPricing();
 			if (!mountedRef.current) return;
 			setModelPrices(result.prices);
-			const unmatched = result.unmatchedModels.length;
-			showNotice(
-				unmatched > 0
-					? `已匹配 ${result.matchedModels.length} 个模型，${unmatched} 个未匹配。`
-					: `已从 ${result.source} 获取 ${result.matchedModels.length} 个模型价格。`,
-				unmatched > 0 ? "error" : "success",
-			);
-			void refreshOverviewUsage();
+			showNotice(`已匹配 ${result.matchedModels.length} 个模型价格。`, result.unmatchedModels.length ? "error" : "success");
 			void refreshUsage();
+			void refreshOverviewUsage();
 		} catch (error) {
-			if (!handleSessionFailure(error)) {
-				setPricingError(errorMessage(error, "从 Models.dev 获取价格失败。"));
-			}
+			if (!handleSessionFailure(error)) setPricingError(errorMessage(error, "从 Models.dev 获取价格失败。"));
 		} finally {
 			if (mountedRef.current) setPricingSyncing(false);
 		}
 	}
 
-	function changeUsageRange(range: UsageRange): void {
-		if (range === usageRange) return;
-		setUsageRange(range);
-		void refreshUsage(range, usageIdentity);
+	async function refreshSubscription(account: CodexAccount): Promise<void> {
+		if (!api || subscriptionInFlightRef.current.has(account.id)) return;
+		subscriptionInFlightRef.current.add(account.id);
+		setSubscriptionLoading(new Set(subscriptionInFlightRef.current));
+		setSubscriptionErrors((current) => omitKey(current, account.id));
+		try {
+			const next = await api.getCodexAccountSubscription(account.id);
+			if (!mountedRef.current) return;
+			setSubscriptions((current) => ({ ...current, [account.id]: next }));
+			setNow(Date.now());
+		} catch (error) {
+			if (!mountedRef.current || handleSessionFailure(error)) return;
+			setSubscriptionErrors((current) => ({ ...current, [account.id]: errorMessage(error, "额度同步失败。") }));
+		} finally {
+			subscriptionInFlightRef.current.delete(account.id);
+			if (mountedRef.current) setSubscriptionLoading(new Set(subscriptionInFlightRef.current));
+		}
 	}
 
-	function changeUsageIdentity(identity: UsageIdentityFilter | null): void {
-		if (sameUsageIdentity(identity, usageIdentity)) return;
-		setUsageIdentity(identity);
-		void refreshUsage(usageRange, identity);
+	async function updateCodexAccount(account: CodexAccount, value: CodexAccountUpdate): Promise<void> {
+		if (!api || busyAccounts.has(account.id)) return;
+		setBusyAccounts((current) => withSetValue(current, account.id, true));
+		try {
+			const accounts = await api.updateCodexAccount(account.id, value);
+			const routing = await api.getAccountRouting();
+			if (!mountedRef.current) return;
+			setData((current) => ({ ...current, codexAccounts: accounts, ...routing }));
+			showNotice("账户已更新。", "success");
+		} catch (error) {
+			if (!handleSessionFailure(error)) showNotice(errorMessage(error, "更新账户失败。"), "error");
+		} finally {
+			if (mountedRef.current) setBusyAccounts((current) => withSetValue(current, account.id, false));
+		}
 	}
 
-	function navigateManagementPage(page: ManagementPage): void {
-		if (page === activePage) return;
-		const url = new URL(window.location.href);
-		if (page === "overview") url.searchParams.delete("page");
-		else url.searchParams.set("page", page);
-		window.history.pushState(null, "", url);
-		setActivePage(page);
+	async function deleteCodexAccount(account: CodexAccount): Promise<void> {
+		if (!api || busyAccounts.has(account.id)) return;
+		if (!window.confirm(`删除 Codex 账户“${account.name}”？相关路由也会被移除。`)) return;
+		setBusyAccounts((current) => withSetValue(current, account.id, true));
+		try {
+			const accounts = await api.deleteCodexAccount(account.id);
+			const routing = await api.getAccountRouting();
+			if (!mountedRef.current) return;
+			setData((current) => ({ ...current, codexAccounts: accounts, ...routing }));
+			setSubscriptions((current) => omitKey(current, account.id));
+			showNotice("账户已删除。", "success");
+		} catch (error) {
+			if (!handleSessionFailure(error)) showNotice(errorMessage(error, "删除账户失败。"), "error");
+		} finally {
+			if (mountedRef.current) setBusyAccounts((current) => withSetValue(current, account.id, false));
+		}
 	}
 
-	async function beginDeviceLogin(): Promise<void> {
-		if (!api || deviceRequestInFlightRef.current) return;
-		deviceRequestInFlightRef.current = true;
-		clearPollTimer();
-		setDeviceAuthorization(null);
+	async function startDeviceLogin(): Promise<void> {
+		if (!api || deviceLoading) return;
+		const flowId = ++deviceFlowRef.current;
+		clearDeviceTimer();
+		setDeviceFlow(null);
 		setDeviceError(null);
 		setDeviceLoading(true);
 		try {
-			const authorization = await api.startDeviceAuthorization();
-			if (!mountedRef.current) return;
-			setDeviceAuthorization(authorization);
-			scheduleDevicePoll(authorization.state, authorization.interval);
+			const flow = await api.startCodexAccountDeviceAuthorization();
+			if (!mountedRef.current || flowId !== deviceFlowRef.current) return;
+			setDeviceFlow(flow);
+			scheduleDevicePoll(flowId, flow.accountId, flow.authorization.state, flow.authorization.interval);
 		} catch (error) {
-			if (!mountedRef.current) return;
-			if (handleSessionFailure(error)) return;
-			setDeviceError(errorMessage(error, "无法创建设备登录码。"));
+			if (!mountedRef.current || flowId !== deviceFlowRef.current) return;
+			if (!handleSessionFailure(error)) setDeviceError(errorMessage(error, "无法创建设备登录码。"));
 		} finally {
-			deviceRequestInFlightRef.current = false;
-			if (mountedRef.current) setDeviceLoading(false);
+			if (mountedRef.current && flowId === deviceFlowRef.current) setDeviceLoading(false);
 		}
 	}
 
-	function scheduleDevicePoll(state: string, seconds: number): void {
-		clearPollTimer();
-		pollTimerRef.current = window.setTimeout(
-			() => void pollDeviceLogin(state),
-			Math.max(1, seconds) * 1_000,
+	function scheduleDevicePoll(flowId: number, accountId: string, state: string, retryAfter: number): void {
+		clearDeviceTimer();
+		deviceTimerRef.current = window.setTimeout(
+			() => void pollDeviceLogin(flowId, accountId, state),
+			Math.max(1, retryAfter) * 1_000,
 		);
 	}
 
-	async function pollDeviceLogin(state: string): Promise<void> {
-		if (!api || !mountedRef.current) return;
+	async function pollDeviceLogin(flowId: number, accountId: string, state: string): Promise<void> {
+		if (!api || flowId !== deviceFlowRef.current) return;
 		try {
-			const result = await api.pollDeviceAuthorization(state);
-			if (!mountedRef.current) return;
+			const result = await api.pollCodexAccountDeviceAuthorization(accountId, state);
+			if (!mountedRef.current || flowId !== deviceFlowRef.current) return;
 			if (result.status === "pending") {
-				scheduleDevicePoll(state, result.retryAfter);
+				scheduleDevicePoll(flowId, accountId, state, result.retryAfter);
 				return;
 			}
-			clearPollTimer();
-			setOAuth(result.oauth);
-			setSubscription(result.subscription);
-			setDeviceAuthorization(null);
-			setDeviceError(null);
-			showNotice("Codex 登录成功。", "success");
-			void refreshSubscription(true);
-			void refreshUsage("cycle", usageIdentity);
+			setData((current) => ({
+				...current,
+				codexAccounts: [...current.codexAccounts.filter((entry) => entry.id !== result.account.id), result.account],
+			}));
+			cancelDeviceLogin();
+			showNotice("账户已添加。", "success");
+			void refreshSubscription(result.account);
 		} catch (error) {
-			if (!mountedRef.current) return;
-			if (handleSessionFailure(error)) return;
-			setDeviceError(errorMessage(error, "检查设备登录状态失败。"));
+			if (!mountedRef.current || flowId !== deviceFlowRef.current) return;
+			if (!handleSessionFailure(error)) setDeviceError(errorMessage(error, "检查设备登录状态失败。"));
 		}
 	}
 
-	async function removeOAuth(): Promise<void> {
-		if (!api || oauthRemoving) return;
-		if (!window.confirm("退出当前 Codex 登录？")) return;
-		setOAuthRemoving(true);
+	function cancelDeviceLogin(): void {
+		deviceFlowRef.current += 1;
+		clearDeviceTimer();
+		setDeviceFlow(null);
+		setDeviceError(null);
+		setDeviceLoading(false);
+	}
+
+	function clearDeviceTimer(): void {
+		if (deviceTimerRef.current !== null) {
+			window.clearTimeout(deviceTimerRef.current);
+			deviceTimerRef.current = null;
+		}
+	}
+
+	async function saveAccountGroups(groups: AccountGroup[], routes: RouteAssignment[]): Promise<boolean> {
+		if (!api || accountGroupsSaving) return false;
+		setAccountGroupsSaving(true);
 		try {
-			await api.removeOAuth();
-			if (!mountedRef.current) return;
-			setOAuth(null);
-			setSubscription(null);
-			setSubscriptionError(null);
-			showNotice("已退出 Codex 登录。", "success");
-			void beginDeviceLogin();
+			const next = await api.updateAccountRouting(groups, routes);
+			if (!mountedRef.current) return false;
+			setData((current) => ({ ...current, ...next }));
+			showNotice("账户组已保存。", "success");
+			return true;
 		} catch (error) {
-			if (!handleSessionFailure(error)) {
-				showNotice(errorMessage(error, "退出 Codex 登录失败。"), "error");
-			}
+			if (!handleSessionFailure(error)) showNotice(errorMessage(error, "保存账户组失败。"), "error");
+			return false;
 		} finally {
-			if (mountedRef.current) setOAuthRemoving(false);
+			if (mountedRef.current) setAccountGroupsSaving(false);
 		}
 	}
 
-	async function refreshApiKeys(): Promise<void> {
-		if (!api || keysRefreshing) return;
-		setKeysRefreshing(true);
-		try {
-			const state = await api.getState();
-			if (!mountedRef.current) return;
-			setApiKeys(state.apiKeys);
-			setOAuth(state.oauth);
-			setSubscription((current) =>
-				isSubscriptionInfo(current) && state.oauth
-					? current
-					: state.subscription,
-			);
-			showNotice("API Key 列表已刷新。", "success");
-		} catch (error) {
-			if (!handleSessionFailure(error)) {
-				showNotice(errorMessage(error, "刷新 API Key 失败。"), "error");
-			}
-		} finally {
-			if (mountedRef.current) setKeysRefreshing(false);
-		}
-	}
-
-	async function saveApiKey(value: ClientApiKeyInput): Promise<void> {
+	async function saveApiKey(value: ClientApiKeyInput, target: RouteTargetSelection): Promise<void> {
 		if (!api || !keyEditor || keySaving) return;
+		const editor = keyEditor;
+		let identitySaved = false;
 		setKeySaving(true);
 		try {
-			const next =
-				keyEditor === "new"
-					? await api.createApiKey(value)
-					: await api.updateApiKey(keyEditor.id, value);
+			const next = editor === "new" ? await api.createApiKey(value) : await api.updateApiKey(editor.id, value);
 			if (!mountedRef.current) return;
-			setApiKeys(next);
+			const saved = editor === "new"
+				? next.find((entry) => entry.key === value.key)
+				: next.find((entry) => entry.id === editor.id);
+			if (!saved) throw invalidAdminResponse();
+			identitySaved = true;
+			setData((current) => ({ ...current, apiKeys: next }));
+			if (editor === "new") setKeyEditor(saved);
+			const currentRoute = consumerRoute(data.routes, "api_key", saved.id);
+			if (routeTargetValue(currentRoute) !== routeTargetValue(target)) {
+				const routing = await api.updateAccountRouting(
+					data.accountGroups,
+					replaceConsumerRoute(data.routes, "api_key", saved.id, target),
+				);
+				if (!mountedRef.current) return;
+				setData((current) => ({ ...current, apiKeys: next, ...routing }));
+			}
 			setKeyEditor(null);
-			showNotice("API Key 已保存。", "success");
+			showNotice(editor === "new" ? "API Key 已创建。" : "API Key 已更新。", "success");
 		} catch (error) {
 			if (!handleSessionFailure(error)) {
-				showNotice(errorMessage(error, "保存 API Key 失败。"), "error");
+				showNotice(errorMessage(error, identitySaved ? "API Key 已保存，但账户分配失败，请重试。" : "保存 API Key 失败。"), "error");
 			}
 		} finally {
 			if (mountedRef.current) setKeySaving(false);
@@ -521,386 +503,142 @@ function App() {
 	}
 
 	async function toggleApiKey(entry: ClientApiKey): Promise<void> {
-		if (
-			!api ||
-			keysRefreshing ||
-			keyTogglingRef.current.size > 0
-		) {
-			return;
-		}
-
-		const enabled = !entry.enabled;
-		const pending = new Set(keyTogglingRef.current);
-		pending.add(entry.id);
-		keyTogglingRef.current = pending;
-		setKeysToggling(pending);
-		setApiKeys((current) =>
-			current.map((candidate) =>
-				candidate.id === entry.id ? { ...candidate, enabled } : candidate,
-			),
-		);
-
+		if (!api || busyKeys.has(entry.id)) return;
+		setBusyKeys((current) => withSetValue(current, entry.id, true));
 		try {
-			const next = await api.updateApiKey(entry.id, clientApiKeyInput(entry, enabled));
-			if (!mountedRef.current) return;
-			setApiKeys(next);
-			showNotice(`API Key 已${enabled ? "启用" : "停用"}。`, "success");
+			const next = await api.updateApiKey(entry.id, { name: entry.name, key: entry.key, enabled: !entry.enabled });
+			if (mountedRef.current) setData((current) => ({ ...current, apiKeys: next }));
 		} catch (error) {
-			if (!mountedRef.current) return;
-			if (!handleSessionFailure(error)) {
-				setApiKeys((current) =>
-					current.map((candidate) =>
-						candidate.id === entry.id
-							? { ...candidate, enabled: entry.enabled }
-							: candidate,
-					),
-				);
-				showNotice(errorMessage(error, "切换 API Key 状态失败。"), "error");
-			}
+			if (!handleSessionFailure(error)) showNotice(errorMessage(error, "更新 API Key 失败。"), "error");
 		} finally {
-			const remaining = new Set(keyTogglingRef.current);
-			remaining.delete(entry.id);
-			keyTogglingRef.current = remaining;
-			if (mountedRef.current) setKeysToggling(remaining);
+			if (mountedRef.current) setBusyKeys((current) => withSetValue(current, entry.id, false));
 		}
 	}
 
-	async function deleteApiKey(): Promise<void> {
-		if (!api || !pendingDelete || keyDeleting) return;
-		setKeyDeleting(true);
+	async function deleteApiKey(entry: ClientApiKey): Promise<void> {
+		if (!api || !window.confirm(`删除 API Key“${entry.name}”？`)) return;
+		setBusyKeys((current) => withSetValue(current, entry.id, true));
 		try {
-			const next = await api.deleteApiKey(pendingDelete.id);
+			const next = await api.deleteApiKey(entry.id);
 			if (!mountedRef.current) return;
-			setApiKeys(next);
-			setPendingDelete(null);
+			setData((current) => ({ ...current, apiKeys: next, routes: current.routes.filter((route) => route.consumerType !== "api_key" || route.consumerId !== entry.id) }));
 			showNotice("API Key 已删除。", "success");
 		} catch (error) {
-			if (!handleSessionFailure(error)) {
-				showNotice(errorMessage(error, "删除 API Key 失败。"), "error");
-			}
+			if (!handleSessionFailure(error)) showNotice(errorMessage(error, "删除 API Key 失败。"), "error");
 		} finally {
-			if (mountedRef.current) setKeyDeleting(false);
+			if (mountedRef.current) setBusyKeys((current) => withSetValue(current, entry.id, false));
 		}
 	}
 
-	async function refreshAuthProxyAccounts(): Promise<void> {
-		if (!api || authProxyRefreshing) return;
-		setAuthProxyRefreshing(true);
+	async function saveProxy(value: AuthProxyAccountInput, target: RouteTargetSelection): Promise<void> {
+		if (!api || !proxyEditor || proxySaving) return;
+		const editor = proxyEditor;
+		let identitySaved = false;
+		setProxySaving(true);
 		try {
-			const state = await api.getState();
+			const next = editor === "new" ? await api.createAuthProxyAccount(value) : await api.updateAuthProxyAccount(editor.id, value);
 			if (!mountedRef.current) return;
-			setAuthProxyAccounts(state.authProxyAccounts);
-		} catch (error) {
-			if (!handleSessionFailure(error)) {
-				showNotice(errorMessage(error, "刷新代理账户失败。"), "error");
-			}
-		} finally {
-			if (mountedRef.current) setAuthProxyRefreshing(false);
-		}
-	}
-
-	async function saveAuthProxyAccount(value: AuthProxyAccountInput): Promise<void> {
-		if (!api || !authProxyEditor || authProxySaving) return;
-		setAuthProxySaving(true);
-		try {
-			const next =
-				authProxyEditor === "new"
-					? await api.createAuthProxyAccount(value)
-					: await api.updateAuthProxyAccount(authProxyEditor.id, value);
-			if (!mountedRef.current) return;
-			setAuthProxyAccounts(next);
-			setAuthProxyEditor(null);
-			showNotice("代理账户已保存。", "success");
-		} catch (error) {
-			if (!handleSessionFailure(error)) {
-				showNotice(errorMessage(error, "保存代理账户失败。"), "error");
-			}
-		} finally {
-			if (mountedRef.current) setAuthProxySaving(false);
-		}
-	}
-
-	async function toggleAuthProxyAccount(entry: AuthProxyAccount): Promise<void> {
-		if (
-			!api ||
-			authProxyRefreshing ||
-			authProxyTogglingRef.current.size > 0
-		) {
-			return;
-		}
-
-		const enabled = !entry.enabled;
-		const pending = new Set(authProxyTogglingRef.current);
-		pending.add(entry.id);
-		authProxyTogglingRef.current = pending;
-		setAuthProxyToggling(pending);
-		setAuthProxyAccounts((current) =>
-			current.map((candidate) =>
-				candidate.id === entry.id ? { ...candidate, enabled } : candidate,
-			),
-		);
-		try {
-			const next = await api.updateAuthProxyAccount(
-				entry.id,
-				authProxyAccountInput(entry, enabled),
-			);
-			if (mountedRef.current) setAuthProxyAccounts(next);
-		} catch (error) {
-			if (!handleSessionFailure(error) && mountedRef.current) {
-				setAuthProxyAccounts((current) =>
-					current.map((candidate) =>
-						candidate.id === entry.id ? entry : candidate,
-					),
+			const saved = editor === "new"
+				? next.find((entry) => entry.accountId === value.accountId)
+				: next.find((entry) => entry.id === editor.id);
+			if (!saved) throw invalidAdminResponse();
+			identitySaved = true;
+			setData((current) => ({ ...current, authProxyAccounts: next }));
+			if (editor === "new") setProxyEditor(saved);
+			const currentRoute = consumerRoute(data.routes, "auth_proxy", saved.id);
+			if (routeTargetValue(currentRoute) !== routeTargetValue(target)) {
+				const routing = await api.updateAccountRouting(
+					data.accountGroups,
+					replaceConsumerRoute(data.routes, "auth_proxy", saved.id, target),
 				);
-				showNotice(errorMessage(error, "切换代理账户状态失败。"), "error");
+				if (!mountedRef.current) return;
+				setData((current) => ({ ...current, authProxyAccounts: next, ...routing }));
 			}
-		} finally {
-			const remaining = new Set(authProxyTogglingRef.current);
-			remaining.delete(entry.id);
-			authProxyTogglingRef.current = remaining;
-			if (mountedRef.current) setAuthProxyToggling(remaining);
-		}
-	}
-
-	async function handleAuthProxyOAuth(entry: AuthProxyAccount): Promise<void> {
-		if (!api || authProxyOAuthRemoving) return;
-		if (!entry.oauth) {
-			await beginAuthProxyDeviceLogin(entry);
-			return;
-		}
-		if (!window.confirm(`退出“${entry.name}”的独立登录？`)) return;
-		setAuthProxyOAuthRemoving(entry.id);
-		try {
-			await api.removeAuthProxyOAuth(entry.id);
-			if (!mountedRef.current) return;
-			setAuthProxyAccounts((current) =>
-				current.map((account) =>
-					account.id === entry.id ? { ...account, oauth: null } : account,
-				),
-			);
-			showNotice(`“${entry.name}”已退出独立登录，将回退到主账户。`, "success");
+			setProxyEditor(null);
+			showNotice(editor === "new" ? "下游账户已添加。" : "下游账户已更新。", "success");
 		} catch (error) {
 			if (!handleSessionFailure(error)) {
-				showNotice(errorMessage(error, "退出代理账户登录失败。"), "error");
+				showNotice(errorMessage(error, identitySaved ? "下游账户已保存，但账户分配失败，请重试。" : "保存下游账户失败。"), "error");
 			}
 		} finally {
-			if (mountedRef.current) setAuthProxyOAuthRemoving(null);
+			if (mountedRef.current) setProxySaving(false);
 		}
 	}
 
-	async function beginAuthProxyDeviceLogin(entry: AuthProxyAccount): Promise<void> {
-		if (!api || authProxyDeviceRequestInFlightRef.current) return;
-		authProxyDeviceRequestInFlightRef.current = true;
-		clearAuthProxyPollTimer();
-		const flowId = ++authProxyDeviceFlowRef.current;
-		setAuthProxyOAuthAccount(entry);
-		setAuthProxyOAuthAuthorization(null);
-		setAuthProxyOAuthError(null);
-		setAuthProxyOAuthLoading(true);
+	async function toggleProxy(entry: AuthProxyAccount): Promise<void> {
+		if (!api || busyProxies.has(entry.id)) return;
+		setBusyProxies((current) => withSetValue(current, entry.id, true));
 		try {
-			const authorization = await api.startAuthProxyDeviceAuthorization(entry.id);
-			if (!mountedRef.current || authProxyDeviceFlowRef.current !== flowId) return;
-			setAuthProxyOAuthAuthorization(authorization);
-			scheduleAuthProxyDevicePoll(
-				flowId,
-				entry.id,
-				entry.name,
-				authorization.state,
-				authorization.interval,
-			);
+			const next = await api.updateAuthProxyAccount(entry.id, { name: entry.name, accountId: entry.accountId, enabled: !entry.enabled });
+			if (mountedRef.current) setData((current) => ({ ...current, authProxyAccounts: next }));
 		} catch (error) {
-			if (!mountedRef.current || authProxyDeviceFlowRef.current !== flowId) return;
-			if (handleSessionFailure(error)) return;
-			setAuthProxyOAuthError(errorMessage(error, "无法创建设备登录码。"));
+			if (!handleSessionFailure(error)) showNotice(errorMessage(error, "更新下游账户失败。"), "error");
 		} finally {
-			authProxyDeviceRequestInFlightRef.current = false;
-			if (mountedRef.current) setAuthProxyOAuthLoading(false);
+			if (mountedRef.current) setBusyProxies((current) => withSetValue(current, entry.id, false));
 		}
 	}
 
-	function scheduleAuthProxyDevicePoll(
-		flowId: number,
-		id: string,
-		name: string,
-		state: string,
-		seconds: number,
-	): void {
-		if (authProxyDeviceFlowRef.current !== flowId) return;
-		clearAuthProxyPollTimer();
-		authProxyPollTimerRef.current = window.setTimeout(
-			() => void pollAuthProxyDeviceLogin(flowId, id, name, state),
-			Math.max(1, seconds) * 1_000,
-		);
-	}
-
-	async function pollAuthProxyDeviceLogin(
-		flowId: number,
-		id: string,
-		name: string,
-		state: string,
-	): Promise<void> {
-		if (
-			!api ||
-			!mountedRef.current ||
-			authProxyDeviceFlowRef.current !== flowId
-		) {
-			return;
-		}
+	async function deleteProxy(entry: AuthProxyAccount): Promise<void> {
+		if (!api || !window.confirm(`删除下游账户“${entry.name}”？`)) return;
+		setBusyProxies((current) => withSetValue(current, entry.id, true));
 		try {
-			const result = await api.pollAuthProxyDeviceAuthorization(id, state);
-			if (!mountedRef.current || authProxyDeviceFlowRef.current !== flowId) return;
-			if (result.status === "pending") {
-				scheduleAuthProxyDevicePoll(flowId, id, name, state, result.retryAfter);
-				return;
-			}
-			setAuthProxyAccounts((current) =>
-				current.map((entry) =>
-					entry.id === id ? { ...entry, oauth: result.oauth } : entry,
-				),
-			);
-			closeAuthProxyDeviceLogin();
-			showNotice(`“${name}”独立登录成功。`, "success");
-		} catch (error) {
-			if (!mountedRef.current || authProxyDeviceFlowRef.current !== flowId) return;
-			if (handleSessionFailure(error)) return;
-			setAuthProxyOAuthError(errorMessage(error, "检查设备登录状态失败。"));
-		}
-	}
-
-	function closeAuthProxyDeviceLogin(): void {
-		authProxyDeviceFlowRef.current += 1;
-		clearAuthProxyPollTimer();
-		setAuthProxyOAuthAccount(null);
-		setAuthProxyOAuthAuthorization(null);
-		setAuthProxyOAuthError(null);
-		setAuthProxyOAuthLoading(false);
-	}
-
-	async function deleteAuthProxyAccount(): Promise<void> {
-		if (!api || !pendingAuthProxyDelete || authProxyDeleting) return;
-		setAuthProxyDeleting(true);
-		try {
-			const next = await api.deleteAuthProxyAccount(pendingAuthProxyDelete.id);
+			const next = await api.deleteAuthProxyAccount(entry.id);
 			if (!mountedRef.current) return;
-			setAuthProxyAccounts(next);
-			setPendingAuthProxyDelete(null);
-			showNotice("代理账户已删除。", "success");
+			setData((current) => ({ ...current, authProxyAccounts: next, routes: current.routes.filter((route) => route.consumerType !== "auth_proxy" || route.consumerId !== entry.id) }));
+			showNotice("下游账户已删除。", "success");
 		} catch (error) {
-			if (!handleSessionFailure(error)) {
-				showNotice(errorMessage(error, "删除代理账户失败。"), "error");
-			}
+			if (!handleSessionFailure(error)) showNotice(errorMessage(error, "删除下游账户失败。"), "error");
 		} finally {
-			if (mountedRef.current) setAuthProxyDeleting(false);
+			if (mountedRef.current) setBusyProxies((current) => withSetValue(current, entry.id, false));
 		}
-	}
-
-	async function copyText(value: string, label: string): Promise<void> {
-		try {
-			await navigator.clipboard.writeText(value);
-			showNotice(`${label}已复制。`, "success");
-		} catch {
-			showNotice("无法访问剪贴板，请手动复制。", "error");
-		}
-	}
-
-	function handleSessionFailure(error: unknown): boolean {
-		if (!(error instanceof AdminSessionExpiredError)) return false;
-		resetForLogin();
-		setLoginError(error.message);
-		return true;
-	}
-
-	function resetForLogin(): void {
-		clearPollTimer();
-		authProxyDeviceFlowRef.current += 1;
-		clearAuthProxyPollTimer();
-		setScreen("login");
-		setOAuth(null);
-		setSubscription(null);
-		setUsage(null);
-		setOverviewUsage(null);
-		setUsageIdentity(null);
-		usageRequestRef.current += 1;
-		setUsageError(null);
-		setUsageLoading(false);
-		setModelPrices([]);
-		setUsedModels([]);
-		setPricingError(null);
-		setPricingLoading(false);
-		setPricingSaving(false);
-		setPricingSyncing(false);
-		setApiKeys([]);
-		setAuthProxyAccounts([]);
-		keyTogglingRef.current = new Set();
-		setKeysToggling(new Set());
-		authProxyTogglingRef.current = new Set();
-		setAuthProxyToggling(new Set());
-		setDeviceAuthorization(null);
-		setDeviceError(null);
-		setKeyEditor(null);
-		setPendingDelete(null);
-		setAuthProxyEditor(null);
-		setPendingAuthProxyDelete(null);
-		setAuthProxyOAuthAccount(null);
-		setAuthProxyOAuthAuthorization(null);
-		setAuthProxyOAuthError(null);
-		setAuthProxyOAuthLoading(false);
-		setAuthProxyOAuthRemoving(null);
-	}
-
-	function clearPollTimer(): void {
-		if (pollTimerRef.current === null) return;
-		window.clearTimeout(pollTimerRef.current);
-		pollTimerRef.current = null;
-	}
-
-	function clearAuthProxyPollTimer(): void {
-		if (authProxyPollTimerRef.current === null) return;
-		window.clearTimeout(authProxyPollTimerRef.current);
-		authProxyPollTimerRef.current = null;
 	}
 
 	function showNotice(text: string, tone: Notice["tone"]): void {
 		setNotice({ text, tone });
 	}
 
-	if (screen === "invalid-path") return <InvalidPathView />;
+	if (screen === "invalid-path") return <InvalidPath />;
 	if (screen === "loading") return <LoadingView />;
-	if (screen === "login") {
-		return (
-			<LoginView
-				error={loginError}
-				loading={loginLoading}
-				onSubmit={handleLogin}
-			/>
-		);
-	}
+	if (screen === "login") return <LoginView error={loginError} loading={loginLoading} onSubmit={(secret) => void handleLogin(secret)} />;
+	if (!basePath) return <InvalidPath />;
+	const pageAction = activePage === "api-keys" ? (
+		<button className="button button-primary" onClick={() => setKeyEditor("new")} type="button">
+			<PlusIcon />
+			添加 API Key
+		</button>
+	) : activePage === "accounts" ? (
+		<button className="button button-primary" onClick={() => setProxyEditor("new")} type="button">
+			<PlusIcon />
+			添加下游账户
+		</button>
+	) : activePage === "account" ? (
+		<button
+			className="button button-primary"
+			disabled={deviceLoading || deviceFlow !== null}
+			onClick={() => void startDeviceLogin()}
+			type="button"
+		>
+			<PlusIcon />
+			登录新账户
+		</button>
+	) : undefined;
 
 	return (
 		<ManagementShell
 			activePage={activePage}
-			basePath={basePath ?? ""}
-			mainAccount={oauth}
-			mainAccountSubscription={subscription}
-			now={now}
+			basePath={basePath}
 			onLogout={() => void handleLogout()}
 			onNavigate={navigateManagementPage}
+			pageAction={pageAction}
 		>
-			{activePage === "overview" ? (
-				<OverviewPage
-					activeApiKeys={apiKeys.filter((entry) => entry.enabled).length}
-					activeProxyAccounts={authProxyAccounts.filter((entry) => entry.enabled).length}
-					now={now}
-					onNavigate={navigateManagementPage}
-					usage={overviewUsage}
-				/>
-			) : null}
-
+			{activePage === "overview" ? <Overview data={data} now={now} onNavigate={navigateManagementPage} usage={overviewUsage} /> : null}
 			{activePage === "usage" ? (
-				<UsageCard
-					accounts={authProxyAccounts}
-					apiKeys={apiKeys}
+				<UsagePanel
+					accounts={data.authProxyAccounts}
+					apiKeys={data.apiKeys}
+					codexAccounts={data.codexAccounts}
 					error={usageError}
+					groups={data.accountGroups}
 					identity={usageIdentity}
 					loading={usageLoading}
 					now={now}
@@ -911,130 +649,110 @@ function App() {
 					usage={usage}
 				/>
 			) : null}
-
 			{activePage === "api-keys" ? (
-				<ApiKeysCard
-					apiKeys={apiKeys}
-					loading={keysRefreshing}
-					onAdd={() => setKeyEditor("new")}
-					onCopy={(value) => void copyText(value, "API Key")}
-					onDelete={setPendingDelete}
-					onEdit={setKeyEditor}
-					onRefresh={() => void refreshApiKeys()}
-					onToggle={(entry) => void toggleApiKey(entry)}
-					togglingKeys={keysToggling}
+				<IdentityTable
+					busy={busyKeys}
+					entries={data.apiKeys}
+					kind="api_key"
+					onDelete={(entry) => void deleteApiKey(entry as ClientApiKey)}
+					onEdit={(entry) => setKeyEditor(entry as ClientApiKey)}
+					onToggle={(entry) => void toggleApiKey(entry as ClientApiKey)}
+					routes={data.routes}
+					targets={{ accounts: data.codexAccounts, groups: data.accountGroups }}
 				/>
 			) : null}
-
 			{activePage === "accounts" ? (
-				<AuthProxyCard
-					accounts={authProxyAccounts}
-					loading={authProxyRefreshing}
-					onAdd={() => setAuthProxyEditor("new")}
-					onDelete={setPendingAuthProxyDelete}
-					onEdit={setAuthProxyEditor}
-					onOAuth={(entry) => void handleAuthProxyOAuth(entry)}
-					onRefresh={() => void refreshAuthProxyAccounts()}
-					onToggle={(entry) => void toggleAuthProxyAccount(entry)}
-					oauthRemoving={authProxyOAuthRemoving}
-					togglingAccounts={authProxyToggling}
+				<IdentityTable
+					busy={busyProxies}
+					entries={data.authProxyAccounts}
+					kind="auth_proxy"
+					onDelete={(entry) => void deleteProxy(entry as AuthProxyAccount)}
+					onEdit={(entry) => setProxyEditor(entry as AuthProxyAccount)}
+					onToggle={(entry) => void toggleProxy(entry as AuthProxyAccount)}
+					routes={data.routes}
+					targets={{ accounts: data.codexAccounts, groups: data.accountGroups }}
 				/>
 			) : null}
-
 			{activePage === "account" ? (
 				<>
-					<AccountCard
-						deviceAuthorization={deviceAuthorization}
-						deviceError={deviceError}
-						deviceLoading={deviceLoading}
-						error={subscriptionError}
-						loading={subscriptionLoading}
+					<CodexAccounts
+						accounts={data.codexAccounts}
+						busyAccounts={busyAccounts}
+						loginError={deviceError}
+						loginFlow={deviceFlow}
+						loginLoading={deviceLoading}
 						now={now}
-						oauth={oauth}
-						oauthRemoving={oauthRemoving}
-						onCopy={(value, label) => void copyText(value, label)}
-						onRefresh={() => void refreshSubscription()}
-						onRemove={() => void removeOAuth()}
-						onRetry={() => void beginDeviceLogin()}
-						subscription={subscription}
+						onCancelLogin={cancelDeviceLogin}
+						onDelete={(account) => void deleteCodexAccount(account)}
+						onRefresh={(account) => void refreshSubscription(account)}
+						onStartLogin={() => void startDeviceLogin()}
+						onUpdate={(account, value) => void updateCodexAccount(account, value)}
+						subscriptionErrors={subscriptionErrors}
+						subscriptionLoading={subscriptionLoading}
+						subscriptions={subscriptions}
 					/>
-					<ModelPricingCard
-						error={pricingError}
-						key={modelPrices.map((price) => `${price.model}:${price.input}:${price.output}:${price.cacheRead}:${price.cacheWrite}:${price.multiplier}`).join("|")}
-						loading={pricingLoading}
-						onSave={(prices) => void savePricing(prices)}
-						onSync={() => void syncPricing()}
-						prices={modelPrices}
-						saving={pricingSaving}
-						syncing={pricingSyncing}
-						usedModels={usedModels}
+					<AccountGroups
+						accounts={data.codexAccounts}
+						groups={data.accountGroups}
+						onChange={saveAccountGroups}
+						routes={data.routes}
+						saving={accountGroupsSaving}
 					/>
 				</>
 			) : null}
-
-			{notice ? (
-				<StatusToast notice={notice} onClose={() => setNotice(null)} />
+			{activePage === "pricing" ? (
+				<ModelPricingCard
+					error={pricingError}
+					loading={pricingLoading}
+					onSave={(prices) => void savePricing(prices)}
+					onSync={() => void syncPricing()}
+					prices={modelPrices}
+					saving={pricingSaving}
+					syncing={pricingSyncing}
+					usedModels={usedModels}
+				/>
 			) : null}
+
 			{keyEditor ? (
-				<KeyEditorDialog
+				<ApiKeyEditor
+					accounts={data.codexAccounts}
 					entry={keyEditor}
+					groups={data.accountGroups}
 					loading={keySaving}
 					onCancel={() => setKeyEditor(null)}
-					onSave={(value) => void saveApiKey(value)}
+					onSave={(value, target) => void saveApiKey(value, target)}
+					route={keyEditor === "new" ? null : consumerRoute(data.routes, "api_key", keyEditor.id)}
 				/>
 			) : null}
-			{authProxyEditor ? (
-				<AuthProxyEditorDialog
-					entry={authProxyEditor}
-					loading={authProxySaving}
-					onCancel={() => setAuthProxyEditor(null)}
-					onSave={(value) => void saveAuthProxyAccount(value)}
+			{proxyEditor ? (
+				<ProxyEditor
+					accounts={data.codexAccounts}
+					entry={proxyEditor}
+					groups={data.accountGroups}
+					loading={proxySaving}
+					onCancel={() => setProxyEditor(null)}
+					onSave={(value, target) => void saveProxy(value, target)}
+					route={proxyEditor === "new" ? null : consumerRoute(data.routes, "auth_proxy", proxyEditor.id)}
 				/>
 			) : null}
-			{authProxyOAuthAccount ? (
-				<AuthProxyLoginDialog
-					account={authProxyOAuthAccount}
-					authorization={authProxyOAuthAuthorization}
-					error={authProxyOAuthError}
-					loading={authProxyOAuthLoading}
-					onCancel={closeAuthProxyDeviceLogin}
-					onCopy={(value) => void copyText(value, "登录码")}
-					onRetry={() => void beginAuthProxyDeviceLogin(authProxyOAuthAccount)}
-				/>
-			) : null}
-			{pendingDelete ? (
-				<ConfirmDialog
-					loading={keyDeleting}
-					onCancel={() => setPendingDelete(null)}
-					onConfirm={() => void deleteApiKey()}
-					title={`删除“${pendingDelete.name}”？`}
-				/>
-			) : null}
-			{pendingAuthProxyDelete ? (
-				<ConfirmDialog
-					loading={authProxyDeleting}
-					onCancel={() => setPendingAuthProxyDelete(null)}
-					onConfirm={() => void deleteAuthProxyAccount()}
-					title={`删除“${pendingAuthProxyDelete.name}”？`}
-				/>
-			) : null}
+			{notice ? <StatusToast notice={notice} onClose={() => setNotice(null)} /> : null}
 		</ManagementShell>
 	);
 }
 
-function OverviewPage({
-	activeApiKeys,
-	activeProxyAccounts,
+function Overview({
+	data,
 	now,
 	onNavigate,
 	usage,
 }: {
-	activeApiKeys: number;
-	activeProxyAccounts: number;
+	data: AdminState;
 	now: number;
 	onNavigate: (page: ManagementPage) => void;
 	usage: UsageDashboard | null;
 }) {
+	const activeApiKeys = data.apiKeys.filter((entry) => entry.enabled).length;
+	const activeProxyAccounts = data.authProxyAccounts.filter((entry) => entry.enabled).length;
 	const enabledDownstreams = activeApiKeys + activeProxyAccounts;
 	return (
 		<div className="overview-cycle-layout">
@@ -1047,7 +765,7 @@ function OverviewPage({
 				/>
 				<OverviewMetricCard detail="Codex 周额度周期累计" label="周期内请求数" onClick={() => onNavigate("usage")} value={usage ? formatCount(usage.totals.requests) : "—"} />
 				<OverviewMetricCard detail="包含输入、输出与缓存 Token" label="周期内 Token 用量" onClick={() => onNavigate("usage")} value={usage ? formatTokens(usage.totals.totalTokens) : "—"} />
-				<OverviewMetricCard detail={usage?.unpricedModels.length ? `${usage.unpricedModels.length} 个模型尚未计价` : "按模型价格配置计算"} label="周期内成本" onClick={() => onNavigate("account")} value={usage ? formatCost(usage.totals.costUsd) : "—"} />
+				<OverviewMetricCard detail={usage?.unpricedModels.length ? `${usage.unpricedModels.length} 个模型尚未计价` : "按模型价格配置计算"} label="周期内成本" onClick={() => onNavigate("pricing")} value={usage ? formatCost(usage.totals.costUsd) : "—"} />
 			</aside>
 			<section className="overview-visuals-column" aria-label="当前周期活动与成本分布">
 				{usage ? (
@@ -1081,1318 +799,379 @@ function OverviewMetricCard({
 	);
 }
 
-function LoadingView() {
-	return (
-		<div className="auth-shell">
-			<div className="loading-card" role="status" aria-live="polite">
-				<ProductMark compact />
-				<span className="spinner" aria-hidden="true" />
-				<span>正在加载管理面板…</span>
-			</div>
-		</div>
-	);
-}
-
-function InvalidPathView() {
-	return (
-		<div className="auth-shell">
-			<main className="auth-card compact-card">
-				<ProductMark />
-				<p className="auth-eyebrow">CODEX ROUTER</p>
-				<h1>地址无效</h1>
-				<p className="auth-description">请检查管理页面地址后重试。</p>
-			</main>
-		</div>
-	);
-}
-
-interface LoginViewProps {
-	error: string | null;
-	loading: boolean;
-	onSubmit: (secret: string) => Promise<void>;
-}
-
-function LoginView({ error, loading, onSubmit }: LoginViewProps) {
-	const [secret, setSecret] = useState("");
-	const [visible, setVisible] = useState(false);
-
-	function submit(event: FormEvent<HTMLFormElement>): void {
-		event.preventDefault();
-		if (!secret || loading) return;
-		void onSubmit(secret);
-	}
-
-	return (
-		<div className="auth-shell">
-			<aside className="auth-aside" aria-label="Codex Router">
-				<div className="auth-aside-title" aria-hidden="true">
-					<span>Codex</span>
-					<span>Router</span>
-				</div>
-			</aside>
-
-			<div className="auth-main">
-				<main className="auth-card">
-					<div className="auth-mobile-brand"><ProductMark compact /><strong>Codex Router</strong></div>
-					<p className="auth-eyebrow">管理控制台</p>
-					<h1>欢迎回来</h1>
-					<p className="auth-description">输入管理密码以继续访问运行主页。</p>
-
-					{error ? (
-						<div className="inline-alert error-alert" role="alert">
-							<Icon name="alert" />
-							<span>{error}</span>
-						</div>
-					) : null}
-
-					<form className="auth-form" onSubmit={submit}>
-						<label htmlFor="admin-secret">管理密码</label>
-						<div className="input-with-action">
-							<input
-								id="admin-secret"
-								autoComplete="current-password"
-								autoFocus
-								disabled={loading}
-								maxLength={512}
-								onChange={(event) => setSecret(event.target.value)}
-								placeholder="输入管理密码"
-								required
-								type={visible ? "text" : "password"}
-								value={secret}
-							/>
-							<button
-								className="input-action"
-								onClick={() => setVisible((value) => !value)}
-								type="button"
-								aria-label={visible ? "隐藏管理密码" : "显示管理密码"}
-							>
-								<Icon name={visible ? "eye-off" : "eye"} />
-							</button>
-						</div>
-						<button className="button button-primary auth-submit" disabled={loading}>
-							{loading ? <span className="spinner" aria-hidden="true" /> : null}
-							{loading ? "登录中…" : "进入管理面板"}
-						</button>
-					</form>
-					<p className="auth-footnote">管理凭据仅用于当前服务会话</p>
-				</main>
-			</div>
-		</div>
-	);
-}
-
-interface AccountCardProps {
-	oauth: OAuthStatus | null;
-	oauthRemoving: boolean;
-	subscription: SubscriptionInfo | SubscriptionMetadata | null;
-	loading: boolean;
-	error: string | null;
-	now: number;
-	deviceAuthorization: DeviceAuthorization | null;
-	deviceLoading: boolean;
-	deviceError: string | null;
-	onCopy: (value: string, label: string) => void;
-	onRefresh: () => void;
-	onRemove: () => void;
-	onRetry: () => void;
-}
-
-function AccountCard({
-	oauth,
-	oauthRemoving,
-	subscription,
-	loading,
-	error,
-	now,
-	deviceAuthorization,
-	deviceLoading,
-	deviceError,
-	onCopy,
-	onRefresh,
-	onRemove,
-	onRetry,
-}: AccountCardProps) {
-	const info = isSubscriptionInfo(subscription) ? subscription : null;
-
-	return (
-		<section
-			className={`card account-card ${oauth ? "account-card-connected" : "account-card-disconnected"}`}
-			aria-labelledby="account-title"
-		>
-			<div className="account-summary">
-				<CardHeader
-					id="account-title"
-					action={
-						oauth ? (
-							<div className="account-header-actions">
-								<button
-									className="button button-secondary account-header-button"
-									disabled={loading}
-									onClick={onRefresh}
-									type="button"
-								>
-									<Icon name="refresh" spinning={loading} />
-									{loading ? "刷新中…" : "刷新"}
-								</button>
-								<button
-									className="button button-danger-quiet account-header-button"
-									disabled={oauthRemoving}
-									onClick={onRemove}
-									type="button"
-								>
-									{oauthRemoving ? (
-										<span className="spinner" aria-hidden="true" />
-									) : (
-										<Icon name="logout" />
-									)}
-									{oauthRemoving ? "退出中…" : "退出登录"}
-								</button>
-							</div>
-						) : deviceAuthorization ? (
-							<div className="account-header-actions account-device-header-actions">
-								<span className="account-device-code">
-									<span>设备码</span>
-									<code>{deviceAuthorization.userCode}</code>
-								</span>
-								<button
-									className="button button-secondary account-header-button"
-									onClick={() => onCopy(deviceAuthorization.userCode, "设备码")}
-									type="button"
-								>
-									<Icon name="copy" />
-									复制
-								</button>
-								<a
-									className="button button-secondary account-header-button"
-									href={deviceAuthorization.verificationUri}
-									rel="noopener noreferrer"
-									target="_blank"
-								>
-									<Icon name="external" />
-									前往网页
-								</a>
-							</div>
-						) : deviceError ? (
-							<button
-								className="button button-secondary account-header-button"
-								onClick={onRetry}
-								type="button"
-							>
-								<Icon name="refresh" />
-								重新获取设备码
-							</button>
-						) : (
-							<span className="account-device-loading" role="status">
-								<span className="spinner" aria-hidden="true" />
-								{deviceLoading ? "正在获取设备码…" : "正在准备设备码…"}
-							</span>
-						)
-					}
-					title="Codex 账户"
-				/>
-
-				{!oauth && deviceAuthorization ? (
-					<small className="device-code-expiry">
-						设备码将在 {Math.max(1, Math.floor(deviceAuthorization.expiresIn / 60))} 分钟后失效
-					</small>
-				) : null}
-				{!oauth && deviceError ? (
-					<div className="inline-alert error-alert" role="alert">
-						<Icon name="alert" />
-						<span>{deviceError}</span>
-					</div>
-				) : null}
-			</div>
-
-			{oauth ? (
-				<div className="account-quota-section" aria-label="账户配额">
-					{loading && !info ? (
-						<div className="center-state account-quota-loading" role="status">
-							<span className="spinner" aria-hidden="true" />
-							<span>正在读取配额时间轴…</span>
-						</div>
-					) : null}
-					{error ? (
-						<div className="inline-alert error-alert account-quota-alert" role="alert">
-							<Icon name="alert" />
-							<span>{error}</span>
-						</div>
-					) : null}
-					{info && info.windows.length > 0 ? (
-						<QuotaTimeline
-							className={loading ? "account-quota-timeline is-refreshing" : "account-quota-timeline"}
-							now={now}
-							planType={subscription?.planType}
-							sampledAt={info.fetchedAt}
-							windows={info.windows}
-						/>
-					) : !loading && !error ? (
-						<p className="muted-message account-quota-empty">暂无额度数据</p>
-					) : null}
-				</div>
-			) : null}
-		</section>
-	);
-}
-
-interface UsageCardProps {
-	accounts: AuthProxyAccount[];
-	apiKeys: ClientApiKey[];
-	usage: UsageDashboard | null;
-	identity: UsageIdentityFilter | null;
-	range: UsageRange;
-	loading: boolean;
-	now: number;
-	error: string | null;
-	onIdentityChange: (identity: UsageIdentityFilter | null) => void;
-	onRangeChange: (range: UsageRange) => void;
-	onRefresh: () => void;
-}
-
-function UsageCard({
+function UsagePanel({
 	accounts,
 	apiKeys,
-	usage,
+	codexAccounts,
+	error,
+	groups,
 	identity,
-	range,
 	loading,
 	now,
-	error,
 	onIdentityChange,
 	onRangeChange,
 	onRefresh,
-}: UsageCardProps) {
-	const totals = usage?.totals ?? null;
-
+	range,
+	usage,
+}: {
+	accounts: AuthProxyAccount[];
+	apiKeys: ClientApiKey[];
+	codexAccounts: CodexAccount[];
+	error: string | null;
+	groups: AccountGroup[];
+	identity: UsageIdentityFilter | null;
+	loading: boolean;
+	now: number;
+	onIdentityChange: (identity: UsageIdentityFilter | null) => void;
+	onRangeChange: (range: UsageRange) => void;
+	onRefresh: () => void;
+	range: UsageRange;
+	usage: UsageDashboard | null;
+}) {
+	const totals = usage?.totals;
 	return (
-		<section className="card usage-card" aria-labelledby="usage-card-title">
-			<CardHeader
-				id="usage-card-title"
-				action={
-					<div className="usage-card-actions">
-						<label className="usage-identity-control">
-							<span>调用身份</span>
-							<select
-								aria-label="按 API Key 或下游账户筛选 Token 用量"
-								disabled={loading}
-								onChange={(event) => onIdentityChange(parseUsageIdentityValue(event.target.value))}
-								value={usageIdentityValue(identity)}
-							>
-								<option value="">所有</option>
-								{apiKeys.length > 0 ? (
-									<optgroup label="API Keys">
-										{apiKeys.map((entry) => (
-											<option key={entry.id} value={usageIdentityValue({ identityType: "api_key", identityId: entry.id })}>
-												{entry.name}
-											</option>
-										))}
-									</optgroup>
-								) : null}
-								{accounts.length > 0 ? (
-									<optgroup label="下游 account id">
-										{accounts.map((entry) => (
-											<option key={entry.id} value={usageIdentityValue({ identityType: "auth_proxy", identityId: entry.id })}>
-												{entry.name}
-											</option>
-										))}
-									</optgroup>
-								) : null}
-							</select>
-						</label>
-						<label className="usage-range-control">
-							<span>统计范围</span>
-							<select
-								aria-label="Token 用量统计范围"
-								disabled={loading}
-								onChange={(event) => onRangeChange(event.target.value as UsageRange)}
-								value={range}
-							>
-								<option value="cycle">当前周期</option>
-								<option value="24h">最近 24 小时</option>
-								<option value="7d">最近 7 天</option>
-								<option value="30d">最近 30 天</option>
-								<option value="all">全部</option>
-							</select>
-						</label>
-						<button
-							aria-label="刷新 Token 用量"
-							className="icon-button"
-							disabled={loading}
-							onClick={onRefresh}
-							title="刷新 Token 用量"
-							type="button"
-						>
-							<Icon name="refresh" spinning={loading} />
-						</button>
-					</div>
-				}
-				title="时间范围分析"
-			/>
-
-			{error ? (
-				<div className="inline-alert error-alert usage-alert" role="alert">
-					<Icon name="alert" />
-					<span>{error}</span>
+		<section className="card usage-card" aria-label="用量详情">
+			<div className="card-header unified-section-header">
+				<div className="usage-card-actions">
+					<label className="usage-identity-control"><span>筛选对象</span><select disabled={loading} onChange={(event) => onIdentityChange(parseUsageIdentityValue(event.target.value))} value={usageIdentityValue(identity)}><option value="">全部</option>{apiKeys.length ? <optgroup label="API Keys">{apiKeys.map((entry) => <option key={entry.id} value={usageIdentityValue({ identityType: "api_key", identityId: entry.id })}>{entry.name}</option>)}</optgroup> : null}{accounts.length ? <optgroup label="下游账户">{accounts.map((entry) => <option key={entry.id} value={usageIdentityValue({ identityType: "auth_proxy", identityId: entry.id })}>{entry.name}</option>)}</optgroup> : null}{codexAccounts.length ? <optgroup label="Codex 账户">{codexAccounts.map((entry) => <option key={entry.id} value={usageIdentityValue({ identityType: "codex_account", identityId: entry.id })}>{entry.name}</option>)}</optgroup> : null}{groups.length ? <optgroup label="账户组">{groups.map((entry) => <option key={entry.id} value={usageIdentityValue({ identityType: "account_group", identityId: entry.id })}>{entry.name}</option>)}</optgroup> : null}</select></label>
+					<label className="usage-range-control"><span>统计范围</span><select disabled={loading} onChange={(event) => onRangeChange(event.target.value as UsageRange)} value={range}><option value="cycle">当前周期</option><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="all">全部</option></select></label>
+					<button aria-label="刷新用量" className="icon-button" disabled={loading} onClick={onRefresh} type="button"><RefreshIcon spinning={loading} /></button>
 				</div>
-			) : null}
-			{loading && !usage ? (
-				<div className="center-state usage-loading" role="status">
-					<span className="spinner" aria-hidden="true" />
-					<span>正在读取用量…</span>
-				</div>
-			) : null}
+			</div>
+			{error ? <div className="inline-alert error-alert usage-alert">{error}</div> : null}
+			{loading && !usage ? <div className="center-state usage-loading"><span className="spinner" />正在读取用量…</div> : null}
 			{usage && totals ? (
 				<div className={loading ? "usage-content is-refreshing" : "usage-content"}>
 					<div className="usage-summary-grid">
 						<UsageMetric label="请求数" value={formatCount(totals.requests)} tone="blue" />
-						<UsageMetric
-							label="输入 Token"
-							value={formatTokens(totals.inputTokens)}
-							detail={`缓存命中 ${formatTokens(totals.cachedInputTokens)} · 缓存写入 ${formatTokens(totals.cacheCreationInputTokens)}`}
-							tone="teal"
-						/>
+						<UsageMetric label="输入 Token" value={formatTokens(totals.inputTokens)} detail={`缓存命中 ${formatTokens(totals.cachedInputTokens)}`} tone="teal" />
 						<UsageMetric label="总 Token" value={formatTokens(totals.totalTokens)} tone="violet" />
-						<UsageMetric
-							label="总成本"
-							value={formatCost(totals.costUsd)}
-							detail={usage.unpricedModels.length > 0 ? `${usage.unpricedModels.length} 个模型尚未计价` : "已按模型价格计算"}
-							tone="orange"
-						/>
+						<UsageMetric label="总成本" value={formatCost(totals.costUsd)} detail={usage.unpricedModels.length ? `${usage.unpricedModels.length} 个模型未计价` : undefined} tone="orange" />
 					</div>
-
-					<div className="usage-range-caption">
-						<strong>{formatUsageRange(usage.range)}</strong>
-						<span>{formatDate(usage.startAt)} 至 {formatDate(usage.endAt)} · 未来时间保留为空</span>
-					</div>
+					<div className="usage-range-caption"><strong>{rangeLabel(usage.range)}</strong><span>{formatDate(usage.startAt)} — {formatDate(usage.endAt)}</span></div>
 					<ActivityHeatmaps now={now} usage={usage} />
 					<UsageLineCharts now={now} usage={usage} />
 					<UsageBreakdownDonuts usage={usage} />
-
-					<div className="usage-events">
-						<div className="usage-section-heading">
-							<div>
-								<strong>最近请求</strong>
-								<span>最多显示 50 条已落库事件</span>
-							</div>
-						</div>
-						<div className="table-wrap usage-events-table-wrap">
-							<table className="usage-events-table">
-								<thead>
-									<tr>
-										<th scope="col">时间</th>
-										<th scope="col">身份</th>
-										<th scope="col">模型</th>
-										<th scope="col">传输</th>
-										<th scope="col">请求路径</th>
-										<th scope="col">总量</th>
-										<th scope="col">成本</th>
-									</tr>
-								</thead>
-								<tbody>
-									{usage.recentEvents.map((event) => (
-										<tr key={event.id}>
-											<td data-label="时间">
-												<time dateTime={isoDate(event.recordedAt)}>{formatCompactDate(event.recordedAt)}</time>
-											</td>
-											<td data-label="身份">
-												<strong>{event.identityName}</strong>
-												<small>{usageIdentityLabel(event.identityType)}</small>
-											</td>
-											<td data-label="模型"><code>{event.model}</code></td>
-											<td data-label="传输">
-												<span className={`usage-transport usage-transport-${event.transport}`}>
-													{event.transport === "websocket" ? "WS" : "HTTP"}
-												</span>
-											</td>
-											<td data-label="请求路径">
-												<code className="usage-endpoint" title={event.endpoint}>
-													{event.endpoint}
-												</code>
-											</td>
-											<td data-label="总量">
-												<strong>{formatTokens(event.totalTokens)}</strong>
-												<small className={`usage-status-label usage-status-${event.status}`}>
-													{usageStatusLabel(event.status)}
-												</small>
-											</td>
-											<td data-label="成本"><strong>{formatCost(event.costUsd)}</strong></td>
-										</tr>
-									))}
-								</tbody>
-							</table>
-						</div>
-					</div>
+					<div className="usage-events"><div className="usage-section-heading"><strong>最近请求</strong></div><div className="table-wrap"><table className="usage-events-table"><thead><tr><th>时间</th><th>调用身份</th><th>路由目标</th><th>模型</th><th>Token</th><th>成本</th></tr></thead><tbody>{usage.recentEvents.map((event) => <tr key={event.id}><td><time dateTime={new Date(event.recordedAt).toISOString()}>{formatCompactDate(event.recordedAt)}</time></td><td><strong>{event.identityName}</strong><small>{usageIdentityLabel(event.identityType)}</small></td><td><strong>{event.accountGroupName || event.codexAccountName || "—"}</strong>{event.accountGroupName || event.codexAccountName ? <small>{event.accountGroupName ? event.codexAccountName : "Codex 账户"}</small> : null}</td><td><code>{event.model}</code></td><td><strong>{formatTokens(event.totalTokens)}</strong><small>{statusLabel(event.status)}</small></td><td><strong>{formatCost(event.costUsd)}</strong></td></tr>)}</tbody></table></div></div>
 				</div>
 			) : null}
 		</section>
 	);
 }
 
-function UsageMetric({
-	label,
-	value,
-	detail,
-	tone,
+function UsageMetric({ label, value, detail, tone }: { label: string; value: string; detail?: string | undefined; tone: "blue" | "teal" | "violet" | "orange" }) {
+	return <div className={`usage-metric usage-metric-${tone}`}><span>{label}</span><strong>{value}</strong>{detail ? <small>{detail}</small> : null}</div>;
+}
+
+type IdentityEntry = ClientApiKey | AuthProxyAccount;
+
+function IdentityTable({
+	busy,
+	entries,
+	kind,
+	onDelete,
+	onEdit,
+	onToggle,
+	routes,
+	targets,
 }: {
-	label: string;
-	value: string;
-	detail?: string;
-	tone: "blue" | "violet" | "teal" | "orange";
+	busy: ReadonlySet<string>;
+	entries: IdentityEntry[];
+	kind: RouteConsumerType;
+	onDelete: (entry: IdentityEntry) => void;
+	onEdit: (entry: IdentityEntry) => void;
+	onToggle: (entry: IdentityEntry) => void;
+	routes: RouteAssignment[];
+	targets: { accounts: CodexAccount[]; groups: AccountGroup[] };
 }) {
-	return (
-		<div className={`usage-metric usage-metric-${tone}`}>
-			<span>{label}</span>
-			<strong>{value}</strong>
-			<small>{detail ?? "所选范围累计"}</small>
-		</div>
-	);
-}
+	const isKey = kind === "api_key";
+	const [visibleKeys, setVisibleKeys] = useState<ReadonlySet<string>>(new Set());
 
-interface AuthProxyCardProps {
-	accounts: AuthProxyAccount[];
-	loading: boolean;
-	onAdd: () => void;
-	onDelete: (entry: AuthProxyAccount) => void;
-	onEdit: (entry: AuthProxyAccount) => void;
-	onOAuth: (entry: AuthProxyAccount) => void;
-	onRefresh: () => void;
-	onToggle: (entry: AuthProxyAccount) => void;
-	oauthRemoving: string | null;
-	togglingAccounts: ReadonlySet<string>;
-}
-
-function AuthProxyCard({
-	accounts,
-	loading,
-	onAdd,
-	onDelete,
-	onEdit,
-	onOAuth,
-	onRefresh,
-	onToggle,
-	oauthRemoving,
-	togglingAccounts,
-}: AuthProxyCardProps) {
-	const busy = loading || togglingAccounts.size > 0 || oauthRemoving !== null;
-	return (
-		<section className="card auth-proxy-card" aria-labelledby="auth-proxy-title">
-			<CardHeader
-				id="auth-proxy-title"
-				action={
-					<div className="card-actions">
-						<button
-							aria-label="刷新代理账户"
-							className="icon-button"
-							disabled={busy}
-							onClick={onRefresh}
-							title="刷新代理账户"
-							type="button"
-						>
-							<Icon name="refresh" spinning={loading} />
-						</button>
-						<button
-							className="button button-primary"
-							disabled={busy}
-							onClick={onAdd}
-							type="button"
-						>
-							<Icon name="plus" />
-							添加
-						</button>
-					</div>
-				}
-				title={`代理账户${accounts.length > 0 ? ` · ${accounts.length}` : ""}`}
-			/>
-
-			{accounts.length === 0 ? (
-				<div className="empty-state">
-					<strong>暂无代理账户</strong>
-					<button
-						className="button button-secondary"
-						disabled={busy}
-						onClick={onAdd}
-						type="button"
-					>
-						<Icon name="plus" />
-						添加
-					</button>
-				</div>
-			) : (
-				<div className="table-wrap">
-					<table className="proxy-table">
-						<thead>
-							<tr>
-								<th scope="col">名称</th>
-								<th scope="col">account_id</th>
-								<th scope="col">状态</th>
-								<th scope="col" className="actions-column">操作</th>
-							</tr>
-						</thead>
-						<tbody>
-							{accounts.map((entry) => {
-								const toggling = togglingAccounts.has(entry.id);
-								const removingOAuth = oauthRemoving === entry.id;
-								return (
-									<tr key={entry.id}>
-										<td data-label="名称">
-											<strong title={entry.name}>{entry.name}</strong>
-										</td>
-										<td data-label="account_id">
-											<code className="proxy-account-id" title={entry.accountId}>
-												{entry.accountId}
-											</code>
-										</td>
-										<td data-label="状态">
-											<div className="proxy-status-actions">
-												<button
-													aria-label={`${entry.oauth ? "退出" : "登录"} ${entry.name} 的独立账户`}
-													className={`button button-secondary proxy-login-button${entry.oauth ? " connected" : ""}`}
-													disabled={busy}
-													onClick={() => onOAuth(entry)}
-													title={proxyOAuthTitle(entry, removingOAuth)}
-													type="button"
-												>
-													{removingOAuth ? (
-														<span className="spinner" aria-hidden="true" />
-													) : (
-														<Icon name={entry.oauth ? "logout" : "login"} />
-													)}
-													{removingOAuth ? "退出中…" : entry.oauth ? "退出" : "登录"}
-												</button>
-												<label
-													className="key-status-switch"
-													title={toggling ? "正在更新状态…" : entry.enabled ? "停用" : "启用"}
-												>
-													<input
-														aria-busy={toggling || undefined}
-														aria-label={`${entry.enabled ? "停用" : "启用"} ${entry.name}`}
-														checked={entry.enabled}
-														className="switch-control"
-														disabled={busy}
-														onChange={() => onToggle(entry)}
-														type="checkbox"
-													/>
-												</label>
-											</div>
-										</td>
-										<td data-label="操作">
-											<div className="row-actions">
-												<button
-													aria-label={`编辑 ${entry.name}`}
-													className="icon-button"
-													disabled={busy}
-													onClick={() => onEdit(entry)}
-													title="编辑"
-													type="button"
-												>
-													<Icon name="edit" />
-												</button>
-												<button
-													aria-label={`删除 ${entry.name}`}
-													className="icon-button danger-icon-button"
-													disabled={busy}
-													onClick={() => onDelete(entry)}
-													title="删除"
-													type="button"
-												>
-													<Icon name="trash" />
-												</button>
-											</div>
-										</td>
-									</tr>
-								);
-							})}
-						</tbody>
-					</table>
-				</div>
-			)}
-		</section>
-	);
-}
-
-interface ApiKeysCardProps {
-	apiKeys: ClientApiKey[];
-	loading: boolean;
-	onAdd: () => void;
-	onCopy: (value: string) => void;
-	onDelete: (entry: ClientApiKey) => void;
-	onEdit: (entry: ClientApiKey) => void;
-	onRefresh: () => void;
-	onToggle: (entry: ClientApiKey) => void;
-	togglingKeys: ReadonlySet<string>;
-}
-
-function ApiKeysCard({
-	apiKeys,
-	loading,
-	onAdd,
-	onCopy,
-	onDelete,
-	onEdit,
-	onRefresh,
-	onToggle,
-	togglingKeys,
-}: ApiKeysCardProps) {
-	const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() => new Set());
-	const busy = loading || togglingKeys.size > 0;
-
-	function toggleVisible(id: string): void {
+	function toggleKeyVisibility(id: string): void {
 		setVisibleKeys((current) => {
 			const next = new Set(current);
-			if (next.has(id)) next.delete(id);
-			else next.add(id);
+			if (next.has(id)) next.delete(id); else next.add(id);
 			return next;
 		});
 	}
 
-	return (
-		<section className="card keys-card" aria-labelledby="keys-title">
-			<CardHeader
-				id="keys-title"
-				action={
-					<div className="card-actions">
-						<button
-							className="icon-button"
-							disabled={busy}
-							onClick={onRefresh}
-							title="刷新 API Key"
-							type="button"
-							aria-label="刷新 API Key"
-						>
-							<Icon name="refresh" spinning={loading} />
-						</button>
-						<button
-							className="button button-primary"
-							disabled={busy}
-							onClick={onAdd}
-							type="button"
-						>
-							<Icon name="plus" />
-							添加
-						</button>
-					</div>
-				}
-				title={`API Keys${apiKeys.length > 0 ? ` · ${apiKeys.length}` : ""}`}
-			/>
+	if (entries.length === 0) {
+		return (
+			<section className="card empty-state identity-empty-state" aria-label={isKey ? "API Keys" : "下游账户"}>
+				<strong>{isKey ? "暂无 API Key" : "暂无下游账户"}</strong>
+			</section>
+		);
+	}
 
-			{apiKeys.length === 0 ? (
-				<div className="empty-state">
-					<strong>暂无 API Key</strong>
-					<button
-						className="button button-secondary"
-						disabled={busy}
-						onClick={onAdd}
-						type="button"
-					>
-						<Icon name="plus" />
-						添加
-					</button>
-				</div>
-			) : (
-				<div className="table-wrap">
-					<table>
-						<thead>
-							<tr>
-								<th scope="col">名称</th>
-								<th scope="col">Key</th>
-								<th scope="col">状态</th>
-								<th scope="col" className="actions-column">
-									操作
-								</th>
-							</tr>
-						</thead>
-						<tbody>
-							{apiKeys.map((entry) => {
-								const visible = visibleKeys.has(entry.id);
-								const toggling = togglingKeys.has(entry.id);
-								return (
-									<tr key={entry.id}>
-										<td data-label="名称">
-											<strong title={entry.name}>{entry.name}</strong>
-										</td>
-										<td data-label="Key">
-											<div className="key-value-cell">
-												<code>{visible ? entry.key : maskApiKey(entry.key)}</code>
-												<button
-													className="icon-button small-icon-button"
-													onClick={() => toggleVisible(entry.id)}
-													title={visible ? "隐藏 Key" : "显示 Key"}
-													type="button"
-													aria-label={visible ? `隐藏 ${entry.name}` : `显示 ${entry.name}`}
-												>
-													<Icon name={visible ? "eye-off" : "eye"} />
-												</button>
-												<button
-													className="icon-button small-icon-button"
-													onClick={() => onCopy(entry.key)}
-													title="复制 Key"
-													type="button"
-													aria-label={`复制 ${entry.name}`}
-												>
-													<Icon name="copy" />
-												</button>
-											</div>
-										</td>
-										<td data-label="状态">
-											<label
-												className="key-status-switch"
-												title={toggling ? "正在更新状态…" : entry.enabled ? "停用" : "启用"}
-											>
-												<input
-													aria-busy={toggling || undefined}
-													aria-label={`${entry.enabled ? "停用" : "启用"} ${entry.name}`}
-													checked={entry.enabled}
-													className="switch-control"
-													disabled={busy}
-													onChange={() => onToggle(entry)}
-													type="checkbox"
-												/>
-											</label>
-										</td>
-										<td data-label="操作">
-											<div className="row-actions">
-												<button
-													className="icon-button"
-													disabled={busy}
-													onClick={() => onEdit(entry)}
-													title="编辑"
-													type="button"
-													aria-label={`编辑 ${entry.name}`}
-												>
-													<Icon name="edit" />
-												</button>
-												<button
-													className="icon-button danger-icon-button"
-													disabled={busy}
-													onClick={() => onDelete(entry)}
-													title="删除"
-													type="button"
-													aria-label={`删除 ${entry.name}`}
-												>
-													<Icon name="trash" />
-												</button>
-											</div>
-										</td>
-									</tr>
-								);
-							})}
-						</tbody>
-					</table>
-				</div>
-			)}
+	return (
+		<section className="table-wrap identity-table-wrap" aria-label={isKey ? "API Keys" : "下游账户"}>
+			<table className="unified-identity-table"><thead><tr><th>名称</th><th>{isKey ? "Key" : "account_id"}</th><th>账户 / 账户组</th><th>状态</th><th>操作</th></tr></thead><tbody>{entries.map((entry) => {
+					const route = routes.find((item) => item.consumerType === kind && item.consumerId === entry.id);
+					const key = isKey ? (entry as ClientApiKey).key : null;
+					const visible = key !== null && visibleKeys.has(entry.id);
+					return (
+						<tr className={entry.enabled ? "" : "row-disabled"} key={entry.id}>
+							<td><strong>{entry.name}</strong></td>
+							<td>
+								{key !== null ? (
+									<div className="key-value-cell">
+										<code>{visible ? key : maskApiKey(key)}</code>
+										<button
+											aria-label={visible ? `隐藏 ${entry.name}` : `显示 ${entry.name}`}
+											className="icon-button small-icon-button"
+											onClick={() => toggleKeyVisibility(entry.id)}
+											title={visible ? "隐藏 Key" : "显示 Key"}
+											type="button"
+										>
+											<EyeIcon off={visible} />
+										</button>
+										<button
+											aria-label={`复制 ${entry.name}`}
+											className="icon-button small-icon-button"
+											onClick={() => void navigator.clipboard.writeText(key)}
+											title="复制 Key"
+											type="button"
+										>
+											<CopyIcon />
+										</button>
+									</div>
+								) : <code title={(entry as AuthProxyAccount).accountId}>{(entry as AuthProxyAccount).accountId}</code>}
+							</td>
+							<td><span className={`route-state-badge ${route ? "assigned" : "unassigned"}`}>{route ? routeTargetName(route, targets.accounts, targets.groups) : "未分配"}</span></td>
+							<td>
+								<label className="key-status-switch" title={entry.enabled ? "停用" : "启用"}>
+									<input
+										aria-label={`${entry.enabled ? "停用" : "启用"} ${entry.name}`}
+										checked={entry.enabled}
+										className="switch-control"
+										disabled={busy.has(entry.id)}
+										onChange={() => onToggle(entry)}
+										type="checkbox"
+									/>
+								</label>
+							</td>
+							<td><div className="table-actions"><button className="button button-secondary button-compact" disabled={busy.has(entry.id)} onClick={() => onEdit(entry)} type="button">编辑</button><button className="button button-danger button-compact" disabled={busy.has(entry.id)} onClick={() => onDelete(entry)} type="button">删除</button></div></td>
+						</tr>
+					);
+				})}</tbody></table>
 		</section>
 	);
 }
 
-interface AuthProxyEditorDialogProps {
-	entry: Exclude<EditableAuthProxyAccount, null>;
-	loading: boolean;
-	onCancel: () => void;
-	onSave: (value: AuthProxyAccountInput) => void;
-}
-
-function AuthProxyEditorDialog({
+function ApiKeyEditor({
+	accounts,
 	entry,
+	groups,
 	loading,
 	onCancel,
 	onSave,
-}: AuthProxyEditorDialogProps) {
-	const existing = entry === "new" ? null : entry;
-	const [name, setName] = useState(existing?.name ?? "");
-	const [accountId, setAccountId] = useState(existing?.accountId ?? "");
-	const [enabled, setEnabled] = useState(existing?.enabled ?? true);
-
-	useEffect(() => {
-		function onKeyDown(event: KeyboardEvent): void {
-			if (event.key === "Escape" && !loading) onCancel();
-		}
-		window.addEventListener("keydown", onKeyDown);
-		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [loading, onCancel]);
-
-	function submit(event: FormEvent<HTMLFormElement>): void {
-		event.preventDefault();
-		if (loading || !validAccountId(accountId.trim())) return;
-		onSave({ name, accountId, enabled });
-	}
-
-	return (
-		<div
-			className="modal-backdrop"
-			onMouseDown={(event) => {
-				if (event.target === event.currentTarget && !loading) onCancel();
-			}}
-		>
-			<section
-				aria-labelledby="auth-proxy-editor-title"
-				aria-modal="true"
-				className="modal"
-				role="dialog"
-			>
-				<div className="modal-header">
-					<h2 id="auth-proxy-editor-title">
-						{existing ? "编辑代理账户" : "添加代理账户"}
-					</h2>
-					<button
-						aria-label="关闭"
-						className="icon-button"
-						disabled={loading}
-						onClick={onCancel}
-						type="button"
-					>
-						<Icon name="close" />
-					</button>
-				</div>
-				<form className="editor-form" onSubmit={submit}>
-					<label htmlFor="auth-proxy-name">
-						<span>名称</span>
-						<input
-							id="auth-proxy-name"
-							autoFocus
-							disabled={loading}
-							maxLength={100}
-							onChange={(event) => setName(event.target.value)}
-							placeholder="例如：my-account"
-							required
-							type="text"
-							value={name}
-						/>
-					</label>
-					<label htmlFor="auth-proxy-account-id">
-						<span>account_id</span>
-						<input
-							id="auth-proxy-account-id"
-							autoComplete="off"
-							disabled={loading}
-							maxLength={MAX_ACCOUNT_ID_LENGTH}
-							onChange={(event) => setAccountId(event.target.value)}
-							pattern="[!-~]{1,256}"
-							placeholder="例如：account-..."
-							required
-							spellCheck={false}
-							title="1–256 位可见 ASCII 字符"
-							type="text"
-							value={accountId}
-						/>
-					</label>
-					<div className="editor-tools editor-tools-end">
-						<label className="switch-row">
-							<strong>启用</strong>
-							<input
-								checked={enabled}
-								className="switch-control"
-								disabled={loading}
-								onChange={(event) => setEnabled(event.target.checked)}
-								type="checkbox"
-							/>
-						</label>
-					</div>
-					<div className="modal-actions">
-						<button
-							className="button button-secondary"
-							disabled={loading}
-							onClick={onCancel}
-							type="button"
-						>
-							取消
-						</button>
-						<button className="button button-primary" disabled={loading} type="submit">
-							{loading ? <span className="spinner" aria-hidden="true" /> : null}
-							{loading ? "保存中…" : "保存"}
-						</button>
-					</div>
-				</form>
-			</section>
-		</div>
-	);
-}
-
-interface AuthProxyLoginDialogProps {
-	account: AuthProxyAccount;
-	authorization: DeviceAuthorization | null;
-	error: string | null;
-	loading: boolean;
-	onCancel: () => void;
-	onCopy: (value: string) => void;
-	onRetry: () => void;
-}
-
-function AuthProxyLoginDialog({
-	account,
-	authorization,
-	error,
-	loading,
-	onCancel,
-	onCopy,
-	onRetry,
-}: AuthProxyLoginDialogProps) {
-	useEffect(() => {
-		function onKeyDown(event: KeyboardEvent): void {
-			if (event.key === "Escape" && !loading) onCancel();
-		}
-		window.addEventListener("keydown", onKeyDown);
-		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [loading, onCancel]);
-
-	return (
-		<div
-			className="modal-backdrop"
-			onMouseDown={(event) => {
-				if (event.target === event.currentTarget && !loading) onCancel();
-			}}
-		>
-			<section
-				aria-labelledby="auth-proxy-login-title"
-				aria-modal="true"
-				className="modal proxy-login-modal"
-				role="dialog"
-			>
-				<div className="modal-header">
-					<h2 id="auth-proxy-login-title">独立登录 · {account.name}</h2>
-					<button
-						aria-label="关闭"
-						className="icon-button"
-						disabled={loading}
-						onClick={onCancel}
-						type="button"
-					>
-						<Icon name="close" />
-					</button>
-				</div>
-				<p className="proxy-login-description">
-					登录成功后，此代理账户使用自己的 OAuth Token；未登录或 Token 已过期时自动使用主账户。
-				</p>
-				<div className="proxy-login-device">
-					{loading ? (
-						<div className="center-state" role="status">
-							<span className="spinner" aria-hidden="true" />
-							<span>正在获取登录码…</span>
-						</div>
-					) : null}
-					{authorization ? (
-						<>
-							<div className="device-code-inline">
-								<code>{authorization.userCode}</code>
-								<button
-									className="button button-secondary device-copy-button"
-									onClick={() => onCopy(authorization.userCode)}
-									type="button"
-								>
-									<Icon name="copy" />
-									复制
-								</button>
-							</div>
-							<small className="device-code-expiry">
-								设备码将在 {Math.max(1, Math.floor(authorization.expiresIn / 60))} 分钟后失效
-							</small>
-						</>
-					) : null}
-					{error ? (
-						<div className="inline-alert error-alert" role="alert">
-							<Icon name="alert" />
-							<span>{error}</span>
-						</div>
-					) : null}
-				</div>
-				<div className="modal-actions">
-					<button
-						className="button button-secondary"
-						disabled={loading}
-						onClick={onCancel}
-						type="button"
-					>
-						关闭
-					</button>
-					{authorization ? (
-						<a
-							className="button button-primary"
-							href={authorization.verificationUri}
-							rel="noopener noreferrer"
-							target="_blank"
-						>
-							打开登录页面
-							<Icon name="external" />
-						</a>
-					) : error ? (
-						<button className="button button-primary" onClick={onRetry} type="button">
-							<Icon name="refresh" />
-							重新获取设备码
-						</button>
-					) : (
-						<button className="button button-primary" disabled type="button">
-							<span className="spinner" aria-hidden="true" />
-							正在准备…
-						</button>
-					)}
-				</div>
-			</section>
-		</div>
-	);
-}
-
-interface KeyEditorDialogProps {
+	route,
+}: {
+	accounts: CodexAccount[];
 	entry: Exclude<EditableKey, null>;
+	groups: AccountGroup[];
 	loading: boolean;
 	onCancel: () => void;
-	onSave: (value: ClientApiKeyInput) => void;
-}
-
-function KeyEditorDialog({ entry, loading, onCancel, onSave }: KeyEditorDialogProps) {
-	const existing = entry === "new" ? null : entry;
-	const [name, setName] = useState(existing?.name ?? "");
-	const [key, setKey] = useState(() => existing?.key ?? generateApiKey());
-	const [enabled, setEnabled] = useState(existing?.enabled ?? true);
-	const [visible, setVisible] = useState(false);
-
-	useEffect(() => {
-		function onKeyDown(event: KeyboardEvent): void {
-			if (event.key === "Escape" && !loading) onCancel();
-		}
-		window.addEventListener("keydown", onKeyDown);
-		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [loading, onCancel]);
+	onSave: (value: ClientApiKeyInput, target: RouteTargetSelection) => void;
+	route: RouteAssignment | null;
+}) {
+	const initial = entry === "new" ? { name: "", key: generateApiKey(), enabled: true } : entry;
+	const [name, setName] = useState(initial.name);
+	const [key, setKey] = useState(initial.key);
+	const [enabled, setEnabled] = useState(initial.enabled);
+	const [visible, setVisible] = useState(entry === "new");
+	const [target, setTarget] = useState<RouteTargetSelection>(route);
 
 	function submit(event: FormEvent<HTMLFormElement>): void {
 		event.preventDefault();
-		if (loading) return;
-		onSave({ name, key, enabled });
+		if (validApiKey(key) && name.trim()) onSave({ name: name.trim(), key, enabled }, target);
 	}
 
-	return (
-		<div
-			className="modal-backdrop"
-			onMouseDown={(event) => {
-				if (event.target === event.currentTarget && !loading) onCancel();
-			}}
-		>
-			<section
-				aria-labelledby="key-editor-title"
-				aria-modal="true"
-				className="modal"
-				role="dialog"
-			>
-				<div className="modal-header">
-					<h2 id="key-editor-title">{existing ? "编辑 API Key" : "添加 API Key"}</h2>
-					<button
-						className="icon-button"
-						disabled={loading}
-						onClick={onCancel}
-						type="button"
-						aria-label="关闭"
-					>
-						<Icon name="close" />
-					</button>
-				</div>
-				<form className="editor-form" onSubmit={submit}>
-					<label htmlFor="key-name">
-						<span>名称</span>
-						<input
-							id="key-name"
-							autoFocus
-							disabled={loading}
-							maxLength={100}
-							onChange={(event) => setName(event.target.value)}
-							placeholder="例如：my-laptop"
-							required
-							type="text"
-							value={name}
-						/>
-					</label>
-					<label htmlFor="key-value">
-						<span>Key</span>
-						<div className="input-with-action key-input">
-							<input
-								id="key-value"
-								autoComplete="off"
-								disabled={loading}
-								maxLength={MAX_API_KEY_LENGTH}
-								minLength={MIN_API_KEY_LENGTH}
-								onChange={(event) => setKey(event.target.value)}
-								pattern={API_KEY_INPUT_PATTERN}
-								required
-								spellCheck={false}
-								title="总长度超过 10 位，并同时包含字母、数字和符号"
-								type={visible ? "text" : "password"}
-								value={key}
-							/>
-							<button
-								className="input-action"
-								onClick={() => setVisible((value) => !value)}
-								type="button"
-								aria-label={visible ? "隐藏 Key" : "显示 Key"}
-							>
-								<Icon name={visible ? "eye-off" : "eye"} />
-							</button>
-						</div>
-					</label>
-					<div className="editor-tools">
-						<button
-							className="button button-secondary"
-							disabled={loading}
-							onClick={() => setKey(generateApiKey())}
-							type="button"
-						>
-							重新生成
-						</button>
-						<label className="switch-row">
-							<strong>启用</strong>
-							<input
-								checked={enabled}
-								className="switch-control"
-								disabled={loading}
-								onChange={(event) => setEnabled(event.target.checked)}
-								type="checkbox"
-							/>
-						</label>
-					</div>
-					<div className="modal-actions">
-						<button
-							className="button button-secondary"
-							disabled={loading}
-							onClick={onCancel}
-							type="button"
-						>
-							取消
-						</button>
-						<button className="button button-primary" disabled={loading} type="submit">
-							{loading ? <span className="spinner" aria-hidden="true" /> : null}
-							{loading ? "保存中…" : "保存"}
-						</button>
-					</div>
-				</form>
-			</section>
-		</div>
-	);
-}
-
-interface ConfirmDialogProps {
-	title: string;
-	loading: boolean;
-	onCancel: () => void;
-	onConfirm: () => void;
-}
-
-function ConfirmDialog({
-	title,
-	loading,
-	onCancel,
-	onConfirm,
-}: ConfirmDialogProps) {
 	return (
 		<div className="modal-backdrop">
-			<section
-				aria-labelledby="confirm-title"
-				aria-modal="true"
-				className="modal confirm-modal"
-				role="alertdialog"
-			>
-				<h2 id="confirm-title">{title}</h2>
-				<div className="modal-actions">
-					<button className="button button-secondary" disabled={loading} onClick={onCancel} type="button">
-						取消
-					</button>
-					<button className="button button-danger" disabled={loading} onClick={onConfirm} type="button">
-						{loading ? <span className="spinner" aria-hidden="true" /> : null}
-						{loading ? "正在删除…" : "确认删除"}
-					</button>
+			<section aria-labelledby="api-key-editor-title" aria-modal="true" className="modal" role="dialog">
+				<div className="modal-header">
+					<h2 id="api-key-editor-title">{entry === "new" ? "添加 API Key" : "编辑 API Key"}</h2>
+					<button aria-label="关闭" className="icon-button" disabled={loading} onClick={onCancel} type="button"><CloseIcon /></button>
 				</div>
+				<form className="editor-form" onSubmit={submit}>
+					<label htmlFor="api-key-name">
+						<span>名称</span>
+						<input autoFocus disabled={loading} id="api-key-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：my-laptop" required type="text" value={name} />
+					</label>
+					<label htmlFor="api-key-value">
+						<span>Key</span>
+						<div className="input-with-action">
+							<input autoComplete="off" disabled={loading} id="api-key-value" maxLength={MAX_API_KEY_LENGTH} minLength={MIN_API_KEY_LENGTH} onChange={(event) => setKey(event.target.value)} required spellCheck={false} type={visible ? "text" : "password"} value={key} />
+							<button aria-label={visible ? "隐藏" : "显示"} className="input-action" onClick={() => setVisible((value) => !value)} type="button"><EyeIcon off={visible} /></button>
+						</div>
+					</label>
+					<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，该 API Key 的请求将不可用。" />
+					<div className="editor-tools">
+						<button className="button button-secondary" disabled={loading} onClick={() => setKey(generateApiKey())} type="button">重新生成</button>
+						<label className="switch-row"><strong>启用</strong><input checked={enabled} className="switch-control" disabled={loading} onChange={(event) => setEnabled(event.target.checked)} type="checkbox" /></label>
+					</div>
+					<div className="modal-actions">
+						<button className="button button-secondary" disabled={loading} onClick={onCancel} type="button">取消</button>
+						<button className="button button-primary" disabled={loading || !name.trim() || !validApiKey(key)} type="submit">{loading ? <span className="spinner" /> : null}{loading ? "保存中…" : "保存"}</button>
+					</div>
+				</form>
 			</section>
 		</div>
 	);
+}
+
+function ProxyEditor({
+	accounts,
+	entry,
+	groups,
+	loading,
+	onCancel,
+	onSave,
+	route,
+}: {
+	accounts: CodexAccount[];
+	entry: Exclude<EditableProxy, null>;
+	groups: AccountGroup[];
+	loading: boolean;
+	onCancel: () => void;
+	onSave: (value: AuthProxyAccountInput, target: RouteTargetSelection) => void;
+	route: RouteAssignment | null;
+}) {
+	const initial = entry === "new" ? { name: "", accountId: "", enabled: true } : entry;
+	const [name, setName] = useState(initial.name);
+	const [accountId, setAccountId] = useState(initial.accountId);
+	const [enabled, setEnabled] = useState(initial.enabled);
+	const [target, setTarget] = useState<RouteTargetSelection>(route);
+
+	function submit(event: FormEvent<HTMLFormElement>): void {
+		event.preventDefault();
+		if (name.trim() && validAccountId(accountId)) onSave({ name: name.trim(), accountId, enabled }, target);
+	}
+
+	return (
+		<div className="modal-backdrop">
+			<section aria-labelledby="proxy-editor-title" aria-modal="true" className="modal" role="dialog">
+				<div className="modal-header">
+					<h2 id="proxy-editor-title">{entry === "new" ? "添加下游账户" : "编辑下游账户"}</h2>
+					<button aria-label="关闭" className="icon-button" disabled={loading} onClick={onCancel} type="button"><CloseIcon /></button>
+				</div>
+				<form className="editor-form" onSubmit={submit}>
+					<label htmlFor="proxy-name">
+						<span>名称</span>
+						<input autoFocus disabled={loading} id="proxy-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：production" required type="text" value={name} />
+					</label>
+					<label htmlFor="proxy-account-id">
+						<span>account_id</span>
+						<input autoCapitalize="none" autoComplete="off" disabled={loading} id="proxy-account-id" maxLength={MAX_ACCOUNT_ID_LENGTH} onChange={(event) => setAccountId(event.target.value)} required spellCheck={false} type="text" value={accountId} />
+					</label>
+					<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，将继续使用来访请求中的上游凭据。" />
+					<label className="switch-row"><strong>启用</strong><input checked={enabled} className="switch-control" disabled={loading} onChange={(event) => setEnabled(event.target.checked)} type="checkbox" /></label>
+					<div className="modal-actions">
+						<button className="button button-secondary" disabled={loading} onClick={onCancel} type="button">取消</button>
+						<button className="button button-primary" disabled={loading || !name.trim() || !validAccountId(accountId)} type="submit">{loading ? <span className="spinner" /> : null}{loading ? "保存中…" : "保存"}</button>
+					</div>
+				</form>
+			</section>
+		</div>
+	);
+}
+
+function AccountTargetSelect({
+	accounts,
+	groups,
+	loading,
+	onChange,
+	target,
+	unassignedHint,
+}: {
+	accounts: CodexAccount[];
+	groups: AccountGroup[];
+	loading: boolean;
+	onChange: (target: RouteTargetSelection) => void;
+	target: RouteTargetSelection;
+	unassignedHint: string;
+}) {
+	return (
+		<label className="route-target-field" htmlFor="identity-account-target">
+			<span>账户或账户组</span>
+			<select
+				disabled={loading}
+				id="identity-account-target"
+				onChange={(event) => onChange(parseRouteTargetValue(event.target.value))}
+				value={routeTargetValue(target)}
+			>
+				<option value="">未分配</option>
+				<optgroup label="账户组">
+					{groups.map((group) => <option key={group.id} value={`group:${group.id}`}>{group.name}</option>)}
+				</optgroup>
+				<optgroup label="单个 Codex 账户">
+					{accounts.map((account) => (
+						<option disabled={!account.enabled} key={account.id} value={`account:${account.id}`}>
+							{account.name}{account.enabled ? "" : "（已禁用）"}
+						</option>
+					))}
+				</optgroup>
+			</select>
+			<small>{groups.length === 0 && accounts.length === 0 ? "请先在 Codex 账户页添加账户或账户组。" : unassignedHint}</small>
+		</label>
+	);
+}
+
+function LoginView({ error, loading, onSubmit }: { error: string | null; loading: boolean; onSubmit: (secret: string) => void }) {
+	const [secret, setSecret] = useState("");
+	const [visible, setVisible] = useState(false);
+	function submit(event: FormEvent<HTMLFormElement>): void { event.preventDefault(); if (secret && !loading) onSubmit(secret); }
+	return <div className="auth-shell"><aside className="auth-aside"><div className="auth-aside-title"><span>Codex</span><span>Router</span></div></aside><div className="auth-main"><main className="auth-card"><div className="auth-mobile-brand"><ProductMark compact /><strong>Codex Router</strong></div><h1>登录管理面板</h1>{error ? <div className="inline-alert error-alert">{error}</div> : null}<form className="auth-form" onSubmit={submit}><label htmlFor="admin-secret">管理密钥</label><div className="input-with-action"><input autoFocus disabled={loading} id="admin-secret" onChange={(event) => setSecret(event.target.value)} required type={visible ? "text" : "password"} value={secret} /><button aria-label={visible ? "隐藏" : "显示"} className="input-action" onClick={() => setVisible((value) => !value)} type="button"><EyeIcon off={visible} /></button></div><button className="button button-primary auth-submit" disabled={loading || !secret}>{loading ? <span className="spinner" /> : null}{loading ? "登录中…" : "登录"}</button></form></main></div></div>;
+}
+
+function LoadingView() {
+	return <div className="loading-screen"><ProductMark /><span className="spinner" /><strong>加载中…</strong></div>;
+}
+
+function InvalidPath() {
+	return <main className="invalid-path"><ProductMark /><h1>页面不存在</h1><p>请使用配置中的管理路径访问控制台。</p></main>;
 }
 
 function StatusToast({ notice, onClose }: { notice: Notice; onClose: () => void }) {
-	return (
-		<div className={`status-toast ${notice.tone}`} role="status" aria-live="polite">
-			<span className="toast-icon" aria-hidden="true">
-				<Icon name={notice.tone === "success" ? "check" : "alert"} />
-			</span>
-			<p>{notice.text}</p>
-			<button onClick={onClose} type="button" aria-label="关闭通知">
-				<Icon name="close" />
-			</button>
-		</div>
-	);
+	return <div className={`status-toast ${notice.tone}`} role="status"><span className="toast-icon"><NoticeIcon success={notice.tone === "success"} /></span><p>{notice.text}</p><button aria-label="关闭通知" onClick={onClose} type="button"><CloseIcon /></button></div>;
 }
 
-function CardHeader({
-	id,
-	title,
-	action,
-}: {
-	id: string;
-	title: string;
-	action?: ReactNode;
-}) {
-	return (
-		<div className="card-header">
-			<h2 id={id}>{title}</h2>
-			{action}
-		</div>
-	);
+function routeTargetName(route: RouteAssignment, accounts: CodexAccount[], groups: AccountGroup[]): string {
+	return route.targetType === "account"
+		? `单账户 · ${accounts.find((entry) => entry.id === route.targetId)?.name ?? "账户已移除"}`
+		: groups.find((entry) => entry.id === route.targetId)?.name ?? "账户组已移除";
 }
 
-type IconName =
-	| "alert"
-	| "check"
-	| "close"
-	| "copy"
-	| "edit"
-	| "external"
-	| "eye"
-	| "eye-off"
-	| "login"
-	| "logout"
-	| "plus"
-	| "refresh"
-	| "trash";
-
-function Icon({ name, spinning = false }: { name: IconName; spinning?: boolean }) {
-	return (
-		<svg
-			aria-hidden="true"
-			className={`icon${spinning ? " icon-spinning" : ""}`}
-			fill="none"
-			stroke="currentColor"
-			strokeLinecap="round"
-			strokeLinejoin="round"
-			strokeWidth="1.8"
-			viewBox="0 0 24 24"
-		>
-			{iconPaths(name)}
-		</svg>
-	);
+function consumerRoute(routes: RouteAssignment[], kind: RouteConsumerType, id: string): RouteAssignment | null {
+	return routes.find((route) => route.consumerType === kind && route.consumerId === id) ?? null;
 }
 
-function iconPaths(name: IconName): ReactNode {
-	switch (name) {
-		case "alert":
-			return <><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.75 3h15.7a2 2 0 0 0 1.75-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></>;
-		case "check":
-			return <path d="m5 12 4.2 4.2L19 6.5" />;
-		case "close":
-			return <><path d="m6 6 12 12" /><path d="M18 6 6 18" /></>;
-		case "copy":
-			return <><rect height="13" rx="2" width="13" x="8" y="8" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>;
-		case "edit":
-			return <><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" /></>;
-		case "external":
-			return <><path d="M15 3h6v6" /><path d="m10 14 11-11" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></>;
-		case "eye":
-			return <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="2.5" /></>;
-		case "eye-off":
-			return <><path d="m3 3 18 18" /><path d="M10.6 6.15A10.6 10.6 0 0 1 12 6c6.5 0 10 6 10 6a16.8 16.8 0 0 1-3 3.8" /><path d="M6.6 6.6C3.5 8.4 2 12 2 12s3.5 6 10 6a10.7 10.7 0 0 0 3.4-.55" /></>;
-		case "login":
-			return <><path d="m8 17-5-5 5-5" /><path d="M3 12h12" /><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /></>;
-		case "logout":
-			return <><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></>;
-		case "plus":
-			return <><path d="M12 5v14" /><path d="M5 12h14" /></>;
-		case "refresh":
-			return <><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></>;
-		case "trash":
-			return <><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m19 6-1 15H6L5 6" /><path d="M10 11v5M14 11v5" /></>;
-	}
+function replaceConsumerRoute(
+	routes: RouteAssignment[],
+	consumerType: RouteConsumerType,
+	consumerId: string,
+	target: RouteTargetSelection,
+): RouteAssignment[] {
+	const retained = routes.filter((route) => route.consumerType !== consumerType || route.consumerId !== consumerId);
+	return target ? [...retained, { consumerType, consumerId, ...target }] : retained;
+}
+
+function routeTargetValue(target: RouteTargetSelection): string {
+	return target ? `${target.targetType}:${target.targetId}` : "";
+}
+
+function parseRouteTargetValue(value: string): RouteTargetSelection {
+	const separator = value.indexOf(":");
+	if (separator < 1) return null;
+	const targetType = value.slice(0, separator);
+	const targetId = value.slice(separator + 1);
+	if (!targetId || (targetType !== "account" && targetType !== "group")) return null;
+	return { targetType, targetId };
+}
+
+function invalidAdminResponse(): AdminApiError {
+	return new AdminApiError("管理服务返回了无法识别的数据。", 502, "invalid_admin_response");
 }
 
 function managementBasePath(pathname: string): string | null {
@@ -2402,124 +1181,67 @@ function managementBasePath(pathname: string): string | null {
 
 function managementPageFromSearch(search: string): ManagementPage {
 	const page = new URLSearchParams(search).get("page");
-	if (
-		page === "usage" ||
-		page === "api-keys" ||
-		page === "accounts" ||
-		page === "account"
-	) {
-		return page;
-	}
-	return "overview";
+	if (page === "routing") return "account";
+	return page === "usage" || page === "pricing" || page === "api-keys" || page === "accounts" || page === "account" ? page : "overview";
 }
 
 function managementPageTitle(page: ManagementPage): string {
-	switch (page) {
-		case "overview":
-			return "运行概览";
-		case "usage":
-			return "用量分析";
-		case "api-keys":
-			return "API Keys";
-		case "accounts":
-			return "下游账户";
-		case "account":
-			return "主账户";
-	}
+	if (page === "usage") return "用量分析";
+	if (page === "pricing") return "模型价格";
+	if (page === "api-keys") return "API Keys";
+	if (page === "accounts") return "下游账户";
+	if (page === "account") return "Codex 账户";
+	return "运行概览";
 }
 
 function usageIdentityValue(identity: UsageIdentityFilter | null): string {
-	return identity
-		? `${identity.identityType}:${encodeURIComponent(identity.identityId)}`
-		: "";
+	return identity ? `${identity.identityType}:${encodeURIComponent(identity.identityId)}` : "";
 }
 
 function parseUsageIdentityValue(value: string): UsageIdentityFilter | null {
 	if (!value) return null;
 	const separator = value.indexOf(":");
 	if (separator < 1) return null;
-	const identityType = value.slice(0, separator);
-	if (identityType !== "api_key" && identityType !== "auth_proxy") return null;
+	const kind = value.slice(0, separator);
+	if (!isUsageIdentityType(kind)) return null;
 	try {
 		const identityId = decodeURIComponent(value.slice(separator + 1));
-		return identityId ? { identityType, identityId } : null;
+		return identityId ? { identityType: kind, identityId } : null;
 	} catch {
 		return null;
 	}
 }
 
-function sameUsageIdentity(
-	left: UsageIdentityFilter | null,
-	right: UsageIdentityFilter | null,
-): boolean {
-	return (
-		left === right ||
-		(left !== null &&
-			right !== null &&
-			left.identityType === right.identityType &&
-			left.identityId === right.identityId)
-	);
+function isUsageIdentityType(value: string): value is UsageIdentityType {
+	return value === "api_key" || value === "auth_proxy" || value === "codex_account" || value === "account_group";
+}
+
+function usageIdentityLabel(value: "api_key" | "auth_proxy"): string {
+	return value === "api_key" ? "API Key" : "下游账户";
+}
+
+function statusLabel(value: "completed" | "incomplete" | "failed"): string {
+	return value === "completed" ? "已完成" : value === "incomplete" ? "未完整完成" : "失败";
+}
+
+function rangeLabel(value: UsageRange): string {
+	return value === "cycle" ? "当前周期" : value === "24h" ? "最近 24 小时" : value === "7d" ? "最近 7 天" : value === "30d" ? "最近 30 天" : "全部时间";
 }
 
 function errorMessage(error: unknown, fallback: string): string {
-	return error instanceof AdminApiError || error instanceof Error
-		? error.message
-		: fallback;
+	return error instanceof AdminApiError || error instanceof Error ? error.message : fallback;
 }
 
-function clientApiKeyInput(
-	entry: ClientApiKey,
-	enabled = entry.enabled,
-): ClientApiKeyInput {
-	return { name: entry.name, key: entry.key, enabled };
+function withSetValue(current: ReadonlySet<string>, value: string, add: boolean): ReadonlySet<string> {
+	const next = new Set(current);
+	if (add) next.add(value); else next.delete(value);
+	return next;
 }
 
-function authProxyAccountInput(
-	entry: AuthProxyAccount,
-	enabled = entry.enabled,
-): AuthProxyAccountInput {
-	return { name: entry.name, accountId: entry.accountId, enabled };
-}
-
-function proxyOAuthTitle(entry: AuthProxyAccount, removing: boolean): string {
-	if (removing) return "正在退出独立登录…";
-	if (!entry.oauth) return "为此代理账户独立登录";
-	const identity = entry.oauth.email ?? "独立账户";
-	const expiry = validTimestamp(entry.oauth.expiresAt)
-		? `，Token 到期时间 ${formatDate(entry.oauth.expiresAt)}`
-		: "";
-	return `${identity}${expiry}；点击退出独立登录`;
-}
-
-function isSubscriptionInfo(
-	value: SubscriptionInfo | SubscriptionMetadata | null,
-): value is SubscriptionInfo {
-	return value !== null && "windows" in value;
-}
-
-function validTimestamp(value: number | null | undefined): value is number {
-	return typeof value === "number" && Number.isFinite(value) && value > 0;
-}
-
-function isoDate(value: number): string {
-	return new Date(value).toISOString();
-}
-
-function formatDate(value: number): string {
-	return new Intl.DateTimeFormat("zh-CN", {
-		dateStyle: "medium",
-		timeStyle: "short",
-	}).format(new Date(value));
-}
-
-function formatCompactDate(value: number): string {
-	return new Intl.DateTimeFormat("zh-CN", {
-		month: "numeric",
-		day: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-		hour12: false,
-	}).format(new Date(value));
+function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+	const next = { ...record };
+	delete next[key];
+	return next;
 }
 
 function formatCount(value: number): string {
@@ -2528,72 +1250,27 @@ function formatCount(value: number): string {
 
 function formatTokens(value: number): string {
 	const normalized = Math.max(0, Number.isFinite(value) ? value : 0);
-	return normalized < 10_000
-		? INTEGER_FORMAT.format(normalized)
-		: COMPACT_NUMBER_FORMAT.format(normalized);
+	return normalized < 10_000 ? INTEGER_FORMAT.format(normalized) : COMPACT_NUMBER_FORMAT.format(normalized);
 }
 
-function formatUsageRange(value: UsageRange): string {
-	switch (value) {
-		case "cycle":
-			return "当前周期";
-		case "24h":
-			return "最近 24 小时";
-		case "7d":
-			return "最近 7 天";
-		case "30d":
-			return "最近 30 天";
-		case "all":
-			return "全部时间";
-	}
+function formatDate(value: number): string {
+	return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
-function codexCycleBounds(
-	subscription: SubscriptionInfo | SubscriptionMetadata | null,
-): UsageCycleBounds | null {
-	if (!isSubscriptionInfo(subscription)) return null;
-	const weekMs = 7 * 24 * 60 * 60 * 1_000;
-	const weekly = subscription.windows.find((window) =>
-		window.category === "codex" && window.kind === "weekly" && validTimestamp(window.resetAt),
-	);
-	if (!weekly || !validTimestamp(weekly.resetAt)) return null;
-	let endAt = weekly.resetAt;
-	let startAt = endAt - weekMs;
-	const now = Date.now();
-	while (endAt <= now) {
-		startAt += weekMs;
-		endAt += weekMs;
-	}
-	while (startAt > now) {
-		startAt -= weekMs;
-		endAt -= weekMs;
-	}
-	return { startAt: Math.round(startAt), endAt: Math.round(startAt + weekMs) };
+function formatCompactDate(value: number): string {
+	return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
 }
 
-function usageIdentityLabel(value: "api_key" | "auth_proxy"): string {
-	return value === "auth_proxy" ? "代理账户" : "API Key";
-}
-
-function usageStatusLabel(value: "completed" | "incomplete" | "failed"): string {
-	if (value === "completed") return "已完成";
-	if (value === "incomplete") return "未完整完成";
-	return "失败";
+function validApiKey(value: string): boolean {
+	return value.length >= MIN_API_KEY_LENGTH && value.length <= MAX_API_KEY_LENGTH && /[A-Za-z]/.test(value) && /[0-9]/.test(value) && /[^A-Za-z0-9\s]/.test(value);
 }
 
 function validAccountId(value: string): boolean {
-	return (
-		value.length > 0 &&
-		value.length <= MAX_ACCOUNT_ID_LENGTH &&
-		Array.from(value).every((character) => {
-			const code = character.charCodeAt(0);
-			return code >= 0x21 && code <= 0x7e;
-		})
-	);
+	return value.length > 0 && value.length <= MAX_ACCOUNT_ID_LENGTH && Array.from(value).every((character) => { const code = character.charCodeAt(0); return code >= 0x21 && code <= 0x7e; });
 }
 
 function maskApiKey(value: string): string {
-	return `${value.slice(0, 3)}••••••••••••${value.slice(-4)}`;
+	return value.length < 9 ? "••••••" : `${value.slice(0, 3)}••••••••${value.slice(-4)}`;
 }
 
 function generateApiKey(): string {
@@ -2610,6 +1287,30 @@ function generateApiKey(): string {
 		}
 		if (/[a-z]/.test(value) && /[0-9]/.test(value)) return `sk-${value}`;
 	}
+}
+
+function PlusIcon() {
+	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M12 5v14" /><path d="M5 12h14" /></svg>;
+}
+
+function RefreshIcon({ spinning }: { spinning: boolean }) {
+	return <svg className={`icon${spinning ? " icon-spinning" : ""}`} aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></svg>;
+}
+
+function CloseIcon() {
+	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="m6 6 12 12" /><path d="M18 6 6 18" /></svg>;
+}
+
+function EyeIcon({ off }: { off: boolean }) {
+	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">{off ? <><path d="m3 3 18 18" /><path d="M10.6 6.15A10.6 10.6 0 0 1 12 6c6.5 0 10 6 10 6a16.8 16.8 0 0 1-3 3.8" /><path d="M6.6 6.6C3.5 8.4 2 12 2 12s3.5 6 10 6a10.7 10.7 0 0 0 3.4-.55" /></> : <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="2.5" /></>}</svg>;
+}
+
+function CopyIcon() {
+	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24"><rect height="13" rx="2" width="13" x="8" y="8" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></svg>;
+}
+
+function NoticeIcon({ success }: { success: boolean }) {
+	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">{success ? <path d="m5 12 4.2 4.2L19 6.5" /> : <><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.75 3h15.7a2 2 0 0 0 1.75-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></>}</svg>;
 }
 
 export default App;

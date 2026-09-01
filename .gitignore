@@ -1,5 +1,6 @@
 /target
 /config.toml
+/config.mock.toml
 /.config.toml.*.tmp
 /.pnpm-store/
 /frontend/dist/

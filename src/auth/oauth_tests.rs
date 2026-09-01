@@ -12,6 +12,7 @@ use crate::core::AppResult;
 use super::*;
 
 const STATE_SIGNING_KEY: &str = "test-state-signing-key";
+const ACCOUNT_RECORD_ID: &str = "00000000-0000-4000-8000-000000000001";
 const NOW_MS: i64 = 1_800_000_000_000;
 
 #[derive(Default)]
@@ -173,9 +174,14 @@ async fn device_start_pending_and_completion_use_repository() {
     let clock = FakeClock::new(NOW_MS);
     let provider = OAuthProvider::new(&http, &clock);
     let state_store = MemoryStateStore::default();
-    let repository = OAuthRepository::new(&state_store);
-    let service =
-        DeviceAuthorizationService::new(&repository, &provider, &clock, STATE_SIGNING_KEY);
+    let repository = OAuthRepository::new(&state_store, ACCOUNT_RECORD_ID);
+    let service = DeviceAuthorizationService::new(
+        &repository,
+        &provider,
+        &clock,
+        STATE_SIGNING_KEY,
+        ACCOUNT_RECORD_ID,
+    );
 
     let authorization = service.start().await.unwrap();
     assert_eq!(authorization.verification_uri, DEVICE_VERIFICATION_URL);
@@ -233,9 +239,14 @@ async fn device_flow_rejects_expired_invalid_and_aborted_sessions() {
     let clock = FakeClock::new(NOW_MS);
     let provider = OAuthProvider::new(&http, &clock);
     let state_store = MemoryStateStore::default();
-    let repository = OAuthRepository::new(&state_store);
-    let service =
-        DeviceAuthorizationService::new(&repository, &provider, &clock, STATE_SIGNING_KEY);
+    let repository = OAuthRepository::new(&state_store, ACCOUNT_RECORD_ID);
+    let service = DeviceAuthorizationService::new(
+        &repository,
+        &provider,
+        &clock,
+        STATE_SIGNING_KEY,
+        ACCOUNT_RECORD_ID,
+    );
     let authorization = service.start().await.unwrap();
 
     clock.set(NOW_MS + DEVICE_LIFETIME_MS);
@@ -250,15 +261,20 @@ async fn device_flow_rejects_expired_invalid_and_aborted_sessions() {
     let aborting_http = FakeHttp::default();
     aborting_http.push(Err(OAuthHttpFailure::ClientAborted));
     let aborting_provider = OAuthProvider::new(&aborting_http, &clock);
-    let aborting_service =
-        DeviceAuthorizationService::new(&repository, &aborting_provider, &clock, STATE_SIGNING_KEY);
+    let aborting_service = DeviceAuthorizationService::new(
+        &repository,
+        &aborting_provider,
+        &clock,
+        STATE_SIGNING_KEY,
+        ACCOUNT_RECORD_ID,
+    );
     let aborted = aborting_service.start().await.unwrap_err();
     assert_eq!(aborted.status, 408);
     assert_eq!(aborted.code.as_deref(), Some("request_aborted"));
 }
 
 #[tokio::test]
-async fn device_state_is_bound_to_the_proxy_record_id() {
+async fn device_state_is_bound_to_the_account_record_id() {
     let http = FakeHttp::default();
     http.push(response(
         200,
@@ -271,27 +287,22 @@ async fn device_state_is_bound_to_the_proxy_record_id() {
     let clock = FakeClock::new(NOW_MS);
     let provider = OAuthProvider::new(&http, &clock);
     let state_store = MemoryStateStore::default();
-    let first = OAuthRepository::for_auth_proxy_account(
-        &state_store,
-        "00000000-0000-4000-8000-000000000001",
-    );
-    let second = OAuthRepository::for_auth_proxy_account(
-        &state_store,
-        "00000000-0000-4000-8000-000000000002",
-    );
-    let first_service = DeviceAuthorizationService::scoped(
+    let second_record_id = "00000000-0000-4000-8000-000000000002";
+    let first = OAuthRepository::new(&state_store, ACCOUNT_RECORD_ID);
+    let second = OAuthRepository::new(&state_store, second_record_id);
+    let first_service = DeviceAuthorizationService::new(
         &first,
         &provider,
         &clock,
         STATE_SIGNING_KEY,
-        "00000000-0000-4000-8000-000000000001",
+        ACCOUNT_RECORD_ID,
     );
-    let second_service = DeviceAuthorizationService::scoped(
+    let second_service = DeviceAuthorizationService::new(
         &second,
         &provider,
         &clock,
         STATE_SIGNING_KEY,
-        "00000000-0000-4000-8000-000000000002",
+        second_record_id,
     );
     let authorization = first_service.start().await.unwrap();
     let error = second_service.poll(&authorization.state).await.unwrap_err();
@@ -315,7 +326,7 @@ async fn refresh_retries_transient_failures_and_rotates_credentials() {
     let clock = FakeClock::new(NOW_MS + 500);
     let provider = OAuthProvider::new(&http, &clock);
     let state_store = MemoryStateStore::default();
-    let repository = OAuthRepository::new(&state_store);
+    let repository = OAuthRepository::new(&state_store, ACCOUNT_RECORD_ID);
     repository
         .store(&credentials(NOW_MS + 60_000))
         .await
@@ -347,53 +358,13 @@ async fn refresh_retries_transient_failures_and_rotates_credentials() {
 }
 
 #[tokio::test]
-async fn proxy_credentials_are_uuid_scoped_and_fall_back_to_primary() {
-    let state_store = MemoryStateStore::default();
-    let primary = OAuthRepository::new(&state_store);
-    let proxy_id = "00000000-0000-4000-8000-000000000001";
-    let proxy = OAuthRepository::for_auth_proxy_account(&state_store, proxy_id);
-    primary.store(&credentials(NOW_MS + 60_000)).await.unwrap();
-
-    let selected = auth_proxy_credentials_or_primary(&proxy, &primary, NOW_MS)
-        .await
-        .unwrap();
-    assert_eq!(selected.access_token, "access-original");
-
-    let mut proxy_credentials = credentials(NOW_MS + 60_000);
-    proxy_credentials.access_token = "access-proxy-sensitive".into();
-    proxy_credentials.refresh_token = "refresh-proxy-sensitive".into();
-    proxy_credentials.account_id = Some("account-proxy".into());
-    proxy.store(&proxy_credentials).await.unwrap();
-    let selected = auth_proxy_credentials_or_primary(&proxy, &primary, NOW_MS)
-        .await
-        .unwrap();
-    assert_eq!(selected.access_token, "access-proxy-sensitive");
-    assert_eq!(selected.account_id.as_deref(), Some("account-proxy"));
-
-    proxy_credentials.account_id = None;
-    proxy.store(&proxy_credentials).await.unwrap();
-    let selected = auth_proxy_credentials_or_primary(&proxy, &primary, NOW_MS)
-        .await
-        .unwrap();
-    assert_eq!(selected.access_token, "access-original");
-
-    proxy_credentials.account_id = Some("account-proxy".into());
-    proxy_credentials.expires_at = NOW_MS;
-    proxy.store(&proxy_credentials).await.unwrap();
-    let selected = auth_proxy_credentials_or_primary(&proxy, &primary, NOW_MS)
-        .await
-        .unwrap();
-    assert_eq!(selected.access_token, "access-original");
-}
-
-#[tokio::test]
 async fn refresh_distinguishes_missing_not_due_and_safe_provider_errors() {
     let clock = FakeClock::new(NOW_MS);
 
     let missing_http = FakeHttp::default();
     let missing_provider = OAuthProvider::new(&missing_http, &clock);
     let missing_store = MemoryStateStore::default();
-    let missing_repository = OAuthRepository::new(&missing_store);
+    let missing_repository = OAuthRepository::new(&missing_store, ACCOUNT_RECORD_ID);
     let missing_service = OAuthRefreshService::new(&missing_repository, &missing_provider, &clock);
     assert_eq!(
         missing_service.refresh(Some(NOW_MS)).await.unwrap(),
@@ -404,7 +375,7 @@ async fn refresh_distinguishes_missing_not_due_and_safe_provider_errors() {
     let future_http = FakeHttp::default();
     let future_provider = OAuthProvider::new(&future_http, &clock);
     let future_store = MemoryStateStore::default();
-    let future_repository = OAuthRepository::new(&future_store);
+    let future_repository = OAuthRepository::new(&future_store, ACCOUNT_RECORD_ID);
     future_repository
         .store(&credentials(NOW_MS + REFRESH_WINDOW_MS + 1))
         .await
@@ -423,7 +394,7 @@ async fn refresh_distinguishes_missing_not_due_and_safe_provider_errors() {
     }));
     let failing_provider = OAuthProvider::new(&failing_http, &clock);
     let failing_store = MemoryStateStore::default();
-    let failing_repository = OAuthRepository::new(&failing_store);
+    let failing_repository = OAuthRepository::new(&failing_store, ACCOUNT_RECORD_ID);
     failing_repository
         .store(&credentials(NOW_MS))
         .await

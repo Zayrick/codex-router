@@ -42,6 +42,10 @@ pub struct MonitoredQuotaWindow {
     pub limit_window_seconds: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<bool>,
+    #[serde(default)]
+    pub limit_reached: bool,
     pub entry_alert_sent: bool,
 }
 
@@ -178,6 +182,8 @@ fn snapshot(window: &CodexQuotaWindow) -> MonitoredQuotaWindow {
         remaining_percent,
         limit_window_seconds,
         reset_at,
+        allowed: window.allowed,
+        limit_reached: window.limit_reached,
         entry_alert_sent: false,
     }
 }

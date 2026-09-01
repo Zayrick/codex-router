@@ -14,18 +14,21 @@ use url::Url;
 
 use crate::{
     application::CodexUsageMonitorState,
-    auth::{AuthProxyAccount, ClientApiKey, StateStore, StoredOAuthCredentials},
+    auth::{
+        ACCOUNT_ROUTING_KEY, AccountRoutingState, AuthProxyAccount, CODEX_ACCOUNT_OAUTH_KEY_PREFIX,
+        CURRENT_ROUTING_VERSION, ClientApiKey, CodexAccount, RouteAssignment, RouteConsumerKind,
+        RouteTargetKind, StateStore, StoredAccountRouting, StoredOAuthCredentials,
+        derived_record_id, normalized_account_name, unique_account_name,
+    },
     core::{ApiError, AppResult},
     upstream::{bark::parse_bark_push_url, dingtalk::signed_dingtalk_webhook},
 };
 
 use super::chatgpt_proxy::ChatgptProxy;
 use super::pricing::{ModelPrice, normalized_model_prices, validate_model_prices};
+use super::usage_store::CODEX_ACCOUNT_USAGE_KEY_PREFIX;
 
-const OAUTH_KEY: &str = "oauth";
 const API_KEYS_KEY: &str = "API_KEYS";
-const CODEX_USAGE_KEY: &str = "CODEX_USAGE";
-const AUTH_PROXY_OAUTH_PREFIX: &str = "oauth:auth-proxy:";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -118,8 +121,14 @@ pub struct PersistentState {
     pub auth_proxy_accounts: Vec<AuthProxyAccount>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub auth_proxy_oauth: BTreeMap<String, StoredOAuthCredentials>,
+    #[serde(default, skip_serializing_if = "AccountRoutingState::is_empty")]
+    pub account_routing: AccountRoutingState,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub codex_account_oauth: BTreeMap<String, StoredOAuthCredentials>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<CodexUsageMonitorState>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub account_usage: BTreeMap<String, CodexUsageMonitorState>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -141,9 +150,14 @@ impl ConfigStore {
         let source = fs::read_to_string(&path)
             .await
             .with_context(|| format!("failed to read configuration {}", path.display()))?;
-        let config: AppConfig = toml::from_str(&source)
+        let mut config: AppConfig = toml::from_str(&source)
             .with_context(|| format!("failed to parse configuration {}", path.display()))?;
         validate_config(&config)?;
+        if migrate_legacy_accounts(&mut config) {
+            persist(&path, &config)
+                .await
+                .with_context(|| format!("failed to migrate configuration {}", path.display()))?;
+        }
         Ok(Arc::new(Self {
             path,
             config: RwLock::new(config),
@@ -214,29 +228,30 @@ impl StateStore for ConfigStore {
     async fn get(&self, key: &str) -> AppResult<Option<String>> {
         let config = self.config.read().await;
         let value = match key {
-            OAUTH_KEY => config
-                .state
-                .oauth
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose(),
             API_KEYS_KEY => serde_json::to_string(&StoredApiKeys {
                 version: 2,
                 keys: config.state.api_keys.clone(),
                 auth_proxy_accounts: config.state.auth_proxy_accounts.clone(),
             })
             .map(Some),
-            CODEX_USAGE_KEY => config
-                .state
-                .usage
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose(),
-            _ => key
-                .strip_prefix(AUTH_PROXY_OAUTH_PREFIX)
-                .and_then(|id| config.state.auth_proxy_oauth.get(id))
-                .map(serde_json::to_string)
-                .transpose(),
+            ACCOUNT_ROUTING_KEY => serde_json::to_string(&StoredAccountRouting {
+                version: CURRENT_ROUTING_VERSION,
+                state: config.state.account_routing.clone(),
+            })
+            .map(Some),
+            _ => {
+                if let Some(value) = key
+                    .strip_prefix(CODEX_ACCOUNT_USAGE_KEY_PREFIX)
+                    .and_then(|id| config.state.account_usage.get(id))
+                {
+                    serde_json::to_string(value).map(Some)
+                } else {
+                    key.strip_prefix(CODEX_ACCOUNT_OAUTH_KEY_PREFIX)
+                        .and_then(|id| config.state.codex_account_oauth.get(id))
+                        .map(serde_json::to_string)
+                        .transpose()
+                }
+            }
         };
         value.map_err(|_| config_read_error())
     }
@@ -244,31 +259,42 @@ impl StateStore for ConfigStore {
     async fn put(&self, key: &str, value: &str) -> AppResult<()> {
         self.update(|config| {
             match key {
-                OAUTH_KEY => {
-                    config.state.oauth =
-                        Some(serde_json::from_str(value).map_err(|_| config_read_error())?);
-                }
                 API_KEYS_KEY => {
                     let stored: StoredApiKeys =
                         serde_json::from_str(value).map_err(|_| config_read_error())?;
                     config.state.api_keys = stored.keys;
                     config.state.auth_proxy_accounts = stored.auth_proxy_accounts;
                 }
-                CODEX_USAGE_KEY => {
-                    config.state.usage =
-                        Some(serde_json::from_str(value).map_err(|_| config_read_error())?);
+                ACCOUNT_ROUTING_KEY => {
+                    let stored: StoredAccountRouting =
+                        serde_json::from_str(value).map_err(|_| config_read_error())?;
+                    if stored.version != CURRENT_ROUTING_VERSION {
+                        return Err(config_read_error());
+                    }
+                    config.state.account_routing = stored.state;
                 }
                 _ => {
-                    let id = key
-                        .strip_prefix(AUTH_PROXY_OAUTH_PREFIX)
+                    if let Some(id) = key
+                        .strip_prefix(CODEX_ACCOUNT_USAGE_KEY_PREFIX)
                         .filter(|id| !id.is_empty())
-                        .ok_or_else(config_read_error)?;
+                    {
+                        let usage = serde_json::from_str(value).map_err(|_| config_read_error())?;
+                        config.state.account_usage.insert(id.to_owned(), usage);
+                        return Ok(());
+                    }
                     let credentials =
                         serde_json::from_str(value).map_err(|_| config_read_error())?;
-                    config
-                        .state
-                        .auth_proxy_oauth
-                        .insert(id.to_owned(), credentials);
+                    if let Some(id) = key
+                        .strip_prefix(CODEX_ACCOUNT_OAUTH_KEY_PREFIX)
+                        .filter(|id| !id.is_empty())
+                    {
+                        config
+                            .state
+                            .codex_account_oauth
+                            .insert(id.to_owned(), credentials);
+                    } else {
+                        return Err(config_read_error());
+                    }
                 }
             }
             Ok(())
@@ -279,24 +305,181 @@ impl StateStore for ConfigStore {
     async fn delete(&self, key: &str) -> AppResult<()> {
         self.update(|config| {
             match key {
-                OAUTH_KEY => config.state.oauth = None,
                 API_KEYS_KEY => {
                     config.state.api_keys.clear();
                     config.state.auth_proxy_accounts.clear();
                 }
-                CODEX_USAGE_KEY => config.state.usage = None,
+                ACCOUNT_ROUTING_KEY => {
+                    config.state.account_routing = AccountRoutingState::default()
+                }
                 _ => {
-                    let id = key
-                        .strip_prefix(AUTH_PROXY_OAUTH_PREFIX)
+                    if let Some(id) = key
+                        .strip_prefix(CODEX_ACCOUNT_USAGE_KEY_PREFIX)
                         .filter(|id| !id.is_empty())
-                        .ok_or_else(config_read_error)?;
-                    config.state.auth_proxy_oauth.remove(id);
+                    {
+                        config.state.account_usage.remove(id);
+                    } else if let Some(id) = key
+                        .strip_prefix(CODEX_ACCOUNT_OAUTH_KEY_PREFIX)
+                        .filter(|id| !id.is_empty())
+                    {
+                        config.state.codex_account_oauth.remove(id);
+                    } else {
+                        return Err(config_read_error());
+                    }
                 }
             }
             Ok(())
         })
         .await
     }
+}
+
+fn migrate_legacy_accounts(config: &mut AppConfig) -> bool {
+    let Some(primary_credentials) = config.state.oauth.take() else {
+        if config.state.auth_proxy_oauth.is_empty() {
+            return false;
+        }
+        return migrate_legacy_proxy_accounts(config, None);
+    };
+
+    let primary_id = legacy_codex_account_id("primary", &primary_credentials);
+    let primary_name = normalized_account_name(primary_credentials.email.as_deref())
+        .unwrap_or_else(|| "Codex 账户".into());
+    let primary_name = unique_account_name(
+        &primary_name,
+        config
+            .state
+            .account_routing
+            .accounts
+            .iter()
+            .map(|account| account.name.as_str()),
+    );
+    if !config
+        .state
+        .account_routing
+        .accounts
+        .iter()
+        .any(|entry| entry.id == primary_id)
+    {
+        config.state.account_routing.accounts.push(CodexAccount {
+            id: primary_id.clone(),
+            name: primary_name,
+            enabled: true,
+        });
+    }
+    config
+        .state
+        .codex_account_oauth
+        .insert(primary_id.clone(), primary_credentials);
+    if let Some(usage) = config.state.usage.take() {
+        config.state.account_usage.insert(primary_id.clone(), usage);
+    }
+    for key in &config.state.api_keys {
+        let key_id = if key.id.is_empty() {
+            derived_record_id("api-key", &key.name)
+        } else {
+            key.id.clone()
+        };
+        add_legacy_route(
+            &mut config.state.account_routing,
+            RouteConsumerKind::ApiKey,
+            &key_id,
+            &primary_id,
+        );
+    }
+    migrate_legacy_proxy_accounts(config, Some(&primary_id));
+    true
+}
+
+fn migrate_legacy_proxy_accounts(config: &mut AppConfig, primary_id: Option<&str>) -> bool {
+    let legacy = std::mem::take(&mut config.state.auth_proxy_oauth);
+    if legacy.is_empty() && primary_id.is_none() {
+        return false;
+    }
+    for account in &config.state.auth_proxy_accounts {
+        let downstream_id = if account.id.is_empty() {
+            derived_record_id("auth-proxy-account", &account.name)
+        } else {
+            account.id.clone()
+        };
+        let target_id = if let Some(credentials) = legacy.get(&account.id) {
+            let existing = credentials.account_id.as_deref().and_then(|upstream_id| {
+                config
+                    .state
+                    .codex_account_oauth
+                    .iter()
+                    .find(|(_, stored)| stored.account_id.as_deref() == Some(upstream_id))
+                    .map(|(id, _)| id.clone())
+            });
+            if let Some(existing) = existing {
+                existing
+            } else {
+                let id = legacy_codex_account_id(&account.id, credentials);
+                let name = normalized_account_name(credentials.email.as_deref())
+                    .or_else(|| normalized_account_name(Some(&account.name)))
+                    .unwrap_or_else(|| "Codex 账户".into());
+                let name = unique_account_name(
+                    &name,
+                    config
+                        .state
+                        .account_routing
+                        .accounts
+                        .iter()
+                        .map(|account| account.name.as_str()),
+                );
+                config.state.account_routing.accounts.push(CodexAccount {
+                    id: id.clone(),
+                    name,
+                    enabled: true,
+                });
+                config
+                    .state
+                    .codex_account_oauth
+                    .insert(id.clone(), credentials.clone());
+                id
+            }
+        } else if let Some(primary_id) = primary_id {
+            primary_id.to_owned()
+        } else {
+            continue;
+        };
+        add_legacy_route(
+            &mut config.state.account_routing,
+            RouteConsumerKind::AuthProxy,
+            &downstream_id,
+            &target_id,
+        );
+    }
+    true
+}
+
+fn legacy_codex_account_id(scope: &str, credentials: &StoredOAuthCredentials) -> String {
+    derived_record_id(
+        "legacy-codex-account",
+        credentials.account_id.as_deref().unwrap_or(scope),
+    )
+}
+
+fn add_legacy_route(
+    state: &mut AccountRoutingState,
+    consumer_type: RouteConsumerKind,
+    consumer_id: &str,
+    account_id: &str,
+) {
+    if consumer_id.is_empty()
+        || state
+            .routes
+            .iter()
+            .any(|entry| entry.consumer_type == consumer_type && entry.consumer_id == consumer_id)
+    {
+        return;
+    }
+    state.routes.push(RouteAssignment {
+        consumer_type,
+        consumer_id: consumer_id.into(),
+        target_type: RouteTargetKind::Account,
+        target_id: account_id.into(),
+    });
 }
 
 fn validate_config(config: &AppConfig) -> Result<()> {
@@ -484,5 +667,56 @@ mod tests {
         value.upstream.chatgpt_proxy = Some("socks5://proxy.example:1080".into());
         value.server.cors_origin = "https://client.example\ninvalid".into();
         assert!(validate_config(&value).is_err());
+    }
+
+    #[test]
+    fn migrates_primary_and_proxy_oauth_into_the_unified_account_pool() {
+        let mut value = config();
+        value.state.api_keys.push(ClientApiKey {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            name: "client".into(),
+            key: "sk-client-value-123!".into(),
+            enabled: true,
+        });
+        value.state.auth_proxy_accounts.push(AuthProxyAccount {
+            id: "00000000-0000-4000-8000-000000000002".into(),
+            name: "downstream".into(),
+            account_id: "downstream-account".into(),
+            enabled: true,
+        });
+        let credentials = StoredOAuthCredentials {
+            version: 1,
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            id_token: None,
+            account_id: Some("upstream-account".into()),
+            email: Some("owner@example.com".into()),
+            expires_at: 2_000_000_000_000,
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
+        };
+        value.state.oauth = Some(credentials);
+
+        assert!(migrate_legacy_accounts(&mut value));
+        assert!(value.state.oauth.is_none());
+        assert!(value.state.auth_proxy_oauth.is_empty());
+        assert_eq!(value.state.account_routing.accounts.len(), 1);
+        assert_eq!(value.state.codex_account_oauth.len(), 1);
+        assert_eq!(value.state.account_routing.routes.len(), 2);
+        assert!(
+            value
+                .state
+                .account_routing
+                .routes
+                .iter()
+                .any(|route| route.consumer_type == RouteConsumerKind::ApiKey)
+        );
+        assert!(
+            value
+                .state
+                .account_routing
+                .routes
+                .iter()
+                .any(|route| route.consumer_type == RouteConsumerKind::AuthProxy)
+        );
     }
 }

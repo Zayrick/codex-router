@@ -23,7 +23,14 @@ export default function ModelPricingCard({
 	onSync,
 }: ModelPricingCardProps) {
 	const [drafts, setDrafts] = useState<ModelPrice[]>(prices);
+	const [sourcePrices, setSourcePrices] = useState(prices);
 	const [newModel, setNewModel] = useState("");
+
+	if (prices !== sourcePrices) {
+		setSourcePrices(prices);
+		setDrafts(prices);
+	}
+
 	const configured = useMemo(
 		() => new Set(drafts.map((price) => price.model.trim().toLowerCase())),
 		[drafts],

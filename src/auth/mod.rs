@@ -10,6 +10,7 @@ mod oauth_ports;
 mod oauth_provider;
 mod record_id;
 mod refresh;
+mod routing;
 mod store;
 
 #[cfg(test)]
@@ -23,9 +24,10 @@ pub use api_keys::{
     ApiKeyRepository, ClientApiKey, authenticate_token, client_token, validate_api_key_input,
 };
 pub use auth_proxy::{AuthProxyAccount, matching_auth_proxy_account};
+pub(crate) use credentials::CODEX_ACCOUNT_OAUTH_KEY_PREFIX;
 pub use credentials::{
-    OAuthRepository, OAuthStatus, StoredOAuthCredentials, auth_proxy_credentials_or_primary,
-    credentials_from_token_response, oauth_status,
+    OAuthRepository, OAuthStatus, StoredOAuthCredentials, credentials_from_token_response,
+    oauth_status,
 };
 pub use crypto::{constant_time_equal, sha256, sign_json, verify_json};
 pub use device_flow::{
@@ -42,4 +44,12 @@ pub use oauth_provider::{
 };
 pub(crate) use record_id::{derived_record_id, new_record_id, valid_record_id};
 pub use refresh::{OAuthRefreshResult, OAuthRefreshService, REFRESH_WINDOW_MS, oauth_refresh_due};
+pub use routing::{
+    ACCOUNT_ROUTING_KEY, AccountGroup, AccountRoutingState, CodexAccount, FALLBACK_STRATEGY,
+    RouteAssignment, RouteConsumerKind, RouteTargetKind, RoutingRepository,
+    WEIGHTED_ROUND_ROBIN_STRATEGY, session_affinity_ttl,
+};
+pub(crate) use routing::{
+    CURRENT_ROUTING_VERSION, StoredAccountRouting, normalized_account_name, unique_account_name,
+};
 pub use store::StateStore;

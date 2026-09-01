@@ -4,7 +4,7 @@ use futures_util::{StreamExt, stream};
 
 use crate::{
     application::{PushNotification, evaluate_codex_usage, reset_watch_notification},
-    auth::{ApiKeyRepository, OAuthProvider, OAuthRefreshService, OAuthRepository},
+    auth::{OAuthProvider, OAuthRefreshService, OAuthRepository, RoutingRepository},
     core::{ApiError, AppResult},
     http::LimitedBodyCollector,
     upstream::{
@@ -33,7 +33,7 @@ use super::{
     usage_store::CodexUsageStateRepository,
 };
 
-const AUTH_PROXY_REFRESH_CONCURRENCY: usize = 4;
+const CODEX_ACCOUNT_REFRESH_CONCURRENCY: usize = 4;
 
 pub fn spawn(state: AppState, interval_seconds: u64) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -51,43 +51,36 @@ pub fn spawn(state: AppState, interval_seconds: u64) -> tokio::task::JoinHandle<
 pub async fn run_once(state: &AppState) {
     let config = state.config.snapshot().await;
     let now_ms = current_time_ms();
-    let oauth = OAuthRepository::new(state.config.as_ref());
-
     if let Err(error) = monitor_reset_watch(state, &config, now_ms).await {
         log_failure("scheduled_reset_watch", &error);
-    }
-    if let Err(error) = monitor_usage(state, &config, &oauth, now_ms).await {
-        log_failure("scheduled_usage_monitor", &error);
     }
 
     let clock = SystemClock;
     let http = ReqwestOAuthHttpClient::new(&state.client);
     let provider = OAuthProvider::new(&http, &clock);
-    let service = OAuthRefreshService::new(&oauth, &provider, &clock);
-    if let Err(error) = service.refresh(Some(now_ms)).await {
-        log_failure("scheduled_oauth_refresh", &error);
-    }
-
-    let accounts = match ApiKeyRepository::new(state.config.as_ref())
-        .read_auth_proxy_accounts()
-        .await
-    {
-        Ok(accounts) => accounts,
+    let accounts = match RoutingRepository::new(state.config.as_ref()).read().await {
+        Ok(routing) => routing.accounts,
         Err(error) => {
-            log_failure("scheduled_auth_proxy_oauth_refresh", &error);
+            log_failure("scheduled_codex_account_refresh", &error);
             return;
         }
     };
     stream::iter(accounts)
-        .for_each_concurrent(AUTH_PROXY_REFRESH_CONCURRENCY, |account| {
+        .for_each_concurrent(CODEX_ACCOUNT_REFRESH_CONCURRENCY, |account| {
             let provider = &provider;
             let clock = &clock;
+            let config = &config;
             async move {
-                let oauth =
-                    OAuthRepository::for_auth_proxy_account(state.config.as_ref(), &account.id);
+                let oauth = OAuthRepository::new(state.config.as_ref(), &account.id);
                 let service = OAuthRefreshService::new(&oauth, provider, clock);
                 if let Err(error) = service.refresh(Some(now_ms)).await {
-                    log_failure("scheduled_auth_proxy_oauth_refresh", &error);
+                    log_failure("scheduled_codex_account_refresh", &error);
+                }
+                if account.enabled
+                    && let Err(error) =
+                        monitor_usage(state, config, &oauth, &account.id, now_ms).await
+                {
+                    log_failure("scheduled_usage_monitor", &error);
                 }
             }
         })
@@ -119,13 +112,18 @@ async fn monitor_usage(
     state: &AppState,
     config: &AppConfig,
     oauth: &OAuthRepository<'_>,
+    account_id: &str,
     now_ms: i64,
 ) -> AppResult<()> {
     let client = CodexClient::new(oauth, &state.chatgpt);
     let usage = client.fetch_usage().await?;
     let subscription =
         codex_subscription_from_usage(&usage.payload, usage.metadata, now_ms as f64)?;
-    let repository = CodexUsageStateRepository::new(state.config.as_ref());
+    state
+        .account_router
+        .observe_quota(account_id, &subscription)
+        .await;
+    let repository = CodexUsageStateRepository::new(state.config.as_ref(), account_id);
     let previous = repository.read().await?;
     let evaluation = evaluate_codex_usage(previous.as_ref(), &subscription, now_ms);
     if let Some(notification) = evaluation.notification() {

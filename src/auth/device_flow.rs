@@ -56,21 +56,6 @@ impl<'a> DeviceAuthorizationService<'a> {
         provider: &'a OAuthProvider<'a>,
         clock: &'a dyn OAuthClock,
         state_signing_key: &'a str,
-    ) -> Self {
-        Self {
-            credentials,
-            provider,
-            clock,
-            state_signing_key,
-            state_purpose: DEVICE_STATE_PURPOSE.into(),
-        }
-    }
-
-    pub fn scoped(
-        credentials: &'a dyn OAuthCredentialsStore,
-        provider: &'a OAuthProvider<'a>,
-        clock: &'a dyn OAuthClock,
-        state_signing_key: &'a str,
         record_id: &str,
     ) -> Self {
         Self {
@@ -78,7 +63,7 @@ impl<'a> DeviceAuthorizationService<'a> {
             provider,
             clock,
             state_signing_key,
-            state_purpose: format!("{DEVICE_STATE_PURPOSE}/auth-proxy/{record_id}"),
+            state_purpose: format!("{DEVICE_STATE_PURPOSE}/{record_id}"),
         }
     }
 

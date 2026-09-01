@@ -12,13 +12,19 @@ use crate::{
     application::{
         AdminRoute, is_admin_path_family, is_known_api_path, match_admin_route, match_api_route,
     },
-    auth::{ApiKeyRepository, OAuthRepository, client_token},
+    auth::{ApiKeyRepository, RouteConsumerKind, client_token},
     upstream::relay::is_backend_api_path,
 };
 
 use super::{
-    account::handle_public_account, admin::handle_admin, api::handle_api, frontend,
-    oauth::current_time_ms, relay::handle_relay, response, state::AppState,
+    account::handle_public_account,
+    admin::handle_admin,
+    api::{RoutedApiIdentity, handle_api},
+    frontend,
+    oauth::current_time_ms,
+    relay::handle_relay,
+    response,
+    state::AppState,
 };
 
 pub fn build(state: AppState) -> Router {
@@ -68,9 +74,13 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
         if method != "GET" {
             response::empty(404)
         } else {
-            let oauth = OAuthRepository::new(state.config.as_ref());
-            match oauth.require_valid(current_time_ms()).await {
-                Ok(_) => response::empty(204),
+            match state
+                .account_router
+                .has_available_account(state.config.as_ref(), current_time_ms())
+                .await
+            {
+                Ok(true) => response::empty(204),
+                Ok(false) => response::empty(404),
                 Err(error) => {
                     tracing::warn!(
                         event = "health_check",
@@ -115,16 +125,43 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
             let keys = ApiKeyRepository::new(state.config.as_ref());
             match keys.authenticate_key(token.as_deref()).await {
                 Ok(key) => {
-                    handle_api(
-                        route,
-                        request,
-                        client_url,
-                        websocket,
-                        &config,
-                        &state,
-                        (&key).into(),
-                    )
-                    .await
+                    match state
+                        .account_router
+                        .resolve(
+                            state.config.as_ref(),
+                            RouteConsumerKind::ApiKey,
+                            &key.id,
+                            request.headers(),
+                            current_time_ms(),
+                        )
+                        .await
+                    {
+                        Ok(Some(account_route)) => {
+                            let identity = super::usage::UsageIdentity::from(&key)
+                                .with_account_route(
+                                    &account_route.account.id,
+                                    &account_route.account.name,
+                                    account_route
+                                        .group
+                                        .as_ref()
+                                        .map(|group| (group.id.as_str(), group.name.as_str())),
+                                );
+                            handle_api(
+                                route,
+                                request,
+                                client_url,
+                                websocket,
+                                &config,
+                                &state,
+                                RoutedApiIdentity {
+                                    usage: identity,
+                                    account: account_route,
+                                },
+                            )
+                            .await
+                        }
+                        Ok(None) | Err(_) => response::empty(404),
+                    }
                 }
                 Err(_) => response::empty(404),
             }
@@ -153,7 +190,10 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::auth::{AuthProxyAccount, ClientApiKey};
+    use crate::auth::{
+        AccountRoutingState, AuthProxyAccount, ClientApiKey, CodexAccount, RouteAssignment,
+        RouteConsumerKind, RouteTargetKind,
+    };
 
     use super::super::config::{
         AdminConfig, AppConfig, ConfigStore, NotificationConfig, PersistentState, ServerConfig,
@@ -195,18 +235,48 @@ mod tests {
             },
             notifications: NotificationConfig::default(),
             state: PersistentState {
-                api_keys: vec![ClientApiKey {
-                    id: "00000000-0000-4000-8000-000000000001".into(),
-                    name: "test".into(),
-                    key: "sk-test-value-123!".into(),
-                    enabled: true,
-                }],
+                api_keys: vec![
+                    ClientApiKey {
+                        id: "00000000-0000-4000-8000-000000000001".into(),
+                        name: "test".into(),
+                        key: "sk-test-value-123!".into(),
+                        enabled: true,
+                    },
+                    ClientApiKey {
+                        id: "00000000-0000-4000-8000-000000000004".into(),
+                        name: "unassigned".into(),
+                        key: "sk-unassigned-123!".into(),
+                        enabled: true,
+                    },
+                ],
                 auth_proxy_accounts: vec![AuthProxyAccount {
                     id: "00000000-0000-4000-8000-000000000002".into(),
                     name: "proxy-test".into(),
                     account_id: "account-test".into(),
                     enabled: true,
                 }],
+                account_routing: AccountRoutingState {
+                    accounts: vec![CodexAccount {
+                        id: "00000000-0000-4000-8000-000000000003".into(),
+                        name: "test-codex".into(),
+                        enabled: true,
+                    }],
+                    groups: vec![],
+                    routes: vec![
+                        RouteAssignment {
+                            consumer_type: RouteConsumerKind::ApiKey,
+                            consumer_id: "00000000-0000-4000-8000-000000000001".into(),
+                            target_type: RouteTargetKind::Account,
+                            target_id: "00000000-0000-4000-8000-000000000003".into(),
+                        },
+                        RouteAssignment {
+                            consumer_type: RouteConsumerKind::AuthProxy,
+                            consumer_id: "00000000-0000-4000-8000-000000000002".into(),
+                            target_type: RouteTargetKind::Account,
+                            target_id: "00000000-0000-4000-8000-000000000003".into(),
+                        },
+                    ],
+                },
                 ..PersistentState::default()
             },
         };
@@ -250,6 +320,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
+
+        let unassigned = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/messages/count_tokens")
+                    .header("authorization", "Bearer sk-unassigned-123!")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"gpt-5","messages":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unassigned.status(), StatusCode::NOT_FOUND);
 
         let counted = app
             .clone()

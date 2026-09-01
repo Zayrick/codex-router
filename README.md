@@ -11,9 +11,9 @@ TOML 文件中，下游 Token 用量保存在 SQLite 中，React 管理界面随
 - Gemini Models、generateContent、streamGenerateContent 与 countTokens；
 - `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket 转发；
 - Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
-- OAuth 设备授权、下游 API Key、代理账户及代理账户独立 OAuth 的管理 JSON API；
-- React 管理页面与账户用量查询页；
-- 按 API Key、代理账户、模型和 HTTP/WebSocket 统计实际 Codex Token 用量；
+- 统一 Codex 账户池、设备授权、账户组、下游 API Key 与下游账户管理 API；
+- React 管理页面与公开账户用量查询页；
+- 按 API Key、下游账户、Codex 账户/组、模型和 HTTP/WebSocket 统计实际 Token 用量；
 - 后台 OAuth 刷新、用量采集、reset watch、Bark 与钉钉通知；
 - 原生流式正文和双向 WebSocket bridge。
 
@@ -55,7 +55,7 @@ cargo run --release -- --config config.toml
 - `admin.path`：隐藏管理 API 的 URL 段；
 - `admin.secret`：管理登录密钥；
 - `usage_tracking.database_path`：Token 用量 SQLite 文件，默认位于配置文件旁的 `usage.sqlite3`；
-- `state.api_keys`：至少一个启用的下游 API Key，或启动后通过管理 API 创建。
+- 登录至少一个 Codex 账户，按需创建账户组，并在创建或编辑调用身份时选择账户或账户组。
 
 ChatGPT 请求发往 `https://chatgpt.com`。默认直接连接；如需通过 SOCKS5 出站，在 `[upstream]`
 中配置 `chatgpt_proxy = "socks5h://127.0.0.1:1080"`。HTTP、SSE 和 WebSocket 会使用同一代理；完整
@@ -70,15 +70,31 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
   -d '{"model":"gpt-5","messages":[{"role":"user","content":"hello"}]}'
 ```
 
+## 统一账户调度
+
+设备登录会向 Codex 账户池添加账户。API Key 和下游账户可路由到单个账户或账户组；未分配的
+API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
+
+账户组支持三种策略：
+
+- `round-robin`：按顺序平均轮询；
+- `weighted-round-robin`：根据账户剩余额度和刷新时间平滑加权；
+- `fallback`：为每个调用身份固定账户，并在账户不可用时切换。
+
+前两种策略支持 session affinity，TTL 接受 `30m`、`1h`、`7d` 等时长或 `unlimited`。禁用账户会
+暂停调度并释放直连路由；上游返回 `429` 时，调度器会隔离该账户，直到额度巡检确认恢复。
+
 ## 配置与持久状态
 
 `config.toml` 同时保存静态设置和运行时状态：
 
-- 主 OAuth 位于 `state.oauth`；
+- 统一账户目录、账户组和路由位于 `state.account_routing`；
+- 每个 Codex 账户的 OAuth 位于 `state.codex_account_oauth`；
 - 下游 Key 位于 `state.api_keys`；
-- 代理账户位于 `state.auth_proxy_accounts`；
-- 代理 OAuth 位于 `state.auth_proxy_oauth`；
-- 订阅额度快照位于 `state.usage`。
+- 下游账户位于 `state.auth_proxy_accounts`；
+- 每账户订阅额度快照位于 `state.account_usage`。
+
+启动时会自动迁移旧版 OAuth 与额度状态。
 
 这些字段直接保存在 `config.toml`。管理 API 和后台刷新写入状态时，会先写入权限为 `0600` 的
 临时文件，再原子替换原配置。成功写入会把 TOML 规范化，注释可能丢失；请保留单独的配置模板，
@@ -86,7 +102,7 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
 
 下游 Token 用量单独写入 `usage_tracking.database_path` 指定的 SQLite 数据库。相对路径以配置文件
 目录为基准；管理页提供 24 小时、7 天、30 天和全部范围的趋势、模型/身份拆分及最近请求明细，
-并可按具体 API Key 或下游 account id 重新计算全部用量视图。
+并可按具体 API Key、下游 account id、Codex 账户或账户组重新计算全部用量视图。
 
 管理会话和 OAuth 设备轮询状态使用 HMAC-SHA256 签名。改变 `admin.secret` 会立即使已有管理会话
 与未完成的设备授权 state 失效。

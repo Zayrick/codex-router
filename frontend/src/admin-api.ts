@@ -1,5 +1,6 @@
 export interface OAuthStatus {
 	email: string | null;
+	accountId: string | null;
 	expiresAt: number;
 }
 
@@ -40,6 +41,19 @@ export interface SubscriptionInfo extends SubscriptionMetadata {
 	fetchedAt: number;
 }
 
+export interface CodexAccount {
+	id: string;
+	name: string;
+	enabled: boolean;
+	oauth: OAuthStatus | null;
+	subscription: SubscriptionMetadata | null;
+}
+
+export interface CodexAccountUpdate {
+	name: string;
+	enabled: boolean;
+}
+
 export interface ClientApiKeyInput {
 	name: string;
 	key: string;
@@ -58,24 +72,50 @@ export interface AuthProxyAccountInput {
 
 export interface AuthProxyAccount extends AuthProxyAccountInput {
 	id: string;
-	oauth: OAuthStatus | null;
 }
 
-export interface AdminState {
-	oauth: OAuthStatus | null;
-	subscription: SubscriptionMetadata | null;
+export type AccountGroupStrategy =
+	| "round-robin"
+	| "weighted-round-robin"
+	| "fallback";
+
+export interface AccountGroup {
+	id: string;
+	name: string;
+	accountIds: string[];
+	strategy: AccountGroupStrategy;
+	sessionAffinity: boolean;
+	sessionAffinityTtl: string;
+}
+
+export type RouteConsumerType = "api_key" | "auth_proxy";
+export type RouteTargetType = "account" | "group";
+
+export interface RouteAssignment {
+	consumerType: RouteConsumerType;
+	consumerId: string;
+	targetType: RouteTargetType;
+	targetId: string;
+}
+
+export interface AccountRoutingConfiguration {
+	accountGroups: AccountGroup[];
+	routes: RouteAssignment[];
+}
+
+export interface AdminState extends AccountRoutingConfiguration {
+	codexAccounts: CodexAccount[];
 	apiKeys: ClientApiKey[];
 	authProxyAccounts: AuthProxyAccount[];
 }
 
 export type UsageRange = "cycle" | "24h" | "7d" | "30d" | "all";
 
-export interface UsageCycleBounds {
-	startAt: number;
-	endAt: number;
-}
-
-export type UsageIdentityType = "api_key" | "auth_proxy";
+export type UsageIdentityType =
+	| "api_key"
+	| "auth_proxy"
+	| "codex_account"
+	| "account_group";
 
 export interface UsageIdentityFilter {
 	identityType: UsageIdentityType;
@@ -104,7 +144,7 @@ export interface UsageModelRow extends UsageTotals {
 }
 
 export interface UsageIdentityRow extends UsageTotals {
-	identityType: UsageIdentityType;
+	identityType: "api_key" | "auth_proxy";
 	identityId: string;
 	identityName: string;
 }
@@ -112,9 +152,13 @@ export interface UsageIdentityRow extends UsageTotals {
 export interface UsageEvent extends Omit<UsageTotals, "requests"> {
 	id: number;
 	recordedAt: number;
-	identityType: UsageIdentityType;
+	identityType: "api_key" | "auth_proxy";
 	identityId: string;
 	identityName: string;
+	codexAccountId: string;
+	codexAccountName: string;
+	accountGroupId: string;
+	accountGroupName: string;
 	model: string;
 	transport: "http" | "websocket";
 	endpoint: string;
@@ -163,17 +207,14 @@ export interface DeviceAuthorization {
 	state: string;
 }
 
-export type DevicePollResult =
-	| { status: "pending"; retryAfter: number }
-	| {
-			status: "stored";
-			oauth: OAuthStatus;
-			subscription: SubscriptionMetadata;
-	  };
+export interface CodexAccountDeviceAuthorization {
+	accountId: string;
+	authorization: DeviceAuthorization;
+}
 
-export type AuthProxyDevicePollResult =
+export type CodexAccountDevicePollResult =
 	| { status: "pending"; retryAfter: number }
-	| { status: "stored"; oauth: OAuthStatus };
+	| { status: "stored"; account: CodexAccount };
 
 export class AdminApiError extends Error {
 	readonly status: number;
@@ -217,23 +258,69 @@ export class AdminApiClient {
 		return this.requestJson<AdminState>("/state");
 	}
 
-	async getSubscription(): Promise<SubscriptionInfo> {
+	async getCodexAccountSubscription(id: string): Promise<SubscriptionInfo> {
+		const query = new URLSearchParams({ id });
 		const value = await this.requestJson<{ subscription: SubscriptionInfo }>(
-			"/subscription",
+			`/codex-accounts/subscription?${query.toString()}`,
 		);
 		return value.subscription;
+	}
+
+	startCodexAccountDeviceAuthorization(): Promise<CodexAccountDeviceAuthorization> {
+		return this.requestJson<CodexAccountDeviceAuthorization>(
+			"/codex-accounts/oauth/device",
+			{ method: "POST" },
+		);
+	}
+
+	pollCodexAccountDeviceAuthorization(
+		accountId: string,
+		state: string,
+	): Promise<CodexAccountDevicePollResult> {
+		return this.requestJson<CodexAccountDevicePollResult>(
+			"/codex-accounts/oauth/device/poll",
+			jsonRequest("POST", { accountId, state }),
+		);
+	}
+
+	async updateCodexAccount(
+		id: string,
+		value: CodexAccountUpdate,
+	): Promise<CodexAccount[]> {
+		const result = await this.requestJson<{ codexAccounts: CodexAccount[] }>(
+			"/codex-accounts",
+			jsonRequest("PUT", { id, ...value }),
+		);
+		return result.codexAccounts;
+	}
+
+	async deleteCodexAccount(id: string): Promise<CodexAccount[]> {
+		const result = await this.requestJson<{ codexAccounts: CodexAccount[] }>(
+			"/codex-accounts",
+			jsonRequest("DELETE", { id }),
+		);
+		return result.codexAccounts;
+	}
+
+	getAccountRouting(): Promise<AccountRoutingConfiguration> {
+		return this.requestJson<AccountRoutingConfiguration>("/account-routing");
+	}
+
+	updateAccountRouting(
+		accountGroups: AccountGroup[],
+		routes: RouteAssignment[],
+	): Promise<AccountRoutingConfiguration> {
+		return this.requestJson<AccountRoutingConfiguration>(
+			"/account-routing",
+			jsonRequest("PUT", { groups: accountGroups, routes }),
+		);
 	}
 
 	getUsage(
 		range: UsageRange,
 		identity: UsageIdentityFilter | null = null,
-		bounds: UsageCycleBounds | null = null,
 	): Promise<UsageDashboard> {
 		const query = new URLSearchParams({ range });
-		if (range === "cycle" && bounds) {
-			query.set("startAt", String(Math.round(bounds.startAt)));
-			query.set("endAt", String(Math.round(bounds.endAt)));
-		}
 		if (identity) {
 			query.set("identityType", identity.identityType);
 			query.set("identityId", identity.identityId);
@@ -257,27 +344,6 @@ export class AdminApiClient {
 		return this.requestJson<PricingSyncResult>("/pricing/sync", {
 			method: "POST",
 		});
-	}
-
-	startDeviceAuthorization(): Promise<DeviceAuthorization> {
-		return this.requestJson<DeviceAuthorization>(
-			"/oauth/device",
-			{ method: "POST" },
-		);
-	}
-
-	pollDeviceAuthorization(state: string): Promise<DevicePollResult> {
-		return this.requestJson<DevicePollResult>(
-			"/oauth/device/poll",
-			jsonRequest("POST", { state }),
-		);
-	}
-
-	async removeOAuth(): Promise<void> {
-		await this.requestJson<{ oauth: null }>(
-			"/oauth",
-			{ method: "DELETE" },
-		);
 	}
 
 	async createApiKey(value: ClientApiKeyInput): Promise<ClientApiKey[]> {
@@ -307,7 +373,9 @@ export class AdminApiClient {
 		return result.apiKeys;
 	}
 
-	async createAuthProxyAccount(value: AuthProxyAccountInput): Promise<AuthProxyAccount[]> {
+	async createAuthProxyAccount(
+		value: AuthProxyAccountInput,
+	): Promise<AuthProxyAccount[]> {
 		const result = await this.requestJson<{ authProxyAccounts: AuthProxyAccount[] }>(
 			"/auth-proxy",
 			jsonRequest("POST", value),
@@ -334,30 +402,6 @@ export class AdminApiClient {
 		return result.authProxyAccounts;
 	}
 
-	startAuthProxyDeviceAuthorization(id: string): Promise<DeviceAuthorization> {
-		return this.requestJson<DeviceAuthorization>(
-			"/auth-proxy/oauth/device",
-			jsonRequest("POST", { id }),
-		);
-	}
-
-	pollAuthProxyDeviceAuthorization(
-		id: string,
-		state: string,
-	): Promise<AuthProxyDevicePollResult> {
-		return this.requestJson<AuthProxyDevicePollResult>(
-			"/auth-proxy/oauth/device/poll",
-			jsonRequest("POST", { id, state }),
-		);
-	}
-
-	async removeAuthProxyOAuth(id: string): Promise<void> {
-		await this.requestJson<{ oauth: null }>(
-			"/auth-proxy/oauth",
-			jsonRequest("DELETE", { id }),
-		);
-	}
-
 	private async submitSessionForm(
 		path: string,
 		body: URLSearchParams | undefined,
@@ -375,10 +419,7 @@ export class AdminApiClient {
 		throw await responseError(response, sessionRequired);
 	}
 
-	private async requestJson<T>(
-		path: string,
-		init?: RequestInit,
-	): Promise<T> {
+	private async requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 		const headers = new Headers(init?.headers);
 		headers.set("Accept", "application/json");
 		const response = await fetch(`${this.basePath}${path}`, {
@@ -387,13 +428,11 @@ export class AdminApiClient {
 			headers,
 		});
 		if (!response.ok) throw await responseError(response, true);
-		let payload: unknown;
 		try {
-			payload = await response.json();
+			return (await response.json()) as T;
 		} catch {
 			throw invalidPayload();
 		}
-		return payload as T;
 	}
 }
 
@@ -418,12 +457,14 @@ async function responseError(
 		payload = await response.json();
 	} catch {}
 	const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null;
-	const message = error && typeof error.message === "string"
-		? error.message
-		: "管理请求失败，请稍后重试。";
+	const message =
+		error && typeof error.message === "string"
+			? error.message
+			: "管理请求失败，请稍后重试。";
 	const code = error && typeof error.code === "string" ? error.code : undefined;
 	return new AdminApiError(message, response.status, code);
 }
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

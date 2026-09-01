@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::{
+    account_router::ResolvedAccountRoute,
     body,
     codex::{CodexClient, CodexProxyRoute},
     config::AppConfig,
@@ -22,6 +23,11 @@ use super::{
     usage::{UsageIdentity, UsageTracker},
 };
 
+pub struct RoutedApiIdentity {
+    pub usage: UsageIdentity,
+    pub account: ResolvedAccountRoute,
+}
+
 pub async fn handle_api(
     route: ApiRoute,
     request: Request<Body>,
@@ -29,10 +35,20 @@ pub async fn handle_api(
     websocket: Option<WebSocketUpgrade>,
     config: &AppConfig,
     state: &AppState,
-    identity: UsageIdentity,
+    identity: RoutedApiIdentity,
 ) -> Response {
     let family = route.family();
-    match dispatch(route, request, &client_url, websocket, state, identity).await {
+    match dispatch(
+        route,
+        request,
+        &client_url,
+        websocket,
+        state,
+        identity.usage,
+        &identity.account,
+    )
+    .await
+    {
         Ok(output) => response::with_cors(output, &config.server.cors_origin),
         Err(error)
             if error.status == 404
@@ -66,6 +82,7 @@ async fn dispatch(
     websocket: Option<WebSocketUpgrade>,
     state: &AppState,
     identity: UsageIdentity,
+    account_route: &ResolvedAccountRoute,
 ) -> AppResult<Response> {
     match &route {
         ApiRoute::MessageTokens => {
@@ -90,11 +107,12 @@ async fn dispatch(
         _ => {}
     }
 
-    let oauth = OAuthRepository::new(state.config.as_ref());
+    let oauth = OAuthRepository::new(state.config.as_ref(), &account_route.account.id);
     let client = CodexClient::new(&oauth, &state.chatgpt);
     match route {
         ApiRoute::Models => {
             let upstream = client.fetch_models(client_url, request.headers()).await?;
+            observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
             if !upstream.status().is_success() {
                 return Ok(response::upstream_error(upstream));
             }
@@ -109,6 +127,7 @@ async fn dispatch(
         }
         ApiRoute::GeminiModels => {
             let upstream = client.fetch_models(client_url, request.headers()).await?;
+            observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
             if !upstream.status().is_success() {
                 return Ok(gemini_upstream_error_response(upstream).await);
             }
@@ -117,6 +136,7 @@ async fn dispatch(
         }
         ApiRoute::GeminiModel { model } => {
             let upstream = client.fetch_models(client_url, request.headers()).await?;
+            observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
             if !upstream.status().is_success() {
                 return Ok(gemini_upstream_error_response(upstream).await);
             }
@@ -139,7 +159,7 @@ async fn dispatch(
                 }
             });
             if let Some(upgrade) = websocket {
-                return client
+                let output = client
                     .forward_websocket(
                         upgrade,
                         client_url,
@@ -148,11 +168,14 @@ async fn dispatch(
                         proxy_route,
                         tracker,
                     )
-                    .await;
+                    .await?;
+                observe_upstream_status(state, account_route, output.status().as_u16()).await;
+                return Ok(output);
             }
             let upstream = client
                 .forward_proxy(request, client_url, proxy_route, tracker.as_ref())
                 .await?;
+            observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
             Ok(match tracker {
                 Some(tracker) => response::upstream_proxy_tracked(upstream, tracker),
                 None => response::upstream_proxy(upstream),
@@ -171,6 +194,7 @@ async fn dispatch(
             let upstream = client
                 .send_converted_responses(&adapted.body, &parts.headers)
                 .await?;
+            observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
             if !upstream.status().is_success() {
                 return Ok(match route {
                     ApiRoute::Messages => anthropic_upstream_error_response(upstream).await,
@@ -188,6 +212,17 @@ async fn dispatch(
             response::json(&output, 200)
         }
     }
+}
+
+async fn observe_upstream_status(
+    state: &AppState,
+    account_route: &ResolvedAccountRoute,
+    status: u16,
+) {
+    state
+        .account_router
+        .observe_upstream_status(&account_route.account.id, status)
+        .await;
 }
 
 async fn upstream_json(upstream: reqwest::Response) -> AppResult<Value> {

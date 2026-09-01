@@ -11,10 +11,10 @@ use url::Url;
 use crate::{
     application::{AdminRoute, MatchedAdminRoute},
     auth::{
-        ApiKeyRepository, AuthProxyAccount, DeviceAuthorizationService, DevicePollResult,
-        OAuthProvider, OAuthRepository, OAuthStatus, admin_secret_matches,
-        admin_session_cookie_header, clear_admin_session_cookie_header, create_admin_session,
-        has_valid_admin_session, oauth_status,
+        ApiKeyRepository, CodexAccount, DeviceAuthorizationService, DevicePollResult,
+        OAuthProvider, OAuthRepository, OAuthStatus, RouteConsumerKind, RoutingRepository,
+        admin_secret_matches, admin_session_cookie_header, clear_admin_session_cookie_header,
+        create_admin_session, has_valid_admin_session, oauth_status, valid_record_id,
     },
     core::{ApiError, AppResult, JsonObject},
     upstream::codex::{codex_subscription_from_usage, codex_subscription_metadata},
@@ -32,7 +32,7 @@ use super::{
 };
 
 const MAX_ADMIN_BODY_BYTES: usize = 16 * 1024;
-const AUTH_PROXY_OAUTH_READ_CONCURRENCY: usize = 4;
+const CODEX_ACCOUNT_OAUTH_READ_CONCURRENCY: usize = 4;
 
 pub async fn handle_admin(
     matched: MatchedAdminRoute,
@@ -99,27 +99,33 @@ async fn dispatch(
         require_same_origin(&request, config)?;
     }
 
-    let oauth = OAuthRepository::new(state.config.as_ref());
     let keys = ApiKeyRepository::new(state.config.as_ref());
+    let routing = RoutingRepository::new(state.config.as_ref());
     match matched.route {
         AdminRoute::State => {
-            let credentials = oauth.read().await?;
             let api_keys = keys.read().await?;
             let accounts = keys.read_auth_proxy_accounts().await?;
-            let accounts = auth_proxy_account_states(state, accounts).await?;
+            let routing_state = routing.read().await?;
+            let codex_accounts = codex_account_states(state, routing_state.accounts).await?;
             response::json(
                 &json!({
-                    "oauth": credentials.as_ref().map(oauth_status),
-                    "subscription": credentials.as_ref().map(|credentials| {
-                        codex_subscription_metadata(credentials.id_token.as_deref())
-                    }),
+                    "codexAccounts": codex_accounts,
                     "apiKeys": api_keys,
                     "authProxyAccounts": accounts,
+                    "accountGroups": routing_state.groups,
+                    "routes": routing_state.routes,
                 }),
                 200,
             )
         }
-        AdminRoute::Subscription => {
+        AdminRoute::CodexAccountSubscription => {
+            let id = client_url
+                .query_pairs()
+                .find(|(name, _)| name == "id")
+                .map(|(_, value)| Value::String(value.into_owned()))
+                .unwrap_or(Value::Null);
+            let account = routing.account(&id).await?;
+            let oauth = OAuthRepository::new(state.config.as_ref(), &account.id);
             let client = CodexClient::new(&oauth, &state.chatgpt);
             let usage = client.fetch_usage().await?;
             let subscription = codex_subscription_from_usage(
@@ -222,40 +228,132 @@ async fn dispatch(
                 .await?;
             response::json(&result, 200)
         }
-        AdminRoute::OAuthStart => {
+        AdminRoute::CodexAccountOAuthStart => {
+            let id = routing.next_account_id().await?;
+            let oauth = OAuthRepository::new(state.config.as_ref(), &id);
             let clock = SystemClock;
             let http = ReqwestOAuthHttpClient::new(&state.client);
             let provider = OAuthProvider::new(&http, &clock);
-            let service =
-                DeviceAuthorizationService::new(&oauth, &provider, &clock, &config.admin.secret);
-            response::json(&service.start().await?, 201)
+            let service = DeviceAuthorizationService::new(
+                &oauth,
+                &provider,
+                &clock,
+                &config.admin.secret,
+                &id,
+            );
+            response::json(
+                &json!({
+                    "accountId": id,
+                    "authorization": service.start().await?,
+                }),
+                201,
+            )
         }
-        AdminRoute::OAuthPoll => {
+        AdminRoute::CodexAccountOAuthPoll => {
             let input = admin_json(request).await?;
+            let id = input
+                .get("accountId")
+                .and_then(Value::as_str)
+                .filter(|value| valid_record_id(value))
+                .ok_or_else(invalid_codex_account_id)?;
             let signed_state = required_device_state(&input)?;
+            let oauth = OAuthRepository::new(state.config.as_ref(), id);
             let clock = SystemClock;
             let http = ReqwestOAuthHttpClient::new(&state.client);
             let provider = OAuthProvider::new(&http, &clock);
-            let service =
-                DeviceAuthorizationService::new(&oauth, &provider, &clock, &config.admin.secret);
+            let service = DeviceAuthorizationService::new(
+                &oauth,
+                &provider,
+                &clock,
+                &config.admin.secret,
+                id,
+            );
             match service.poll(signed_state).await? {
                 DevicePollResult::Pending { retry_after } => response::json(
                     &json!({ "status": "pending", "retryAfter": retry_after }),
                     202,
                 ),
-                DevicePollResult::Stored { credentials } => response::json(
-                    &json!({
-                        "status": "stored",
-                        "oauth": oauth_status(&credentials),
-                        "subscription": codex_subscription_metadata(credentials.id_token.as_deref()),
-                    }),
-                    200,
-                ),
+                DevicePollResult::Stored { credentials } => {
+                    if duplicate_codex_login(state, id, &credentials).await? {
+                        oauth.delete().await?;
+                        return Err(duplicate_codex_account());
+                    }
+                    let routing_state = match routing
+                        .create_account(id.to_owned(), credentials.email.as_deref())
+                        .await
+                    {
+                        Ok(routing_state) => routing_state,
+                        Err(error) => {
+                            if let Err(cleanup_error) = oauth.delete().await {
+                                tracing::warn!(
+                                    event = "codex_account_login_cleanup",
+                                    status = "failed",
+                                    error = %cleanup_error
+                                );
+                            }
+                            return Err(error);
+                        }
+                    };
+                    let account = routing_state
+                        .accounts
+                        .into_iter()
+                        .find(|entry| entry.id == id)
+                        .ok_or_else(invalid_admin_request)?;
+                    response::json(
+                        &json!({
+                            "status": "stored",
+                            "account": CodexAccountState {
+                                account,
+                                oauth: Some(oauth_status(&credentials)),
+                                subscription: Some(codex_subscription_metadata(credentials.id_token.as_deref())),
+                            },
+                        }),
+                        200,
+                    )
+                }
             }
         }
-        AdminRoute::OAuthDelete => {
-            oauth.delete().await?;
-            response::json(&json!({ "oauth": Value::Null }), 200)
+        AdminRoute::CodexAccountUpdate => {
+            let input = admin_json(request).await?;
+            let id = input.get("id").cloned().unwrap_or(Value::Null);
+            let value = Value::Object(input);
+            let updated = routing.update_account(&id, &value).await?;
+            codex_accounts_response(state, updated.accounts, 200).await
+        }
+        AdminRoute::CodexAccountDelete => {
+            let input = admin_json(request).await?;
+            let id = input.get("id").cloned().unwrap_or(Value::Null);
+            let account = routing.account(&id).await?;
+            let updated = routing.delete_account(&id).await?;
+            OAuthRepository::new(state.config.as_ref(), &account.id)
+                .delete()
+                .await?;
+            codex_accounts_response(state, updated.accounts, 200).await
+        }
+        AdminRoute::AccountRoutingGet => {
+            let routing_state = routing.read().await?;
+            response::json(
+                &json!({
+                    "accountGroups": routing_state.groups,
+                    "routes": routing_state.routes,
+                }),
+                200,
+            )
+        }
+        AdminRoute::AccountRoutingUpdate => {
+            let value = Value::Object(admin_json(request).await?);
+            let api_keys = keys.read().await?;
+            let accounts = keys.read_auth_proxy_accounts().await?;
+            let updated = routing
+                .replace_configuration(&value, &api_keys, &accounts)
+                .await?;
+            response::json(
+                &json!({
+                    "accountGroups": updated.groups,
+                    "routes": updated.routes,
+                }),
+                200,
+            )
         }
         AdminRoute::ApiKeysGet => response::json(&json!({ "apiKeys": keys.read().await? }), 200),
         AdminRoute::ApiKeysCreate => {
@@ -271,84 +369,36 @@ async fn dispatch(
         AdminRoute::ApiKeysDelete => {
             let input = admin_json(request).await?;
             let id = input.get("id").cloned().unwrap_or(Value::Null);
-            response::json(&json!({ "apiKeys": keys.delete(&id).await? }), 200)
+            let updated = keys.delete(&id).await?;
+            if let Some(id) = id.as_str() {
+                routing
+                    .release_consumer(RouteConsumerKind::ApiKey, id)
+                    .await?;
+            }
+            response::json(&json!({ "apiKeys": updated }), 200)
         }
         AdminRoute::AuthProxyCreate => {
             let input = Value::Object(admin_json(request).await?);
             let accounts = keys.create_auth_proxy_account(&input).await?;
-            auth_proxy_accounts_response(state, accounts, 201).await
+            response::json(&json!({ "authProxyAccounts": accounts }), 201)
         }
         AdminRoute::AuthProxyUpdate => {
             let input = admin_json(request).await?;
             let id = input.get("id").cloned().unwrap_or(Value::Null);
             let value = Value::Object(input);
             let accounts = keys.update_auth_proxy_account(&id, &value).await?;
-            auth_proxy_accounts_response(state, accounts, 200).await
+            response::json(&json!({ "authProxyAccounts": accounts }), 200)
         }
         AdminRoute::AuthProxyDelete => {
             let input = admin_json(request).await?;
             let id = input.get("id").cloned().unwrap_or(Value::Null);
-            let account = keys.auth_proxy_account(&id).await?;
-            OAuthRepository::for_auth_proxy_account(state.config.as_ref(), &account.id)
-                .delete()
-                .await?;
             let accounts = keys.delete_auth_proxy_account(&id).await?;
-            auth_proxy_accounts_response(state, accounts, 200).await
-        }
-        AdminRoute::AuthProxyOAuthStart => {
-            let input = admin_json(request).await?;
-            let id = input.get("id").cloned().unwrap_or(Value::Null);
-            let account = keys.auth_proxy_account(&id).await?;
-            let account_oauth =
-                OAuthRepository::for_auth_proxy_account(state.config.as_ref(), &account.id);
-            let clock = SystemClock;
-            let http = ReqwestOAuthHttpClient::new(&state.client);
-            let provider = OAuthProvider::new(&http, &clock);
-            let service = DeviceAuthorizationService::scoped(
-                &account_oauth,
-                &provider,
-                &clock,
-                &config.admin.secret,
-                &account.id,
-            );
-            response::json(&service.start().await?, 201)
-        }
-        AdminRoute::AuthProxyOAuthPoll => {
-            let input = admin_json(request).await?;
-            let id = input.get("id").cloned().unwrap_or(Value::Null);
-            let signed_state = required_device_state(&input)?;
-            let account = keys.auth_proxy_account(&id).await?;
-            let account_oauth =
-                OAuthRepository::for_auth_proxy_account(state.config.as_ref(), &account.id);
-            let clock = SystemClock;
-            let http = ReqwestOAuthHttpClient::new(&state.client);
-            let provider = OAuthProvider::new(&http, &clock);
-            let service = DeviceAuthorizationService::scoped(
-                &account_oauth,
-                &provider,
-                &clock,
-                &config.admin.secret,
-                &account.id,
-            );
-            match service.poll(signed_state).await? {
-                DevicePollResult::Pending { retry_after } => response::json(
-                    &json!({ "status": "pending", "retryAfter": retry_after }),
-                    202,
-                ),
-                DevicePollResult::Stored { credentials } => response::json(
-                    &json!({ "status": "stored", "oauth": oauth_status(&credentials) }),
-                    200,
-                ),
+            if let Some(id) = id.as_str() {
+                routing
+                    .release_consumer(RouteConsumerKind::AuthProxy, id)
+                    .await?;
             }
-        }
-        AdminRoute::AuthProxyOAuthDelete => {
-            let input = admin_json(request).await?;
-            let id = input.get("id").cloned().unwrap_or(Value::Null);
-            let account = keys.auth_proxy_account(&id).await?;
-            OAuthRepository::for_auth_proxy_account(state.config.as_ref(), &account.id)
-                .delete()
-                .await?;
-            response::json(&json!({ "oauth": Value::Null }), 200)
+            response::json(&json!({ "authProxyAccounts": accounts }), 200)
         }
         AdminRoute::Page | AdminRoute::Login | AdminRoute::Logout => Err(invalid_admin_request()),
     }
@@ -372,40 +422,71 @@ fn query_i64(url: &Url, name: &str) -> AppResult<Option<i64>> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AuthProxyAccountState {
+struct CodexAccountState {
     #[serde(flatten)]
-    account: AuthProxyAccount,
+    account: CodexAccount,
     oauth: Option<OAuthStatus>,
+    subscription: Option<crate::upstream::codex::CodexSubscriptionMetadata>,
 }
 
-async fn auth_proxy_account_states(
+async fn codex_account_states(
     state: &AppState,
-    accounts: Vec<AuthProxyAccount>,
-) -> AppResult<Vec<AuthProxyAccountState>> {
+    accounts: Vec<CodexAccount>,
+) -> AppResult<Vec<CodexAccountState>> {
     stream::iter(accounts)
         .map(|account| {
             let store = state.config.clone();
             async move {
-                let oauth = OAuthRepository::for_auth_proxy_account(store.as_ref(), &account.id);
+                let oauth = OAuthRepository::new(store.as_ref(), &account.id);
                 let credentials = oauth.read().await?;
-                Ok(AuthProxyAccountState {
+                Ok(CodexAccountState {
                     account,
                     oauth: credentials.as_ref().map(oauth_status),
+                    subscription: credentials.as_ref().map(|credentials| {
+                        codex_subscription_metadata(credentials.id_token.as_deref())
+                    }),
                 })
             }
         })
-        .buffered(AUTH_PROXY_OAUTH_READ_CONCURRENCY)
+        .buffered(CODEX_ACCOUNT_OAUTH_READ_CONCURRENCY)
         .try_collect()
         .await
 }
 
-async fn auth_proxy_accounts_response(
+async fn codex_accounts_response(
     state: &AppState,
-    accounts: Vec<AuthProxyAccount>,
+    accounts: Vec<CodexAccount>,
     status: u16,
 ) -> AppResult<Response> {
-    let accounts = auth_proxy_account_states(state, accounts).await?;
-    response::json(&json!({ "authProxyAccounts": accounts }), status)
+    let accounts = codex_account_states(state, accounts).await?;
+    response::json(&json!({ "codexAccounts": accounts }), status)
+}
+
+async fn duplicate_codex_login(
+    state: &AppState,
+    pending_id: &str,
+    credentials: &crate::auth::StoredOAuthCredentials,
+) -> AppResult<bool> {
+    let Some(account_id) = credentials.account_id.as_deref() else {
+        return Ok(false);
+    };
+    let routing = RoutingRepository::new(state.config.as_ref()).read().await?;
+    for account in routing.accounts {
+        if account.id == pending_id {
+            continue;
+        }
+        let stored = OAuthRepository::new(state.config.as_ref(), &account.id)
+            .read()
+            .await?;
+        if stored
+            .as_ref()
+            .and_then(|value| value.account_id.as_deref())
+            == Some(account_id)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn required_device_state(body: &JsonObject) -> AppResult<&str> {
@@ -493,6 +574,18 @@ fn invalid_admin_request() -> ApiError {
     ApiError::new(500, "The management request could not be completed.")
         .with_kind("internal_error")
         .with_code("admin_request_failed")
+}
+
+fn invalid_codex_account_id() -> ApiError {
+    ApiError::new(400, "The Codex account ID is invalid.")
+        .with_kind("invalid_request_error")
+        .with_code("invalid_codex_account")
+}
+
+fn duplicate_codex_account() -> ApiError {
+    ApiError::new(409, "This Codex account is already logged in.")
+        .with_kind("invalid_request_error")
+        .with_code("codex_account_conflict")
 }
 
 fn usage_query_error() -> ApiError {

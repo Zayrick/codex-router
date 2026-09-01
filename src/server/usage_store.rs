@@ -4,19 +4,23 @@ use crate::{
     core::{ApiError, AppResult},
 };
 
-const CODEX_USAGE_KEY: &str = "CODEX_USAGE";
+pub(super) const CODEX_ACCOUNT_USAGE_KEY_PREFIX: &str = "CODEX_USAGE:";
 
 pub struct CodexUsageStateRepository<'a> {
     store: &'a dyn StateStore,
+    storage_key: String,
 }
 
 impl<'a> CodexUsageStateRepository<'a> {
-    pub const fn new(store: &'a dyn StateStore) -> Self {
-        Self { store }
+    pub fn new(store: &'a dyn StateStore, account_id: &str) -> Self {
+        Self {
+            store,
+            storage_key: format!("{CODEX_ACCOUNT_USAGE_KEY_PREFIX}{account_id}"),
+        }
     }
 
     pub async fn read(&self) -> AppResult<Option<CodexUsageMonitorState>> {
-        let Some(serialized) = self.store.get(CODEX_USAGE_KEY).await? else {
+        let Some(serialized) = self.store.get(&self.storage_key).await? else {
             return Ok(None);
         };
         let value = serde_json::from_str(&serialized).map_err(|_| invalid_stored_usage_state())?;
@@ -25,7 +29,7 @@ impl<'a> CodexUsageStateRepository<'a> {
 
     pub async fn store(&self, state: &CodexUsageMonitorState) -> AppResult<()> {
         let serialized = serde_json::to_string(state).map_err(|_| invalid_stored_usage_state())?;
-        self.store.put(CODEX_USAGE_KEY, &serialized).await
+        self.store.put(&self.storage_key, &serialized).await
     }
 }
 

@@ -45,34 +45,54 @@ WAL 模式，并在 Unix 上将数据库、`-wal` 和 `-shm` 文件权限设置�
 
 ## 明文状态格式
 
-OAuth 字段使用 camelCase，与管理 API 的 JSON 结构一致：
+账户目录、账户组与调用身份分配统一保存在 `state.account_routing`。账户组在 Codex 账户页维护；
+创建或编辑 API Key、下游账户时可以直接选择单个账户或账户组。以下示例展示字段形状，实际运行
+建议交给管理 API 写入：
 
 ```toml
-[state.oauth]
+[[state.account_routing.accounts]]
+id = "00000000-0000-4000-8000-000000000001"
+name = "Personal"
+enabled = true
+
+[[state.account_routing.groups]]
+id = "00000000-0000-4000-8000-000000000002"
+name = "Production Pool"
+accountIds = ["00000000-0000-4000-8000-000000000001"]
+strategy = "round-robin"
+sessionAffinity = true
+sessionAffinityTtl = "1h" # 或 "unlimited"
+
+[[state.account_routing.routes]]
+consumerType = "api_key" # 或 "auth_proxy"
+consumerId = "00000000-0000-4000-8000-000000000003"
+targetType = "group" # 或 "account"
+targetId = "00000000-0000-4000-8000-000000000002"
+```
+
+`strategy` 可设为 `round-robin`、`weighted-round-robin` 或 `fallback`。加权轮询的权重无需手工配置，
+由每账户额度快照中各 Codex 窗口的平均“剩余百分比 ÷ 距离刷新剩余分钟”计算。`round-robin` 和
+`weighted-round-robin` 可配置 `sessionAffinity` 与 TTL；`fallback` 按调用身份固定账户。
+
+`server.maintenance_interval_seconds` 控制 OAuth 与额度巡检间隔，默认值为 300 秒。
+
+每个 Codex 账户的 OAuth 使用账户 UUID 作为 TOML 表 key；字段使用 camelCase，与管理 API JSON
+一致：
+
+```toml
+[state.codex_account_oauth."00000000-0000-4000-8000-000000000001"]
 version = 1
 accessToken = "..."
 refreshToken = "..."
 idToken = "..."
-accountId = "..."
+accountId = "account-id"
 email = "user@example.com"
 expiresAt = 1800003600000
 updatedAt = "2027-01-15T09:00:00.000Z"
 ```
 
-代理账户 OAuth 使用账户 UUID 作为 TOML 表 key：
-
-```toml
-[state.auth_proxy_oauth."00000000-0000-4000-8000-000000000001"]
-version = 1
-accessToken = "..."
-refreshToken = "..."
-accountId = "account-id"
-expiresAt = 1800003600000
-updatedAt = "2027-01-15T09:00:00.000Z"
-```
-
-手工录入的 API Key 和代理账户必须使用合法 UUID。通过管理 API 创建时，服务会自动生成 UUID、
-校验唯一性并把更新原子写回配置文件。
+手工录入的 Codex 账户、账户组、API Key 和下游账户必须使用合法 UUID，名称在各自集合内唯一。
+管理 API 会校验引用并把更新原子写回配置文件。旧版 OAuth 与额度字段会在启动时自动迁移。
 
 ## 配置文件写入语义
 

@@ -1,6 +1,7 @@
 //! Native server adapters.
 
 mod account;
+mod account_router;
 mod admin;
 mod api;
 mod body;

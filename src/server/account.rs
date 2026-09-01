@@ -4,8 +4,8 @@ use serde::Serialize;
 use crate::{
     application::MonitoredQuotaWindow,
     auth::{
-        ApiKeyRepository, AuthProxyAccount, OAuthRepository, constant_time_equal,
-        matching_auth_proxy_account,
+        ApiKeyRepository, AuthProxyAccount, OAuthRepository, RouteConsumerKind,
+        constant_time_equal, matching_auth_proxy_account,
     },
     core::{ApiError, AppResult},
     upstream::codex::{
@@ -37,6 +37,13 @@ impl PublicAccountKind {
         match self {
             Self::ApiKey => "api_key",
             Self::AuthProxy => "auth_proxy",
+        }
+    }
+
+    const fn route_consumer(self) -> RouteConsumerKind {
+        match self {
+            Self::ApiKey => RouteConsumerKind::ApiKey,
+            Self::AuthProxy => RouteConsumerKind::AuthProxy,
         }
     }
 }
@@ -155,32 +162,26 @@ async fn account_dashboard(
     state: &AppState,
 ) -> AppResult<Response> {
     let now_ms = current_time_ms();
-    let primary_oauth = OAuthRepository::new(state.config.as_ref());
-    let account_oauth = (account.kind == PublicAccountKind::AuthProxy)
-        .then(|| OAuthRepository::for_auth_proxy_account(state.config.as_ref(), &account.id));
-    let account_credentials = match account_oauth.as_ref() {
-        Some(repository) => repository.read().await?,
-        None => None,
-    };
-    let use_account_oauth = account_credentials.as_ref().is_some_and(|credentials| {
-        credentials.expires_at > now_ms
-            && credentials
-                .account_id
-                .as_deref()
-                .map(str::trim)
-                .is_some_and(|value| !value.is_empty())
-    });
     let identity = UsageIdentityFilter::parse(account.kind.identity_type(), &account.id)
         .expect("stored public account identity is valid");
-    let selected_oauth = if use_account_oauth {
-        account_oauth
-            .as_ref()
-            .expect("account OAuth exists when selected")
-    } else {
-        &primary_oauth
+    let selected = state
+        .account_router
+        .inspect(
+            state.config.as_ref(),
+            account.kind.route_consumer(),
+            &account.id,
+            now_ms,
+        )
+        .await
+        .ok()
+        .flatten();
+    let quota = match selected.as_ref() {
+        Some(selected) => {
+            let oauth = OAuthRepository::new(state.config.as_ref(), &selected.account.id);
+            quota_snapshot(&oauth, &selected.account.id, state, now_ms).await
+        }
+        None => None,
     };
-
-    let quota = quota_snapshot(selected_oauth, use_account_oauth, state, now_ms).await;
     let bounds = (range == UsageRange::Cycle)
         .then(|| {
             quota
@@ -216,16 +217,11 @@ async fn account_dashboard(
 
 async fn quota_snapshot(
     oauth: &OAuthRepository<'_>,
-    live: bool,
+    account_id: &str,
     state: &AppState,
     now_ms: i64,
 ) -> Option<PublicQuotaSnapshot> {
-    let result = if live {
-        live_quota_snapshot(oauth, state, now_ms).await
-    } else {
-        cached_quota_snapshot(state).await
-    };
-    match result {
+    match live_quota_snapshot(oauth, state, now_ms).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
             tracing::warn!(
@@ -233,7 +229,10 @@ async fn quota_snapshot(
                 status = "failed",
                 error = %error
             );
-            None
+            cached_quota_snapshot(state, account_id)
+                .await
+                .ok()
+                .flatten()
         }
     }
 }
@@ -258,19 +257,24 @@ async fn live_quota_snapshot(
     }))
 }
 
-async fn cached_quota_snapshot(state: &AppState) -> AppResult<Option<PublicQuotaSnapshot>> {
-    Ok(CodexUsageStateRepository::new(state.config.as_ref())
-        .read()
-        .await?
-        .map(|snapshot| PublicQuotaSnapshot {
-            sampled_at: snapshot.sampled_at,
-            plan_type: snapshot.plan_type,
-            windows: snapshot
-                .windows
-                .iter()
-                .map(PublicQuotaWindow::from)
-                .collect(),
-        }))
+async fn cached_quota_snapshot(
+    state: &AppState,
+    account_id: &str,
+) -> AppResult<Option<PublicQuotaSnapshot>> {
+    Ok(
+        CodexUsageStateRepository::new(state.config.as_ref(), account_id)
+            .read()
+            .await?
+            .map(|snapshot| PublicQuotaSnapshot {
+                sampled_at: snapshot.sampled_at,
+                plan_type: snapshot.plan_type,
+                windows: snapshot
+                    .windows
+                    .iter()
+                    .map(PublicQuotaWindow::from)
+                    .collect(),
+            }),
+    )
 }
 
 impl From<&CodexQuotaWindow> for PublicQuotaWindow {

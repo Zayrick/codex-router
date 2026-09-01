@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS usage_events (
     identity_type TEXT NOT NULL,
     identity_id TEXT NOT NULL,
     identity_name TEXT NOT NULL,
+    codex_account_id TEXT NOT NULL DEFAULT '',
+    codex_account_name TEXT NOT NULL DEFAULT '',
+    account_group_id TEXT NOT NULL DEFAULT '',
+    account_group_name TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL,
     transport TEXT NOT NULL,
     endpoint TEXT NOT NULL,
@@ -54,17 +58,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_response_id
     ON usage_events(response_id) WHERE response_id <> '';
 "#;
 
+const ROUTING_INDEXES: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_usage_events_codex_account
+    ON usage_events(codex_account_id, recorded_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_events_account_group
+    ON usage_events(account_group_id, recorded_at_ms DESC);
+"#;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageIdentity {
     pub kind: UsageIdentityKind,
     pub id: String,
     pub name: String,
+    pub codex_account_id: String,
+    pub codex_account_name: String,
+    pub account_group_id: String,
+    pub account_group_name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageIdentityKind {
     ApiKey,
     AuthProxy,
+    CodexAccount,
+    AccountGroup,
 }
 
 impl UsageIdentityKind {
@@ -72,6 +89,8 @@ impl UsageIdentityKind {
         match self {
             Self::ApiKey => "api_key",
             Self::AuthProxy => "auth_proxy",
+            Self::CodexAccount => "codex_account",
+            Self::AccountGroup => "account_group",
         }
     }
 }
@@ -87,6 +106,8 @@ impl UsageIdentityFilter {
         let kind = match kind {
             "api_key" => UsageIdentityKind::ApiKey,
             "auth_proxy" => UsageIdentityKind::AuthProxy,
+            "codex_account" => UsageIdentityKind::CodexAccount,
+            "account_group" => UsageIdentityKind::AccountGroup,
             _ => return None,
         };
         if id.is_empty() || id.len() > 256 {
@@ -113,6 +134,10 @@ impl From<&ClientApiKey> for UsageIdentity {
             kind: UsageIdentityKind::ApiKey,
             id: value.id.clone(),
             name: value.name.clone(),
+            codex_account_id: String::new(),
+            codex_account_name: String::new(),
+            account_group_id: String::new(),
+            account_group_name: String::new(),
         }
     }
 }
@@ -123,7 +148,28 @@ impl From<&AuthProxyAccount> for UsageIdentity {
             kind: UsageIdentityKind::AuthProxy,
             id: value.id.clone(),
             name: value.name.clone(),
+            codex_account_id: String::new(),
+            codex_account_name: String::new(),
+            account_group_id: String::new(),
+            account_group_name: String::new(),
         }
+    }
+}
+
+impl UsageIdentity {
+    pub fn with_account_route(
+        mut self,
+        account_id: &str,
+        account_name: &str,
+        group: Option<(&str, &str)>,
+    ) -> Self {
+        self.codex_account_id = account_id.into();
+        self.codex_account_name = account_name.into();
+        if let Some((id, name)) = group {
+            self.account_group_id = id.into();
+            self.account_group_name = name.into();
+        }
+        self
     }
 }
 
@@ -133,6 +179,10 @@ struct UsageEvent {
     identity_type: String,
     identity_id: String,
     identity_name: String,
+    codex_account_id: String,
+    codex_account_name: String,
+    account_group_id: String,
+    account_group_name: String,
     model: String,
     transport: String,
     endpoint: String,
@@ -193,6 +243,10 @@ impl UsageStore {
         connection
             .execute_batch(SCHEMA)
             .context("failed to initialize usage database schema")?;
+        ensure_usage_routing_columns(&connection)?;
+        connection
+            .execute_batch(ROUTING_INDEXES)
+            .context("failed to initialize usage routing indexes")?;
         restrict_database_permissions(&path)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -221,16 +275,21 @@ impl UsageStore {
                 r#"
                 INSERT OR IGNORE INTO usage_events (
                     recorded_at_ms, identity_type, identity_id, identity_name,
+                    codex_account_id, codex_account_name, account_group_id, account_group_name,
                     model, transport, endpoint, status, response_id,
                     input_tokens, cached_input_tokens, cache_creation_input_tokens,
                     output_tokens, reasoning_output_tokens, total_tokens
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
                 "#,
                 params![
                     event.recorded_at_ms,
                     event.identity_type,
                     event.identity_id,
                     event.identity_name,
+                    event.codex_account_id,
+                    event.codex_account_name,
+                    event.account_group_id,
+                    event.account_group_name,
                     event.model,
                     event.transport,
                     event.endpoint,
@@ -291,6 +350,28 @@ impl UsageStore {
         .await
         .context("usage model query task failed")?
     }
+}
+
+fn ensure_usage_routing_columns(connection: &Connection) -> Result<()> {
+    let mut statement = connection.prepare("PRAGMA table_info(usage_events)")?;
+    let columns: std::collections::HashSet<String> = statement
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(statement);
+    for name in [
+        "codex_account_id",
+        "codex_account_name",
+        "account_group_id",
+        "account_group_name",
+    ] {
+        if !columns.contains(name) {
+            connection.execute(
+                &format!("ALTER TABLE usage_events ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"),
+                [],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -427,6 +508,10 @@ impl UsageTracker {
             identity_type: self.inner.identity.kind.as_str().into(),
             identity_id: self.inner.identity.id.clone(),
             identity_name: self.inner.identity.name.clone(),
+            codex_account_id: self.inner.identity.codex_account_id.clone(),
+            codex_account_name: self.inner.identity.codex_account_name.clone(),
+            account_group_id: self.inner.identity.account_group_id.clone(),
+            account_group_name: self.inner.identity.account_group_name.clone(),
             model: parsed.model,
             transport: self.inner.transport.into(),
             endpoint: self.inner.endpoint.clone(),
@@ -737,6 +822,10 @@ pub struct UsageEventRow {
     pub identity_type: String,
     pub identity_id: String,
     pub identity_name: String,
+    pub codex_account_id: String,
+    pub codex_account_name: String,
+    pub account_group_id: String,
+    pub account_group_name: String,
     pub model: String,
     pub transport: String,
     pub endpoint: String,
@@ -759,12 +848,14 @@ fn query_dashboard(
 ) -> Result<UsageDashboard> {
     let now = current_time_ms();
     let (identity_type, identity_id) = identity_parameters(identity);
-    let earliest = connection.query_row(
-        "SELECT MIN(recorded_at_ms) FROM usage_events \
-         WHERE (?1 IS NULL OR (identity_type = ?1 AND identity_id = ?2))",
-        params![identity_type, identity_id],
-        |row| row.get::<_, Option<i64>>(0),
-    )?;
+    let earliest_sql = format!(
+        "SELECT MIN(recorded_at_ms) FROM usage_events WHERE {}",
+        identity_filter_sql(1, 2)
+    );
+    let earliest =
+        connection.query_row(&earliest_sql, params![identity_type, identity_id], |row| {
+            row.get::<_, Option<i64>>(0)
+        })?;
     let (start_at, end_at) = if range == UsageRange::Cycle {
         bounds
             .map(|bounds| (bounds.start_at, bounds.end_at))
@@ -818,6 +909,16 @@ fn identity_parameters(identity: Option<&UsageIdentityFilter>) -> (Option<&str>,
         .unwrap_or((None, None))
 }
 
+fn identity_filter_sql(kind_parameter: usize, id_parameter: usize) -> String {
+    format!(
+        "(?{kind_parameter} IS NULL \
+         OR (?{kind_parameter} IN ('api_key', 'auth_proxy') \
+             AND identity_type = ?{kind_parameter} AND identity_id = ?{id_parameter}) \
+         OR (?{kind_parameter} = 'codex_account' AND codex_account_id = ?{id_parameter}) \
+         OR (?{kind_parameter} = 'account_group' AND account_group_id = ?{id_parameter}))"
+    )
+}
+
 const TOTAL_COLUMNS: &str = r#"
     COUNT(*),
     COALESCE(SUM(input_tokens), 0),
@@ -834,10 +935,11 @@ fn query_totals(
     end_at: i64,
     identity: Option<&UsageIdentityFilter>,
 ) -> Result<UsageTotals> {
+    let identity_filter = identity_filter_sql(3, 4);
     let sql = format!(
         "SELECT {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4))"
+         AND {identity_filter}"
     );
     let (identity_type, identity_id) = identity_parameters(identity);
     Ok(connection.query_row(
@@ -853,10 +955,11 @@ fn query_models(
     end_at: i64,
     identity: Option<&UsageIdentityFilter>,
 ) -> Result<Vec<UsageBreakdownRow>> {
+    let identity_filter = identity_filter_sql(3, 4);
     let sql = format!(
         "SELECT model, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) \
+         AND {identity_filter} \
          GROUP BY model ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, model LIMIT ?5"
     );
     let mut statement = connection.prepare(&sql)?;
@@ -885,10 +988,11 @@ fn query_identities(
     end_at: i64,
     identity: Option<&UsageIdentityFilter>,
 ) -> Result<Vec<UsageIdentityRow>> {
+    let identity_filter = identity_filter_sql(3, 4);
     let sql = format!(
         "SELECT identity_type, identity_id, identity_name, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) \
+         AND {identity_filter} \
          GROUP BY identity_type, identity_id, identity_name \
          ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, identity_name LIMIT ?5"
     );
@@ -940,6 +1044,7 @@ fn query_series(
     } else {
         bucket_ms
     };
+    let identity_filter = identity_filter_sql(6, 7);
     let sql = format!(
         r#"
         SELECT (((recorded_at_ms - ?1) * ?2) / ?3), model, {TOTAL_COLUMNS},
@@ -947,7 +1052,7 @@ fn query_series(
                COALESCE(SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END), 0)
         FROM usage_events
         WHERE recorded_at_ms >= ?4 AND recorded_at_ms < ?5
-          AND (?6 IS NULL OR (identity_type = ?6 AND identity_id = ?7))
+          AND {identity_filter}
         GROUP BY 1, model ORDER BY 1
         "#,
     );
@@ -1056,10 +1161,11 @@ fn query_total_cost(
     identity: Option<&UsageIdentityFilter>,
     prices: &BTreeMap<String, ModelPrice>,
 ) -> Result<f64> {
+    let identity_filter = identity_filter_sql(3, 4);
     let sql = format!(
         "SELECT model, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) \
+         AND {identity_filter} \
          GROUP BY model"
     );
     let mut statement = connection.prepare(&sql)?;
@@ -1084,10 +1190,11 @@ fn apply_identity_costs(
     prices: &BTreeMap<String, ModelPrice>,
     identities: &mut [UsageIdentityRow],
 ) -> Result<()> {
+    let identity_filter = identity_filter_sql(3, 4);
     let sql = format!(
         "SELECT identity_type, identity_id, model, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) \
+         AND {identity_filter} \
          GROUP BY identity_type, identity_id, model"
     );
     let mut statement = connection.prepare(&sql)?;
@@ -1124,11 +1231,13 @@ fn query_unpriced_models(
     identity: Option<&UsageIdentityFilter>,
     prices: &BTreeMap<String, ModelPrice>,
 ) -> Result<Vec<String>> {
-    let mut statement = connection.prepare(
+    let sql = format!(
         "SELECT DISTINCT model FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 AND total_tokens > 0 \
-         AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4)) ORDER BY model",
-    )?;
+         AND {} ORDER BY model",
+        identity_filter_sql(3, 4)
+    );
+    let mut statement = connection.prepare(&sql)?;
     let (identity_type, identity_id) = identity_parameters(identity);
     let rows = statement.query_map(
         params![start_at, end_at, identity_type, identity_id],
@@ -1160,17 +1269,20 @@ fn query_recent_events(
     end_at: i64,
     identity: Option<&UsageIdentityFilter>,
 ) -> Result<Vec<UsageEventRow>> {
-    let mut statement = connection.prepare(
+    let sql = format!(
         r#"
         SELECT id, recorded_at_ms, identity_type, identity_id, identity_name,
+               codex_account_id, codex_account_name, account_group_id, account_group_name,
                model, transport, endpoint, status, input_tokens, cached_input_tokens,
                cache_creation_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
         FROM usage_events
         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2
-          AND (?3 IS NULL OR (identity_type = ?3 AND identity_id = ?4))
+          AND {}
         ORDER BY recorded_at_ms DESC, id DESC LIMIT ?5
         "#,
-    )?;
+        identity_filter_sql(3, 4)
+    );
+    let mut statement = connection.prepare(&sql)?;
     let (identity_type, identity_id) = identity_parameters(identity);
     let rows = statement.query_map(
         params![
@@ -1187,16 +1299,20 @@ fn query_recent_events(
                 identity_type: row.get(2)?,
                 identity_id: row.get(3)?,
                 identity_name: row.get(4)?,
-                model: row.get(5)?,
-                transport: row.get(6)?,
-                endpoint: row.get(7)?,
-                status: row.get(8)?,
-                input_tokens: row.get(9)?,
-                cached_input_tokens: row.get(10)?,
-                cache_creation_input_tokens: row.get(11)?,
-                output_tokens: row.get(12)?,
-                reasoning_output_tokens: row.get(13)?,
-                total_tokens: row.get(14)?,
+                codex_account_id: row.get(5)?,
+                codex_account_name: row.get(6)?,
+                account_group_id: row.get(7)?,
+                account_group_name: row.get(8)?,
+                model: row.get(9)?,
+                transport: row.get(10)?,
+                endpoint: row.get(11)?,
+                status: row.get(12)?,
+                input_tokens: row.get(13)?,
+                cached_input_tokens: row.get(14)?,
+                cache_creation_input_tokens: row.get(15)?,
+                output_tokens: row.get(16)?,
+                reasoning_output_tokens: row.get(17)?,
+                total_tokens: row.get(18)?,
                 cost_usd: 0.0,
             })
         },
@@ -1232,6 +1348,10 @@ mod tests {
             kind: UsageIdentityKind::ApiKey,
             id: "key-1".into(),
             name: "laptop".into(),
+            codex_account_id: "codex-1".into(),
+            codex_account_name: "primary".into(),
+            account_group_id: "group-1".into(),
+            account_group_name: "pool".into(),
         }
     }
 
@@ -1303,6 +1423,10 @@ mod tests {
             identity_type: "api_key".into(),
             identity_id: "key-1".into(),
             identity_name: "laptop".into(),
+            codex_account_id: String::new(),
+            codex_account_name: String::new(),
+            account_group_id: String::new(),
+            account_group_name: String::new(),
             model: "gpt-5.6-sol".into(),
             transport: "http".into(),
             endpoint: "/v1/responses".into(),
@@ -1342,6 +1466,10 @@ mod tests {
                     identity_type: "api_key".into(),
                     identity_id: "key-1".into(),
                     identity_name: "laptop".into(),
+                    codex_account_id: String::new(),
+                    codex_account_name: String::new(),
+                    account_group_id: String::new(),
+                    account_group_name: String::new(),
                     model: "gpt-test".into(),
                     transport: "http".into(),
                     endpoint: "/v1/responses".into(),
@@ -1414,6 +1542,10 @@ mod tests {
                 identity_type: "api_key".into(),
                 identity_id: "key-1".into(),
                 identity_name: "laptop".into(),
+                codex_account_id: "codex-1".into(),
+                codex_account_name: "personal".into(),
+                account_group_id: "group-1".into(),
+                account_group_name: "pool".into(),
                 model: "gpt-5.6-sol".into(),
                 transport: "http".into(),
                 endpoint: "/v1/responses".into(),
@@ -1431,6 +1563,10 @@ mod tests {
                 identity_type: "auth_proxy".into(),
                 identity_id: "account-1".into(),
                 identity_name: "production".into(),
+                codex_account_id: "codex-2".into(),
+                codex_account_name: "team".into(),
+                account_group_id: "group-1".into(),
+                account_group_name: "pool".into(),
                 model: "gpt-5.6-terra".into(),
                 transport: "websocket".into(),
                 endpoint: "/v1/responses".into(),
@@ -1469,6 +1605,24 @@ mod tests {
                 .sum::<i64>(),
             1
         );
+
+        let account_filter = UsageIdentityFilter::parse("codex_account", "codex-1").unwrap();
+        let account_dashboard = store
+            .dashboard(UsageRange::Week, Some(account_filter))
+            .await
+            .unwrap();
+        assert_eq!(account_dashboard.totals.requests, 1);
+        assert_eq!(
+            account_dashboard.recent_events[0].codex_account_name,
+            "personal"
+        );
+
+        let group_filter = UsageIdentityFilter::parse("account_group", "group-1").unwrap();
+        let group_dashboard = store
+            .dashboard(UsageRange::Week, Some(group_filter))
+            .await
+            .unwrap();
+        assert_eq!(group_dashboard.totals.requests, 2);
 
         assert!(UsageIdentityFilter::parse("unknown", "account-1").is_none());
         assert!(UsageIdentityFilter::parse("api_key", "").is_none());

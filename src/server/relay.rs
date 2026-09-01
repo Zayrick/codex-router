@@ -7,10 +7,7 @@ use axum::{
 use url::Url;
 
 use crate::{
-    auth::{
-        ApiKeyRepository, OAuthRepository, auth_proxy_credentials_or_primary,
-        matching_auth_proxy_account,
-    },
+    auth::{ApiKeyRepository, OAuthRepository, RouteConsumerKind, matching_auth_proxy_account},
     core::{ApiError, AppResult},
     upstream::{
         codex::{CodexCredentials, resolve_chatgpt_url},
@@ -28,6 +25,7 @@ use super::{
 };
 
 struct RelayReplacement {
+    account_id: String,
     credentials: CodexCredentials,
     identity: UsageIdentity,
 }
@@ -56,7 +54,7 @@ async fn dispatch_relay(
             .get(ACCOUNT_ID_HEADER)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        replacement_credentials(incoming_account_id.as_deref(), state).await?
+        replacement_credentials(incoming_account_id.as_deref(), request.headers(), state).await?
     } else {
         None
     };
@@ -65,6 +63,7 @@ async fn dispatch_relay(
 
 async fn replacement_credentials(
     incoming_account_id: Option<&str>,
+    headers: &axum::http::HeaderMap,
     state: &AppState,
 ) -> AppResult<Option<RelayReplacement>> {
     let accounts = ApiKeyRepository::new(state.config.as_ref())
@@ -73,10 +72,21 @@ async fn replacement_credentials(
     let Some(account) = matching_auth_proxy_account(incoming_account_id, &accounts) else {
         return Ok(None);
     };
-    let primary = OAuthRepository::new(state.config.as_ref());
-    let auth_proxy = OAuthRepository::for_auth_proxy_account(state.config.as_ref(), &account.id);
-    let stored =
-        auth_proxy_credentials_or_primary(&auth_proxy, &primary, current_time_ms()).await?;
+    let Some(account_route) = state
+        .account_router
+        .resolve(
+            state.config.as_ref(),
+            RouteConsumerKind::AuthProxy,
+            &account.id,
+            headers,
+            current_time_ms(),
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let oauth = OAuthRepository::new(state.config.as_ref(), &account_route.account.id);
+    let stored = oauth.require_valid(current_time_ms()).await?;
     if stored
         .account_id
         .as_deref()
@@ -84,12 +94,21 @@ async fn replacement_credentials(
     {
         return Err(missing_oauth_account_id());
     }
+    let identity = UsageIdentity::from(account).with_account_route(
+        &account_route.account.id,
+        &account_route.account.name,
+        account_route
+            .group
+            .as_ref()
+            .map(|group| (group.id.as_str(), group.name.as_str())),
+    );
     Ok(Some(RelayReplacement {
+        account_id: account_route.account.id,
         credentials: CodexCredentials {
             token: stored.access_token,
             account_id: stored.account_id,
         },
-        identity: account.into(),
+        identity,
     }))
 }
 
@@ -124,8 +143,9 @@ async fn forward_relay(
                 )
             }
         });
+    let routed_account_id = replacement.map(|replacement| replacement.account_id.clone());
     if let Some(upgrade) = upgrade {
-        return websocket::proxy(
+        let output = websocket::proxy(
             upgrade,
             target,
             headers,
@@ -133,7 +153,14 @@ async fn forward_relay(
             tracker,
             state.chatgpt.proxy(),
         )
-        .await;
+        .await?;
+        if let Some(account_id) = routed_account_id.as_deref() {
+            state
+                .account_router
+                .observe_upstream_status(account_id, output.status().as_u16())
+                .await;
+        }
+        return Ok(output);
     }
 
     let mut outgoing = state
@@ -147,6 +174,12 @@ async fn forward_relay(
         outgoing = outgoing.body(reqwest::Body::wrap_stream(body.into_data_stream()));
     }
     let upstream = outgoing.send().await.map_err(relay_fetch_error)?;
+    if let Some(account_id) = routed_account_id.as_deref() {
+        state
+            .account_router
+            .observe_upstream_status(account_id, upstream.status().as_u16())
+            .await;
+    }
     Ok(match tracker {
         Some(tracker) => response::upstream_proxy_tracked(upstream, tracker),
         None => response::upstream_proxy(upstream),

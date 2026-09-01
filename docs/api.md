@@ -28,8 +28,8 @@ Codex Router 通过协议转换、Codex 原生映射和透明传输提供多种�
 2. `X-Api-Key: <key>`；
 3. `X-Goog-Api-Key: <key>`。
 
-同时提供多个 header 时，服务只验证优先级最高的值，不会在验证失败后回退。缺失、错误或
-已停用的 Key 返回空正文 `404`。
+同时提供多个 header 时，服务只验证优先级最高的值，不会在验证失败后回退。缺失、错误、
+已停用或尚未分配账户路由的 Key 返回空正文 `404`。
 
 已知公开路径的 `OPTIONS` 请求无需鉴权，返回 `204` 并应用 `server.cors_origin`。管理路由不启用
 CORS。
@@ -38,7 +38,7 @@ CORS。
 
 | 方法与路径 | 鉴权 | 行为 |
 | --- | --- | --- |
-| `GET /healthz` | 无 | 配置文件中的 OAuth 可读取且未过期时返回空正文 `204`；其他情况返回空正文 `404` |
+| `GET /healthz` | 无 | 统一账户池中至少一个已启用账户的 OAuth 可读取且未过期时返回空正文 `204`；其他情况返回空正文 `404` |
 
 健康检查不验证 ChatGPT 上游可达性，也不发起上游请求。
 
@@ -70,10 +70,25 @@ Query、流式正文和端到端 header 转发到固定的 `https://chatgpt.com`
 WebSocket 响应。配置 `upstream.chatgpt_proxy` 时这些连接通过 SOCKS5 建立。该路径族不执行下游
 API Key 鉴权或协议转换。
 
-`/backend-api` 请求中的 `ChatGPT-Account-ID` 精确匹配一条已启用代理账户记录时，服务优先
-使用该记录自己的有效 OAuth；该记录尚未登录、Token 已过期或凭据缺少账户 ID 时自动回退到主
-Codex OAuth。两者都会替换请求中已有的 `Authorization` 和 `ChatGPT-Account-ID`。记录已停用或
-未匹配时按原认证信息转发。
+`/backend-api` 请求中的 `ChatGPT-Account-ID` 精确匹配一条已启用下游账户记录时，服务查询该
+调用身份的账户路由。分配到单个账户或账户组时，会使用调度得到的有效 Codex OAuth 替换来访
+`Authorization` 和 `ChatGPT-Account-ID`；尚未分配、记录已停用或未匹配时按原认证信息透明转发。
+已配置路由但目标没有可用账户时返回本地错误。
+
+账户组的 `strategy` 支持以下值：
+
+- `round-robin`：按稳定账户顺序平均轮询；
+- `weighted-round-robin`：按 Codex 额度窗口的平均
+  `remainingPercent / 距离 resetAt 的剩余分钟` 平滑加权，未知额度按组内平均权重处理；
+- `fallback`：按 API Key 或下游 account id 固定账户，并在该账户不可用时切换。
+
+`round-robin` 和 `weighted-round-robin` 支持 `sessionAffinity` 与 `sessionAffinityTtl`。TTL 接受
+`humantime` 时长（如 `30m`、`1h`、`7d`）或 `unlimited`。启用亲和后依次识别
+`x-claude-code-session-id`、`session-id`、`session_id`、`x-session-id`、`x-session-affinity` 和
+`x-client-request-id`；无法取得会话 ID 时使用所选策略。
+
+已路由请求返回 `429` 时，调度器会隔离对应账户；额度巡检确认恢复后重新启用调度。巡检间隔由
+`server.maintenance_interval_seconds` 控制，默认 300 秒。
 
 未注册的其他 HTTP 路径同样透明转发到 ChatGPT 上游，并保留 `Authorization`、
 `ChatGPT-Account-ID`、Cookie 和其他端到端 header。健康检查、状态页、隐藏管理路径和已注册
@@ -204,9 +219,9 @@ URL 或自定义子协议。
 `7d`、`30d` 和 `all`。返回身份类型、请求次数、Token、成本、时间序列、模型占比与额度时间条，
 但不会回显 account id、API Key、OAuth、邮箱、Cookie 或管理会话。
 
-API Key 页面使用主账户的后台额度快照；配置了独立 OAuth 的代理账户会读取自己的额度，未配置时
-沿用主账户额度。无法读取额度时仍返回 Token 用量，`quota` 为 `null`。无效或已停用的凭证返回本地
-通用的 `404` JSON 错误。
+额度根据该调用身份当前映射的单个账户或账户组可用成员读取。公开查询不会推进组的轮询游标；
+无法读取额度时仍返回 Token 用量，`quota` 为 `null`。无效、已停用或未分配的 API Key 返回本地
+通用的 `404` JSON 错误；未分配下游账户仍可查询既有 Token 记录，但没有账户额度。
 
 ## 12. Token 用量统计
 
@@ -215,9 +230,9 @@ usage 的上游终止 JSON/SSE/WebSocket 事件时把用量写入 SQLite。一�
 response，相同 response ID 只落库一次。模型优先取终止响应，缺失且请求模型可用时使用请求模型。
 
 管理会话可读取 `GET /<admin.path>/admin/usage?range=7d`。`range` 支持 `24h`、`7d`、`30d` 和
-`all`，省略时使用 `7d`。还可同时传入 `identityType` 与 `identityId`，对单个调用身份重新计算全部
-聚合结果；`identityType` 支持 `api_key` 和 `auth_proxy`，`identityId` 使用 `/state` 返回的稳定记录
-ID。两个身份参数必须一起出现，非法范围或身份筛选返回 `400`。返回 JSON 包含：
+`all`，省略时使用 `7d`。还可同时传入 `identityType` 与 `identityId` 重新计算全部聚合结果；
+`identityType` 支持 `api_key`、`auth_proxy`、`codex_account` 和 `account_group`，ID 使用 `/state`
+返回的稳定记录 ID。两个身份参数必须一起出现，非法范围或筛选返回 `400`。返回 JSON 包含：
 
 - `startAt`、`endAt` 和所选 `range`；
 - `totals`：请求数以及输入、缓存命中、缓存创建、输出、推理和总 Token；
@@ -231,33 +246,36 @@ ID。两个身份参数必须一起出现，非法范围或身份筛选返回 `4
 ## 13. 管理 API
 
 管理 JSON API 位于 `/<admin.path>/admin`。精确的 `GET /<admin.path>/admin` 返回 React 管理页面；
-页面通过 `?page=usage`、`?page=api-keys`、`?page=accounts` 和 `?page=account` 切换独立视图。错误方法、
-额外路径段和其他隐藏路径族请求返回空 `404`。页面与以下 JSON 端点共享管理契约：
+页面通过 `?page=usage`、`?page=pricing`、`?page=api-keys`、`?page=accounts` 和 `?page=account`
+切换视图。错误方法、额外路径段和其他隐藏路径族请求返回空 `404`。页面与以下 JSON 端点共享管理契约：
 
 | 方法与相对路径 | 用途 |
 | --- | --- |
 | `POST /login` | 使用 `admin.secret` 创建管理会话 |
 | `POST /logout` | 清除管理会话 |
-| `GET /state` | 读取 OAuth 摘要、订阅摘要、API Key 列表和 Backend API 代理设置 |
-| `GET /subscription` | 实时读取订阅与额度 |
-| `GET /usage?range=7d&identityType=api_key&identityId=<id>` | 读取 SQLite 中的下游 Token 用量聚合与最近事件，可选按身份筛选 |
-| `POST /oauth/device` | 创建设备授权请求 |
-| `POST /oauth/device/poll` | 轮询设备授权结果 |
-| `DELETE /oauth` | 删除已保存的 OAuth 凭据 |
+| `GET /state` | 读取 Codex 账户、账户组、路由、API Key 和下游账户 |
+| `GET /codex-accounts/subscription?id=<id>` | 实时读取指定 Codex 账户订阅与额度 |
+| `POST /codex-accounts/oauth/device` | 为新 Codex 账户创建设备授权请求 |
+| `POST /codex-accounts/oauth/device/poll` | 轮询设备授权，并在成功后加入统一账户池 |
+| `PUT /codex-accounts` | 更新账户名称或启用状态；禁用会释放直连路由 |
+| `DELETE /codex-accounts` | 删除账户、OAuth、组成员关系和直连路由 |
+| `GET /account-routing` | 读取账户组与调用身份路由 |
+| `PUT /account-routing` | 原子替换经校验的账户组与路由配置 |
+| `GET /usage?range=7d&identityType=codex_account&identityId=<id>` | 读取 SQLite 用量，可按调用身份、Codex 账户或账户组筛选 |
+| `GET /pricing` | 读取模型价格与已使用模型 |
+| `PUT /pricing` | 替换模型价格配置 |
+| `POST /pricing/sync` | 从价格源同步模型价格 |
 | `GET /api-keys` | 读取 API Key 列表 |
 | `POST /api-keys` | 创建 API Key |
 | `PUT /api-keys` | 更新名称、值或启用状态 |
 | `DELETE /api-keys` | 删除 API Key |
-| `POST /auth-proxy` | 创建代理账户 |
-| `PUT /auth-proxy` | 更新代理账户的名称、`account_id` 或启用状态 |
-| `DELETE /auth-proxy` | 删除代理账户 |
-| `POST /auth-proxy/oauth/device` | 为指定代理账户创建设备授权请求 |
-| `POST /auth-proxy/oauth/device/poll` | 轮询指定代理账户的设备授权结果 |
-| `DELETE /auth-proxy/oauth` | 删除指定代理账户的独立 OAuth 凭据 |
+| `POST /auth-proxy` | 创建下游账户，默认不分配路由 |
+| `PUT /auth-proxy` | 更新下游账户的名称、`account_id` 或启用状态 |
+| `DELETE /auth-proxy` | 删除下游账户并释放其路由 |
 
-`/state`、`/subscription`、OAuth、API Key 和 Backend API 代理端点需要有效的管理会话；登录、退出
-以及所有受保护的管理写请求必须带有与 `server.public_origin` 完全一致的 `Origin`。管理 Cookie
+除登录和退出外，管理端点需要有效会话；所有管理写请求必须带有与 `server.public_origin`
+完全一致的 `Origin`。管理 Cookie
 保持 `Secure`、`HttpOnly` 和 `SameSite=Strict`，因此浏览器管理流量应通过 HTTPS。
 
-服务在创建 API Key 和代理账户时分配 UUID 格式的 `id`。更新、删除和代理账户 OAuth 请求
-使用该 `id` 定位记录。
+Codex 账户、API Key、下游账户和账户组使用 UUID 格式的稳定 `id`。禁用 Codex 账户会暂停其路由，
+删除账户会同时移除组成员关系和直连路由。
