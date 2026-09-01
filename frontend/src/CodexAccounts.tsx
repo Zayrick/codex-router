@@ -9,6 +9,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
 import type {
 	CodexAccount,
 	CodexAccountDeviceAuthorization,
@@ -146,16 +147,13 @@ function CodexAccountCard({
 						</span>
 					</div>
 					<div className="account-header-actions codex-account-header-actions">
-						<label className="key-status-switch" title={account.enabled ? "禁用账户" : "启用账户"}>
-							<input
-								aria-label={`${account.enabled ? "禁用" : "启用"}${account.name}`}
-								checked={account.enabled}
-								className="switch-control"
-								disabled={busy}
-								onChange={onToggle}
-								type="checkbox"
-							/>
-						</label>
+						<Switch
+							aria-label={`${account.enabled ? "禁用" : "启用"}${account.name}`}
+							checked={account.enabled}
+							disabled={busy}
+							onCheckedChange={() => onToggle()}
+							title={account.enabled ? "禁用账户" : "启用账户"}
+						/>
 						<button aria-label="刷新额度" className="icon-button" disabled={loading || busy || !account.enabled} onClick={onRefresh} title="刷新额度" type="button">
 							<RefreshIcon spinning={loading} />
 						</button>

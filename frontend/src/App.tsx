@@ -26,6 +26,7 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Switch } from "@/components/ui/switch";
 import AccountGroups from "./AccountGroups";
 import CodexAccounts from "./CodexAccounts";
 import DeleteConfirmationDialog from "./DeleteConfirmationDialog";
@@ -1024,16 +1025,13 @@ function IdentityTable({
 							</td>
 							<td><span className={`route-state-badge ${route ? "assigned" : "unassigned"}`}>{route ? routeTargetName(route, targets.accounts, targets.groups) : "未分配"}</span></td>
 							<td>
-								<label className="key-status-switch" title={entry.enabled ? "停用" : "启用"}>
-									<input
-										aria-label={`${entry.enabled ? "停用" : "启用"} ${entry.name}`}
-										checked={entry.enabled}
-										className="switch-control"
-										disabled={busy.has(entry.id)}
-										onChange={() => onToggle(entry)}
-										type="checkbox"
-									/>
-								</label>
+								<Switch
+									aria-label={`${entry.enabled ? "停用" : "启用"} ${entry.name}`}
+									checked={entry.enabled}
+									disabled={busy.has(entry.id)}
+									onCheckedChange={() => onToggle(entry)}
+									title={entry.enabled ? "停用" : "启用"}
+								/>
 							</td>
 							<td>
 								<div className="table-actions">
@@ -1106,7 +1104,10 @@ function ApiKeyEditor({
 					<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，该 API Key 的请求将不可用。" />
 					<div className="editor-tools">
 						<Button className="shrink-0" disabled={loading} onClick={() => setKey(generateApiKey())} type="button" variant="outline">重新生成</Button>
-						<label className="switch-row"><strong>启用</strong><input checked={enabled} className="switch-control" disabled={loading} onChange={(event) => setEnabled(event.target.checked)} type="checkbox" /></label>
+						<div className="switch-row">
+							<label htmlFor="api-key-enabled"><strong>启用</strong></label>
+							<Switch checked={enabled} disabled={loading} id="api-key-enabled" onCheckedChange={setEnabled} />
+						</div>
 					</div>
 							<DialogFooter>
 								<DialogClose asChild><Button disabled={loading} type="button" variant="outline">取消</Button></DialogClose>
@@ -1167,7 +1168,10 @@ function ProxyEditor({
 						<input autoCapitalize="none" autoComplete="off" disabled={loading} id="proxy-account-id" maxLength={MAX_ACCOUNT_ID_LENGTH} onChange={(event) => setAccountId(event.target.value)} required spellCheck={false} type="text" value={accountId} />
 					</label>
 					<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，将继续使用来访请求中的上游凭据。" />
-					<label className="switch-row"><strong>启用</strong><input checked={enabled} className="switch-control" disabled={loading} onChange={(event) => setEnabled(event.target.checked)} type="checkbox" /></label>
+					<div className="switch-row">
+						<label htmlFor="proxy-enabled"><strong>启用</strong></label>
+						<Switch checked={enabled} disabled={loading} id="proxy-enabled" onCheckedChange={setEnabled} />
+					</div>
 							<DialogFooter>
 								<DialogClose asChild><Button disabled={loading} type="button" variant="outline">取消</Button></DialogClose>
 								<Button disabled={loading || !name.trim() || !validAccountId(accountId)} type="submit">{loading ? <span className="spinner" /> : null}{loading ? "保存中…" : "保存"}</Button>

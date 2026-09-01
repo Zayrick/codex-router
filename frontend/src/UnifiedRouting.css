@@ -141,10 +141,6 @@
 	justify-content: flex-end;
 }
 
-.codex-account-header-actions .key-status-switch {
-	min-height: 2.1rem;
-}
-
 .codex-accounts-empty {
 	margin-top: 0;
 }
@@ -401,7 +397,7 @@
 	font-size: 0.59rem;
 }
 
-.group-affinity-switch > span {
+.group-affinity-switch > label {
 	display: grid;
 	gap: 0.13rem;
 }

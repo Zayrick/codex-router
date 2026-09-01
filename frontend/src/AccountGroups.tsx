@@ -18,6 +18,7 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Switch } from "@/components/ui/switch";
 import type {
 	AccountGroup,
 	AccountGroupStrategy,
@@ -247,10 +248,10 @@ function GroupEditorDialog({
 					</ScrollArea>
 					{strategy !== "fallback" ? (
 						<>
-							<label className="switch-row group-affinity-switch">
-								<span><strong>会话保持</strong><small>同一会话优先使用同一账户</small></span>
-								<input checked={sessionAffinity} className="switch-control" disabled={saving} onChange={(event) => setSessionAffinity(event.target.checked)} type="checkbox" />
-							</label>
+							<div className="switch-row group-affinity-switch">
+								<label htmlFor="group-session-affinity"><strong>会话保持</strong><small>同一会话优先使用同一账户</small></label>
+								<Switch checked={sessionAffinity} disabled={saving} id="group-session-affinity" onCheckedChange={setSessionAffinity} />
+							</div>
 							{sessionAffinity ? (
 								<div className="strategy-field">
 									<span id="group-affinity-ttl-label">保持时间</span>
