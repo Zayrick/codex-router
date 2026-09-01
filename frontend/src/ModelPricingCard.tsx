@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import type { ModelPrice } from "./admin-api";
 
 interface ModelPricingCardProps {
@@ -105,7 +106,7 @@ export default function ModelPricingCard({
 				</div>
 
 				{drafts.length > 0 ? (
-					<div className="pricing-table-wrap">
+					<ScrollArea className="pricing-table-wrap" scrollbars="horizontal">
 						<table className="pricing-table">
 							<thead>
 								<tr>
@@ -136,7 +137,7 @@ export default function ModelPricingCard({
 								))}
 							</tbody>
 						</table>
-					</div>
+					</ScrollArea>
 				) : (
 					<div className="empty-state pricing-empty">
 						<strong>尚未配置模型价格</strong>

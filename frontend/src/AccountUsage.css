@@ -166,14 +166,20 @@
 }
 
 .public-account-range-options {
-	display: flex;
+	width: max-content;
+	max-width: 100%;
 	min-width: 0;
-	align-items: center;
-	gap: 0.2rem;
-	padding: 0.2rem;
 	background: var(--surface-subtle);
 	border: 1px solid var(--border);
 	border-radius: 0.65rem;
+}
+
+.public-account-range-options-content {
+	display: flex;
+	width: max-content;
+	align-items: center;
+	gap: 0.2rem;
+	padding: 0.2rem;
 }
 
 .public-account-range-options button,
@@ -344,7 +350,6 @@
 	min-width: 0;
 	height: auto;
 	margin-block: auto;
-	overflow-x: auto;
 }
 
 .public-account-visuals .donut-content {
@@ -371,10 +376,6 @@
 	.public-account-range-actions,
 	.public-account-range-options {
 		width: 100%;
-	}
-
-	.public-account-range-options {
-		overflow-x: auto;
 	}
 
 	.public-account-overview {
@@ -444,10 +445,6 @@
 	.public-account-activity-stack .activity-card-visual {
 		padding-left: 0;
 		border-left: 0;
-	}
-
-	.public-account-activity-stack .activity-heatmap-scroll {
-		padding: 0.35rem;
 	}
 
 	.public-account-metrics {

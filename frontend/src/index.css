@@ -51,7 +51,6 @@
 	--info: #5f708b;
 	--shadow-sm: 0 1px 2px rgb(45 42 38 / 0.04);
 	--shadow-md: 0 18px 48px rgb(45 42 38 / 0.09), 0 2px 8px rgb(45 42 38 / 0.04);
-	--shadow-modal: 0 28px 80px rgb(29 26 22 / 0.24);
 	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 	--background: var(--page);
 	--foreground: var(--text);
@@ -168,7 +167,6 @@ a {
 		--info: #a3afc2;
 		--shadow-sm: 0 1px 2px rgb(0 0 0 / 0.18);
 		--shadow-md: 0 18px 48px rgb(0 0 0 / 0.28);
-		--shadow-modal: 0 28px 80px rgb(0 0 0 / 0.55);
 	}
 }
 

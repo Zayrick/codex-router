@@ -1,4 +1,14 @@
 import { useState, type FormEvent } from "react";
+import { Button } from "@/components/ui/button";
+import {
+	Dialog,
+	DialogClose,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import {
 	Select,
 	SelectContent,
@@ -7,12 +17,14 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import type {
 	AccountGroup,
 	AccountGroupStrategy,
 	CodexAccount,
 	RouteAssignment,
 } from "./admin-api";
+import DeleteConfirmationDialog from "./DeleteConfirmationDialog";
 
 interface AccountGroupsProps {
 	accounts: CodexAccount[];
@@ -42,7 +54,6 @@ export default function AccountGroups({
 	}
 
 	async function deleteGroup(group: AccountGroup): Promise<void> {
-		if (!window.confirm(`删除账户组“${group.name}”？使用该组的调用身份将变为未分配。`)) return;
 		await onChange(
 			groups.filter((entry) => entry.id !== group.id),
 			routes.filter((route) => route.targetType !== "group" || route.targetId !== group.id),
@@ -127,7 +138,12 @@ function AccountGroupCard({
 				</div>
 				<div className="account-group-actions">
 					<button className="button button-secondary button-compact" disabled={saving} onClick={onEdit} type="button">编辑</button>
-					<button className="button button-danger-quiet button-compact" disabled={saving} onClick={onDelete} type="button">删除</button>
+					<DeleteConfirmationDialog
+						description="使用该组的调用身份将变为未分配。此操作无法撤销。"
+						onConfirm={onDelete}
+						title={`删除账户组“${group.name}”？`}
+						trigger={<button className="button button-danger-quiet button-compact" disabled={saving} type="button">删除</button>}
+					/>
 				</div>
 			</div>
 			<div className="account-group-members">
@@ -182,13 +198,15 @@ function GroupEditorDialog({
 	}
 
 	return (
-		<div className="modal-backdrop">
-			<section aria-labelledby="group-editor-title" aria-modal="true" className="modal group-editor-modal" role="dialog">
-				<div className="modal-header">
-					<h2 id="group-editor-title">{entry === "new" ? "添加账户组" : "编辑账户组"}</h2>
-					<button aria-label="关闭" className="icon-button" disabled={saving} onClick={onCancel} type="button"><CloseIcon /></button>
-				</div>
-				<form className="editor-form group-editor-form" onSubmit={submit}>
+		<Dialog open onOpenChange={(open) => { if (!open && !saving) onCancel(); }}>
+			<DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col p-0 sm:max-w-xl" showCloseButton={!saving}>
+				<ScrollArea className="min-h-0 flex-1">
+					<div className="grid gap-4 p-4">
+						<DialogHeader>
+							<DialogTitle>{entry === "new" ? "添加账户组" : "编辑账户组"}</DialogTitle>
+							<DialogDescription>配置组内账户、负载均衡策略与会话保持。</DialogDescription>
+						</DialogHeader>
+						<form className="editor-form" onSubmit={submit}>
 					<label htmlFor="group-name">
 						<span>组名称</span>
 						<input autoFocus disabled={saving} id="group-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：production-pool" required type="text" value={name} />
@@ -213,18 +231,20 @@ function GroupEditorDialog({
 						</Select>
 						<small>{strategyHint(strategy)}</small>
 					</div>
-					<fieldset className="group-member-picker">
-						<legend>组内账户</legend>
-						{accounts.length === 0 ? <p>暂无 Codex 账户</p> : accounts.map((account) => (
-							<label className={account.enabled ? "" : "disabled-member"} key={account.id}>
-								<input checked={accountIds.includes(account.id)} disabled={saving} onChange={() => toggleAccount(account.id)} type="checkbox" />
-								<span>
-									<strong>{account.name}</strong>
-									{account.oauth?.email || !account.enabled ? <small>{account.enabled ? account.oauth?.email : "已禁用"}</small> : null}
-								</span>
-							</label>
-						))}
-					</fieldset>
+					<ScrollArea className={accounts.length > 4 ? "group-member-picker h-60" : "group-member-picker"}>
+						<fieldset className="group-member-picker-fieldset">
+							<legend>组内账户</legend>
+							{accounts.length === 0 ? <p>暂无 Codex 账户</p> : accounts.map((account) => (
+								<label className={account.enabled ? "" : "disabled-member"} key={account.id}>
+									<input checked={accountIds.includes(account.id)} disabled={saving} onChange={() => toggleAccount(account.id)} type="checkbox" />
+									<span>
+										<strong>{account.name}</strong>
+										{account.oauth?.email || !account.enabled ? <small>{account.enabled ? account.oauth?.email : "已禁用"}</small> : null}
+									</span>
+								</label>
+							))}
+						</fieldset>
+					</ScrollArea>
 					{strategy !== "fallback" ? (
 						<>
 							<label className="switch-row group-affinity-switch">
@@ -242,13 +262,15 @@ function GroupEditorDialog({
 							) : null}
 						</>
 					) : null}
-					<div className="modal-actions">
-						<button className="button button-secondary" disabled={saving} onClick={onCancel} type="button">取消</button>
-						<button className="button button-primary" disabled={saving || !name.trim() || (strategy !== "fallback" && sessionAffinity && !ttl.trim())} type="submit">{saving ? <span className="spinner" /> : null}{saving ? "保存中…" : "保存"}</button>
+							<DialogFooter>
+								<DialogClose asChild><Button disabled={saving} type="button" variant="outline">取消</Button></DialogClose>
+								<Button disabled={saving || !name.trim() || (strategy !== "fallback" && sessionAffinity && !ttl.trim())} type="submit">{saving ? <span className="spinner" /> : null}{saving ? "保存中…" : "保存"}</Button>
+							</DialogFooter>
+						</form>
 					</div>
-				</form>
-			</section>
-		</div>
+				</ScrollArea>
+			</DialogContent>
+		</Dialog>
 	);
 }
 
@@ -290,8 +312,4 @@ function strategyHint(value: AccountGroupStrategy): string {
 
 function PlusIcon() {
 	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M12 5v14" /><path d="M5 12h14" /></svg>;
-}
-
-function CloseIcon() {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="m6 6 12 12" /><path d="M18 6 6 18" /></svg>;
 }

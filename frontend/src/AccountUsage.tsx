@@ -5,6 +5,7 @@ import {
 	useState,
 	type FormEvent,
 } from "react";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import type { UsageDashboard, UsageRange } from "./admin-api";
 import { ProductMark } from "./ManagementShell";
 import QuotaTimeline, { type QuotaTimelineWindow } from "./QuotaTimeline";
@@ -133,14 +134,15 @@ function AccountUsage() {
 	}
 
 	if (!snapshot) {
-		return <AccountLookupView error={error} loading={loading} onSubmit={lookup} />;
+		return <ScrollArea className="h-svh"><AccountLookupView error={error} loading={loading} onSubmit={lookup} /></ScrollArea>;
 	}
 
 	const usage = snapshot.usage;
 	const totals = usage.totals;
 
 	return (
-		<main className="public-account-page">
+		<ScrollArea className="h-svh">
+			<main className="public-account-page">
 			<div className="public-account-shell">
 				<header className="public-account-header">
 					<div className="public-account-brand">
@@ -173,20 +175,22 @@ function AccountUsage() {
 							<span>{formatDateRange(usage.startAt, usage.endAt)}</span>
 						</div>
 						<div className="public-account-range-actions">
-							<div className="public-account-range-options" role="group" aria-label="选择统计时间范围">
-								{RANGE_OPTIONS.map((option) => (
-									<button
-										aria-pressed={range === option.value}
-										className={range === option.value ? "active" : ""}
-										disabled={loading}
-										key={option.value}
-										onClick={() => changeRange(option.value)}
-										type="button"
-									>
-										{option.label}
-									</button>
-								))}
-							</div>
+							<ScrollArea className="public-account-range-options" role="group" aria-label="选择统计时间范围" scrollbars="horizontal">
+								<div className="public-account-range-options-content">
+									{RANGE_OPTIONS.map((option) => (
+										<button
+											aria-pressed={range === option.value}
+											className={range === option.value ? "active" : ""}
+											disabled={loading}
+											key={option.value}
+											onClick={() => changeRange(option.value)}
+											type="button"
+										>
+											{option.label}
+										</button>
+									))}
+								</div>
+							</ScrollArea>
 							<button
 								aria-label="刷新账户用量"
 								className="public-account-refresh"
@@ -238,7 +242,8 @@ function AccountUsage() {
 					</section>
 				</div>
 			</div>
-		</main>
+			</main>
+		</ScrollArea>
 	);
 }
 

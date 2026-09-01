@@ -5,6 +5,16 @@ import {
 	useState,
 	type FormEvent,
 } from "react";
+import { Button } from "@/components/ui/button";
+import {
+	Dialog,
+	DialogClose,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import {
 	Select,
 	SelectContent,
@@ -15,8 +25,10 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import AccountGroups from "./AccountGroups";
 import CodexAccounts from "./CodexAccounts";
+import DeleteConfirmationDialog from "./DeleteConfirmationDialog";
 import {
 	AdminApiClient,
 	AdminApiError,
@@ -381,7 +393,6 @@ function App() {
 
 	async function deleteCodexAccount(account: CodexAccount): Promise<void> {
 		if (!api || busyAccounts.has(account.id)) return;
-		if (!window.confirm(`删除 Codex 账户“${account.name}”？相关路由也会被移除。`)) return;
 		setBusyAccounts((current) => withSetValue(current, account.id, true));
 		try {
 			const accounts = await api.deleteCodexAccount(account.id);
@@ -528,7 +539,7 @@ function App() {
 	}
 
 	async function deleteApiKey(entry: ClientApiKey): Promise<void> {
-		if (!api || !window.confirm(`删除 API Key“${entry.name}”？`)) return;
+		if (!api) return;
 		setBusyKeys((current) => withSetValue(current, entry.id, true));
 		try {
 			const next = await api.deleteApiKey(entry.id);
@@ -591,7 +602,7 @@ function App() {
 	}
 
 	async function deleteProxy(entry: AuthProxyAccount): Promise<void> {
-		if (!api || !window.confirm(`删除下游账户“${entry.name}”？`)) return;
+		if (!api) return;
 		setBusyProxies((current) => withSetValue(current, entry.id, true));
 		try {
 			const next = await api.deleteAuthProxyAccount(entry.id);
@@ -611,7 +622,7 @@ function App() {
 
 	if (screen === "invalid-path") return <InvalidPath />;
 	if (screen === "loading") return <LoadingView />;
-	if (screen === "login") return <LoginView error={loginError} loading={loginLoading} onSubmit={(secret) => void handleLogin(secret)} />;
+	if (screen === "login") return <ScrollArea className="h-svh"><LoginView error={loginError} loading={loginLoading} onSubmit={(secret) => void handleLogin(secret)} /></ScrollArea>;
 	if (!basePath) return <InvalidPath />;
 	const pageAction = activePage === "api-keys" ? (
 		<button className="button button-primary" onClick={() => setKeyEditor("new")} type="button">
@@ -921,7 +932,12 @@ function UsagePanel({
 					<ActivityHeatmaps now={now} usage={usage} />
 					<UsageLineCharts now={now} usage={usage} />
 					<UsageBreakdownDonuts usage={usage} />
-					<div className="usage-events"><div className="usage-section-heading"><strong>最近请求</strong></div><div className="table-wrap"><table className="usage-events-table"><thead><tr><th>时间</th><th>调用身份</th><th>路由目标</th><th>模型</th><th>Token</th><th>成本</th></tr></thead><tbody>{usage.recentEvents.map((event) => <tr key={event.id}><td><time dateTime={new Date(event.recordedAt).toISOString()}>{formatCompactDate(event.recordedAt)}</time></td><td><strong>{event.identityName}</strong><small>{usageIdentityLabel(event.identityType)}</small></td><td><strong>{event.accountGroupName || event.codexAccountName || "—"}</strong>{event.accountGroupName || event.codexAccountName ? <small>{event.accountGroupName ? event.codexAccountName : "Codex 账户"}</small> : null}</td><td><code>{event.model}</code></td><td><strong>{formatTokens(event.totalTokens)}</strong><small>{statusLabel(event.status)}</small></td><td><strong>{formatCost(event.costUsd)}</strong></td></tr>)}</tbody></table></div></div>
+					<div className="usage-events">
+						<div className="usage-section-heading"><strong>最近请求</strong></div>
+						<ScrollArea className="table-wrap" scrollbars="horizontal">
+							<table className="usage-events-table"><thead><tr><th>时间</th><th>调用身份</th><th>路由目标</th><th>模型</th><th>Token</th><th>成本</th></tr></thead><tbody>{usage.recentEvents.map((event) => <tr key={event.id}><td><time dateTime={new Date(event.recordedAt).toISOString()}>{formatCompactDate(event.recordedAt)}</time></td><td><strong>{event.identityName}</strong><small>{usageIdentityLabel(event.identityType)}</small></td><td><strong>{event.accountGroupName || event.codexAccountName || "—"}</strong>{event.accountGroupName || event.codexAccountName ? <small>{event.accountGroupName ? event.codexAccountName : "Codex 账户"}</small> : null}</td><td><code>{event.model}</code></td><td><strong>{formatTokens(event.totalTokens)}</strong><small>{statusLabel(event.status)}</small></td><td><strong>{formatCost(event.costUsd)}</strong></td></tr>)}</tbody></table>
+						</ScrollArea>
+					</div>
 				</div>
 			) : null}
 		</section>
@@ -973,7 +989,7 @@ function IdentityTable({
 	}
 
 	return (
-		<section className="table-wrap identity-table-wrap" aria-label={isKey ? "API Keys" : "下游账户"}>
+		<ScrollArea className="table-wrap identity-table-wrap" aria-label={isKey ? "API Keys" : "下游账户"} role="region" scrollbars="horizontal">
 			<table className="unified-identity-table"><thead><tr><th>名称</th><th>{isKey ? "Key" : "account_id"}</th><th>账户 / 账户组</th><th>状态</th><th>操作</th></tr></thead><tbody>{entries.map((entry) => {
 					const route = routes.find((item) => item.consumerType === kind && item.consumerId === entry.id);
 					const key = isKey ? (entry as ClientApiKey).key : null;
@@ -1019,11 +1035,21 @@ function IdentityTable({
 									/>
 								</label>
 							</td>
-							<td><div className="table-actions"><button className="button button-secondary button-compact" disabled={busy.has(entry.id)} onClick={() => onEdit(entry)} type="button">编辑</button><button className="button button-danger button-compact" disabled={busy.has(entry.id)} onClick={() => onDelete(entry)} type="button">删除</button></div></td>
+							<td>
+								<div className="table-actions">
+									<button className="button button-secondary button-compact" disabled={busy.has(entry.id)} onClick={() => onEdit(entry)} type="button">编辑</button>
+									<DeleteConfirmationDialog
+										description="此操作无法撤销。"
+										onConfirm={() => onDelete(entry)}
+										title={`删除${isKey ? " API Key" : "下游账户"}“${entry.name}”？`}
+										trigger={<button className="button button-danger button-compact" disabled={busy.has(entry.id)} type="button">删除</button>}
+									/>
+								</div>
+							</td>
 						</tr>
 					);
-				})}</tbody></table>
-		</section>
+			})}</tbody></table>
+		</ScrollArea>
 	);
 }
 
@@ -1057,13 +1083,15 @@ function ApiKeyEditor({
 	}
 
 	return (
-		<div className="modal-backdrop">
-			<section aria-labelledby="api-key-editor-title" aria-modal="true" className="modal" role="dialog">
-				<div className="modal-header">
-					<h2 id="api-key-editor-title">{entry === "new" ? "添加 API Key" : "编辑 API Key"}</h2>
-					<button aria-label="关闭" className="icon-button" disabled={loading} onClick={onCancel} type="button"><CloseIcon /></button>
-				</div>
-				<form className="editor-form" onSubmit={submit}>
+		<Dialog open onOpenChange={(open) => { if (!open && !loading) onCancel(); }}>
+			<DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col p-0 sm:max-w-lg" showCloseButton={!loading}>
+				<ScrollArea className="min-h-0 flex-1">
+					<div className="grid gap-4 p-4">
+						<DialogHeader>
+							<DialogTitle>{entry === "new" ? "添加 API Key" : "编辑 API Key"}</DialogTitle>
+							<DialogDescription>配置 API Key、路由目标与启用状态。</DialogDescription>
+						</DialogHeader>
+						<form className="editor-form" onSubmit={submit}>
 					<label htmlFor="api-key-name">
 						<span>名称</span>
 						<input autoFocus disabled={loading} id="api-key-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：my-laptop" required type="text" value={name} />
@@ -1077,16 +1105,18 @@ function ApiKeyEditor({
 					</label>
 					<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，该 API Key 的请求将不可用。" />
 					<div className="editor-tools">
-						<button className="button button-secondary" disabled={loading} onClick={() => setKey(generateApiKey())} type="button">重新生成</button>
+						<Button className="shrink-0" disabled={loading} onClick={() => setKey(generateApiKey())} type="button" variant="outline">重新生成</Button>
 						<label className="switch-row"><strong>启用</strong><input checked={enabled} className="switch-control" disabled={loading} onChange={(event) => setEnabled(event.target.checked)} type="checkbox" /></label>
 					</div>
-					<div className="modal-actions">
-						<button className="button button-secondary" disabled={loading} onClick={onCancel} type="button">取消</button>
-						<button className="button button-primary" disabled={loading || !name.trim() || !validApiKey(key)} type="submit">{loading ? <span className="spinner" /> : null}{loading ? "保存中…" : "保存"}</button>
+							<DialogFooter>
+								<DialogClose asChild><Button disabled={loading} type="button" variant="outline">取消</Button></DialogClose>
+								<Button disabled={loading || !name.trim() || !validApiKey(key)} type="submit">{loading ? <span className="spinner" /> : null}{loading ? "保存中…" : "保存"}</Button>
+							</DialogFooter>
+						</form>
 					</div>
-				</form>
-			</section>
-		</div>
+				</ScrollArea>
+			</DialogContent>
+		</Dialog>
 	);
 }
 
@@ -1119,13 +1149,15 @@ function ProxyEditor({
 	}
 
 	return (
-		<div className="modal-backdrop">
-			<section aria-labelledby="proxy-editor-title" aria-modal="true" className="modal" role="dialog">
-				<div className="modal-header">
-					<h2 id="proxy-editor-title">{entry === "new" ? "添加下游账户" : "编辑下游账户"}</h2>
-					<button aria-label="关闭" className="icon-button" disabled={loading} onClick={onCancel} type="button"><CloseIcon /></button>
-				</div>
-				<form className="editor-form" onSubmit={submit}>
+		<Dialog open onOpenChange={(open) => { if (!open && !loading) onCancel(); }}>
+			<DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col p-0 sm:max-w-lg" showCloseButton={!loading}>
+				<ScrollArea className="min-h-0 flex-1">
+					<div className="grid gap-4 p-4">
+						<DialogHeader>
+							<DialogTitle>{entry === "new" ? "添加下游账户" : "编辑下游账户"}</DialogTitle>
+							<DialogDescription>配置 account_id、路由目标与启用状态。</DialogDescription>
+						</DialogHeader>
+						<form className="editor-form" onSubmit={submit}>
 					<label htmlFor="proxy-name">
 						<span>名称</span>
 						<input autoFocus disabled={loading} id="proxy-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：production" required type="text" value={name} />
@@ -1136,13 +1168,15 @@ function ProxyEditor({
 					</label>
 					<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，将继续使用来访请求中的上游凭据。" />
 					<label className="switch-row"><strong>启用</strong><input checked={enabled} className="switch-control" disabled={loading} onChange={(event) => setEnabled(event.target.checked)} type="checkbox" /></label>
-					<div className="modal-actions">
-						<button className="button button-secondary" disabled={loading} onClick={onCancel} type="button">取消</button>
-						<button className="button button-primary" disabled={loading || !name.trim() || !validAccountId(accountId)} type="submit">{loading ? <span className="spinner" /> : null}{loading ? "保存中…" : "保存"}</button>
+							<DialogFooter>
+								<DialogClose asChild><Button disabled={loading} type="button" variant="outline">取消</Button></DialogClose>
+								<Button disabled={loading || !name.trim() || !validAccountId(accountId)} type="submit">{loading ? <span className="spinner" /> : null}{loading ? "保存中…" : "保存"}</Button>
+							</DialogFooter>
+						</form>
 					</div>
-				</form>
-			</section>
-		</div>
+				</ScrollArea>
+			</DialogContent>
+		</Dialog>
 	);
 }
 

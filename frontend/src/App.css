@@ -428,13 +428,17 @@
 	text-transform: uppercase;
 }
 
+.sidebar-navigation-shell {
+	display: flex;
+	min-height: 0;
+	flex: 1 1 auto;
+}
+
 .sidebar-navigation {
 	display: grid;
-	flex: 1;
 	align-content: start;
 	gap: 1.25rem;
 	padding-top: 1.2rem;
-	overflow-y: auto;
 }
 
 .sidebar-nav-group {
@@ -563,12 +567,8 @@
 }
 
 .panel-main {
-	flex: 1 1 auto;
-	min-height: 0;
-	overflow-x: hidden;
-	overflow-y: auto;
+	min-height: 100%;
 	padding: clamp(2.25rem, 5vw, 4.75rem) clamp(1.25rem, 4vw, 4.5rem) 5rem;
-	scrollbar-gutter: stable;
 }
 
 .panel-main > * {
@@ -1021,7 +1021,6 @@
 }
 
 .table-wrap {
-	overflow-x: auto;
 	border: 1px solid var(--border);
 	border-radius: 0.72rem;
 }
@@ -1100,54 +1099,6 @@ td strong {
 	font-size: 0.8rem;
 }
 
-.modal-backdrop {
-	position: fixed;
-	z-index: 50;
-	inset: 0;
-	display: grid;
-	place-items: center;
-	overflow-y: auto;
-	padding: 1.25rem;
-	background: rgb(29 26 22 / 0.48);
-	backdrop-filter: blur(5px);
-}
-
-.modal {
-	width: min(100%, 32rem);
-	padding: 1.25rem;
-	background: var(--surface-raised);
-	border: 1px solid var(--border-strong);
-	border-radius: 0.95rem;
-	box-shadow: var(--shadow-modal);
-	opacity: 1;
-	transform: scale(1) translateY(0);
-	transition:
-		opacity 180ms ease-out,
-		transform 180ms var(--ease-out);
-}
-
-@starting-style {
-	.modal {
-		opacity: 0;
-		transform: scale(0.98) translateY(0.4rem);
-	}
-}
-
-.modal-header {
-	display: flex;
-	align-items: flex-start;
-	justify-content: space-between;
-	gap: 1rem;
-	margin-bottom: 1.1rem;
-}
-
-.modal-header h2 {
-	margin: 0;
-	color: var(--text);
-	font-size: 1.18rem;
-	letter-spacing: -0.025em;
-}
-
 .editor-form {
 	display: grid;
 	gap: 0.9rem;
@@ -1163,10 +1114,6 @@ td strong {
 	align-items: center;
 	justify-content: space-between;
 	gap: 1rem;
-}
-
-.editor-tools > .button {
-	flex: 0 0 auto;
 }
 
 .switch-row {
@@ -1227,13 +1174,6 @@ td strong {
 
 .switch-control:checked::after {
 	transform: translateX(1rem);
-}
-
-.modal-actions {
-	display: flex;
-	justify-content: flex-end;
-	gap: 0.55rem;
-	margin-top: 0.4rem;
 }
 
 .status-toast {
@@ -1531,9 +1471,6 @@ td strong {
 
 .activity-heatmap-scroll {
 	width: 100%;
-	overflow-x: auto;
-	overflow-y: hidden;
-	padding: 0.35rem;
 }
 
 .activity-heatmap {
@@ -1560,9 +1497,6 @@ td strong {
 .activity-card-grid-stacked .activity-heatmap-scroll {
 	width: 100%;
 	height: auto;
-	overflow-x: auto;
-	overflow-y: hidden;
-	padding: 0.35rem;
 }
 
 .activity-cell {
@@ -1899,7 +1833,6 @@ td strong {
 }
 
 .pricing-table-wrap {
-	overflow-x: auto;
 	margin: 0 1.1rem;
 	border: 1px solid var(--border);
 	border-radius: 0.62rem;
@@ -2100,7 +2033,6 @@ td strong {
 @media (max-width: 46rem) {
 	.panel-main {
 		padding: 1.5rem 0.85rem 3rem;
-		scrollbar-gutter: auto;
 	}
 
 	.dashboard-heading {
@@ -2278,16 +2210,6 @@ td strong {
 		flex: 1;
 	}
 
-	.modal-backdrop {
-		align-items: end;
-		padding: 0.75rem;
-	}
-
-	.modal {
-		max-height: calc(100svh - 1.5rem);
-		overflow-y: auto;
-	}
-
 	.status-toast {
 		right: 1rem;
 		bottom: 1rem;
@@ -2370,9 +2292,6 @@ td strong {
 	.activity-card-grid-stacked .activity-heatmap-scroll {
 		width: 100%;
 		height: auto;
-		overflow-x: auto;
-		overflow-y: hidden;
-		padding: 0.35rem;
 	}
 
 	.activity-card-grid-stacked .activity-heatmap {
@@ -2438,20 +2357,12 @@ td strong {
 		flex-direction: column;
 	}
 
-	.modal-actions {
-		flex-direction: column-reverse;
-	}
-
-	.modal-actions .button {
-		width: 100%;
-	}
 }
 
 @media (prefers-reduced-motion: reduce) {
 	.button,
 	.icon-button,
 	.input-action,
-	.modal,
 	.status-toast,
 	.account-quota-timeline,
 	.plan-info-button,
@@ -2461,7 +2372,6 @@ td strong {
 		transition-duration: 0.01ms;
 	}
 
-	.modal,
 	.status-toast {
 		transform: none;
 	}

@@ -285,12 +285,6 @@
 		border-radius: 14px;
 	}
 
-	.timeline-scroll {
-		overflow-x: auto;
-		overscroll-behavior-x: contain;
-		-webkit-overflow-scrolling: touch;
-	}
-
 	.timeline-grid {
 		grid-template-columns: 52px repeat(var(--lane-count), minmax(60px, 1fr));
 		grid-template-rows: auto var(--timeline-height);

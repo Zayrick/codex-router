@@ -7,6 +7,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import type {
 	UsageDashboard,
 	UsageIdentityRow,
@@ -198,30 +199,32 @@ function ActivityCard({
 			</header>
 			<div className="activity-card-visual">
 				{series.length > 0 ? (
-					<div className="activity-heatmap-scroll">
-						<div
-							aria-label={ariaLabel}
-							className="activity-heatmap"
-							role="img"
-							style={{
-								"--activity-columns": columns,
-								"--activity-min-width": `${minimumWidth}px`,
-							} as CSSProperties}
-						>
-							{series.map((point, index) => {
-								const future = point.startAt > now;
-								const cell = getCell(point, index, future);
-								return (
-									<span
-										aria-label={cell.title}
-										className={`activity-cell ${cell.className}${future ? " activity-cell-future" : ""}`}
-										key={point.startAt}
-										title={cell.title}
-									/>
-								);
-							})}
+					<ScrollArea className="activity-heatmap-scroll" scrollbars="horizontal">
+						<div className="p-[0.35rem]">
+							<div
+								aria-label={ariaLabel}
+								className="activity-heatmap"
+								role="img"
+								style={{
+									"--activity-columns": columns,
+									"--activity-min-width": `${minimumWidth}px`,
+								} as CSSProperties}
+							>
+								{series.map((point, index) => {
+									const future = point.startAt > now;
+									const cell = getCell(point, index, future);
+									return (
+										<span
+											aria-label={cell.title}
+											className={`activity-cell ${cell.className}${future ? " activity-cell-future" : ""}`}
+											key={point.startAt}
+											title={cell.title}
+										/>
+									);
+								})}
+							</div>
 						</div>
-					</div>
+					</ScrollArea>
 				) : <div className="visual-empty">当前范围暂无活动数据</div>}
 			</div>
 			<div className="activity-legend">{legend}</div>

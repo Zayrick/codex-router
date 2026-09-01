@@ -1,4 +1,5 @@
 import { useMemo, type CSSProperties } from "react";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import "./QuotaTimeline.css";
 
 const HOUR_MS = 60 * 60 * 1_000;
@@ -63,7 +64,7 @@ export default function QuotaTimeline({
 
 	return (
 		<div className={timelineClassName}>
-			<div className="timeline-scroll">
+			<ScrollArea className="timeline-scroll" scrollbars="horizontal">
 				<div
 					className="timeline-grid"
 					style={{
@@ -111,7 +112,7 @@ export default function QuotaTimeline({
 						/>
 					))}
 				</div>
-			</div>
+			</ScrollArea>
 			<footer className="timeline-legend">
 				<span><i className="legend-live" />当前周期</span>
 				<span><i className="legend-future" />后续周期</span>

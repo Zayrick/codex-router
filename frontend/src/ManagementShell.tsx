@@ -1,4 +1,5 @@
 import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 export type ManagementPage =
 	| "overview"
@@ -117,19 +118,23 @@ export default function ManagementShell({
 					</a>
 				</header>
 
-				<nav className="sidebar-navigation" aria-label="主导航">
-					<NavGroup label="运行">
-						<NavItem activePage={activePage} basePath={basePath} icon="home" label="概览" onNavigate={navigate} page="overview" />
-						<NavItem activePage={activePage} basePath={basePath} icon="usage" label="用量分析" onNavigate={navigate} page="usage" />
-						<NavItem activePage={activePage} basePath={basePath} icon="pricing" label="模型价格" onNavigate={navigate} page="pricing" />
-					</NavGroup>
-					<NavGroup label="调用身份">
-						<NavItem activePage={activePage} basePath={basePath} icon="key" label="API Keys" onNavigate={navigate} page="api-keys" />
-						<NavItem activePage={activePage} basePath={basePath} icon="accounts" label="下游账户" onNavigate={navigate} page="accounts" />
-					</NavGroup>
-					<NavGroup label="调度">
-						<NavItem activePage={activePage} basePath={basePath} icon="account" label="Codex 账户" onNavigate={navigate} page="account" />
-					</NavGroup>
+				<nav className="sidebar-navigation-shell" aria-label="主导航">
+					<ScrollArea className="min-h-0 flex-1">
+						<div className="sidebar-navigation">
+							<NavGroup label="运行">
+								<NavItem activePage={activePage} basePath={basePath} icon="home" label="概览" onNavigate={navigate} page="overview" />
+								<NavItem activePage={activePage} basePath={basePath} icon="usage" label="用量分析" onNavigate={navigate} page="usage" />
+								<NavItem activePage={activePage} basePath={basePath} icon="pricing" label="模型价格" onNavigate={navigate} page="pricing" />
+							</NavGroup>
+							<NavGroup label="调用身份">
+								<NavItem activePage={activePage} basePath={basePath} icon="key" label="API Keys" onNavigate={navigate} page="api-keys" />
+								<NavItem activePage={activePage} basePath={basePath} icon="accounts" label="下游账户" onNavigate={navigate} page="accounts" />
+							</NavGroup>
+							<NavGroup label="调度">
+								<NavItem activePage={activePage} basePath={basePath} icon="account" label="Codex 账户" onNavigate={navigate} page="account" />
+							</NavGroup>
+						</div>
+					</ScrollArea>
 				</nav>
 
 				<div className="sidebar-footer">
@@ -141,30 +146,32 @@ export default function ManagementShell({
 			</aside>
 
 			<section className="panel-workspace">
-				<main className="panel-main">
-					<section className="dashboard-heading" aria-labelledby="dashboard-title">
-						<div className="dashboard-heading-copy">
-							<button
-								aria-controls="management-sidebar"
-								aria-expanded={mobileOpen}
-								aria-label="打开导航"
-								className="workspace-menu-button"
-								onClick={() => setMobileOpen(true)}
-								type="button"
-							>
-								<ShellIcon name="menu" />
-							</button>
-							<div>
-								<p className="page-eyebrow">{pageEyebrow(activePage)}</p>
-								<h1 id="dashboard-title">{pageCopy.title}</h1>
-								<p className="dashboard-description">{pageCopy.description}</p>
+				<ScrollArea className="min-h-0 flex-1">
+					<main className="panel-main">
+						<section className="dashboard-heading" aria-labelledby="dashboard-title">
+							<div className="dashboard-heading-copy">
+								<button
+									aria-controls="management-sidebar"
+									aria-expanded={mobileOpen}
+									aria-label="打开导航"
+									className="workspace-menu-button"
+									onClick={() => setMobileOpen(true)}
+									type="button"
+								>
+									<ShellIcon name="menu" />
+								</button>
+								<div>
+									<p className="page-eyebrow">{pageEyebrow(activePage)}</p>
+									<h1 id="dashboard-title">{pageCopy.title}</h1>
+									<p className="dashboard-description">{pageCopy.description}</p>
+								</div>
 							</div>
-						</div>
-						{pageAction ? <div className="dashboard-heading-action">{pageAction}</div> : null}
-					</section>
+							{pageAction ? <div className="dashboard-heading-action">{pageAction}</div> : null}
+						</section>
 
-					<div className={`dashboard-content page-${activePage}`}>{children}</div>
-				</main>
+						<div className={`dashboard-content page-${activePage}`}>{children}</div>
+					</main>
+				</ScrollArea>
 			</section>
 		</div>
 	);

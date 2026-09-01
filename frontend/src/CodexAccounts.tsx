@@ -1,4 +1,14 @@
 import { useId, useState, type FormEvent } from "react";
+import { Button } from "@/components/ui/button";
+import {
+	Dialog,
+	DialogClose,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import type {
 	CodexAccount,
 	CodexAccountDeviceAuthorization,
@@ -6,6 +16,7 @@ import type {
 	SubscriptionInfo,
 	SubscriptionMetadata,
 } from "./admin-api";
+import DeleteConfirmationDialog from "./DeleteConfirmationDialog";
 import QuotaTimeline from "./QuotaTimeline";
 
 interface CodexAccountsProps {
@@ -149,7 +160,12 @@ function CodexAccountCard({
 							<RefreshIcon spinning={loading} />
 						</button>
 						<button className="button button-secondary account-header-button" disabled={busy} onClick={onEdit} type="button">重命名</button>
-						<button className="button button-danger-quiet account-header-button" disabled={busy} onClick={onDelete} type="button">删除</button>
+						<DeleteConfirmationDialog
+							description="相关路由也会被移除。此操作无法撤销。"
+							onConfirm={onDelete}
+							title={`删除 Codex 账户“${email || account.name}”？`}
+							trigger={<button className="button button-danger-quiet account-header-button" disabled={busy} type="button">删除</button>}
+						/>
 					</div>
 				</header>
 			</div>
@@ -259,18 +275,21 @@ function AccountNameDialog({
 	}
 
 	return (
-		<div className="modal-backdrop">
-			<section aria-labelledby="rename-account-title" aria-modal="true" className="modal compact-modal" role="dialog">
-				<div className="modal-header"><h2 id="rename-account-title">重命名账户</h2></div>
+		<Dialog open onOpenChange={(open) => { if (!open && !busy) onCancel(); }}>
+			<DialogContent showCloseButton={!busy}>
+				<DialogHeader>
+					<DialogTitle>重命名账户</DialogTitle>
+					<DialogDescription>修改该 Codex 账户在管理面板中的显示名称。</DialogDescription>
+				</DialogHeader>
 				<form className="editor-form" onSubmit={submit}>
 					<label htmlFor="codex-account-name"><span>显示名称</span><input autoFocus disabled={busy} id="codex-account-name" maxLength={100} onChange={(event) => setName(event.target.value)} required type="text" value={name} /></label>
-					<div className="modal-actions">
-						<button className="button button-secondary" disabled={busy} onClick={onCancel} type="button">取消</button>
-						<button className="button button-primary" disabled={busy || !name.trim()} type="submit">保存</button>
-					</div>
+					<DialogFooter>
+						<DialogClose asChild><Button disabled={busy} type="button" variant="outline">取消</Button></DialogClose>
+						<Button disabled={busy || !name.trim()} type="submit">保存</Button>
+					</DialogFooter>
 				</form>
-			</section>
-		</div>
+			</DialogContent>
+		</Dialog>
 	);
 }
 
@@ -297,27 +316,26 @@ function DeviceLoginDialog({
 	}
 
 	return (
-		<div className="modal-backdrop">
-			<section aria-labelledby="device-login-title" aria-modal="true" className="modal device-login-modal" role="dialog">
-				<div className="modal-header">
-					<h2 id="device-login-title">登录新账户</h2>
-					<button aria-label="关闭" className="icon-button" onClick={onCancel} type="button"><CloseIcon /></button>
-				</div>
+		<Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
+			<DialogContent className="sm:max-w-lg">
+				<DialogHeader>
+					<DialogTitle>登录新账户</DialogTitle>
+					<DialogDescription>打开 OpenAI 登录页并输入设备码以完成授权。</DialogDescription>
+				</DialogHeader>
 				{loading && !flow ? <div className="center-state"><span className="spinner" /><span>获取登录码…</span></div> : null}
 				{flow ? (
 					<div className="device-login-content">
-						<p>打开 OpenAI 登录页并输入设备码。</p>
 						<button className="device-code-button" onClick={() => void copyCode()} type="button">
 							<code>{flow.authorization.userCode}</code><span>{copied ? "已复制" : "点击复制"}</span>
 						</button>
-						<a className="button button-primary" href={flow.authorization.verificationUri} rel="noreferrer" target="_blank">打开登录页面 <ExternalIcon /></a>
+						<Button asChild><a href={flow.authorization.verificationUri} rel="noreferrer" target="_blank">打开登录页面 <ExternalIcon /></a></Button>
 						<small>等待授权…</small>
 					</div>
 				) : null}
 				{error ? <div className="inline-alert error-alert"><span>{error}</span></div> : null}
-				{error ? <div className="modal-actions"><button className="button button-secondary" onClick={onCancel} type="button">取消</button><button className="button button-primary" disabled={loading} onClick={onRetry} type="button">重新获取</button></div> : null}
-			</section>
-		</div>
+				{error ? <DialogFooter><DialogClose asChild><Button type="button" variant="outline">取消</Button></DialogClose><Button disabled={loading} onClick={onRetry} type="button">重新获取</Button></DialogFooter> : null}
+			</DialogContent>
+		</Dialog>
 	);
 }
 
@@ -345,10 +363,6 @@ function InfoIcon() {
 
 function AlertIcon() {
 	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.75 3h15.7a2 2 0 0 0 1.75-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></svg>;
-}
-
-function CloseIcon() {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="m6 6 12 12" /><path d="M18 6 6 18" /></svg>;
 }
 
 function ExternalIcon() {
