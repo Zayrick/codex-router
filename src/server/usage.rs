@@ -319,6 +319,7 @@ fn restrict_database_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
     let mut value = path.as_os_str().to_os_string();
     value.push(suffix);
