@@ -170,9 +170,9 @@ function CodexAccountCard({
 	const email = account.oauth?.email;
 
 	return (
-		<Card className={`account-card codex-account-card gap-0${account.enabled ? "" : " is-disabled"}`}>
+		<Card className={`account-card codex-account-card gap-0${account.enabled ? "" : " is-disabled"}`} size="sm">
 				<CardHeader className="codex-account-card-header border-b max-[46rem]:grid-cols-1">
-					<CardTitle className="truncate text-base" title={email ?? account.name}>{email || account.name}</CardTitle>
+					<CardTitle className="truncate" title={email ?? account.name}>{email || account.name}</CardTitle>
 					<CardDescription className="codex-account-subtitle">
 						{email ? <small>{account.name}</small> : null}
 						{email ? <i aria-hidden="true">·</i> : null}
@@ -200,7 +200,7 @@ function CodexAccountCard({
 					</CardAction>
 				</CardHeader>
 
-			<CardContent className="account-quota-section grid gap-3 pt-4" aria-label={`${email || account.name} 的账户配额`}>
+			<CardContent className="account-quota-section grid gap-0 p-0" aria-label={`${email || account.name} 的账户配额`}>
 				{loading && !subscription ? (
 					<div className="center-state account-quota-loading" role="status">
 						<Spinner />
@@ -208,21 +208,21 @@ function CodexAccountCard({
 					</div>
 				) : null}
 				{error ? (
-					<Alert variant="destructive">
+					<Alert className="rounded-none border-x-0 border-t-0" variant="destructive">
 						<TriangleAlertIcon />
 						<AlertDescription>{error}</AlertDescription>
 					</Alert>
 				) : null}
 				{subscription?.windows.length ? (
 					<QuotaTimeline
-						className={loading ? "account-quota-timeline is-refreshing" : "account-quota-timeline"}
+						className={loading ? "account-quota-timeline is-refreshing rounded-none ring-0" : "account-quota-timeline rounded-none ring-0"}
 						now={now}
 						planType={plan}
 						sampledAt={subscription.fetchedAt}
 						windows={subscription.windows}
 					/>
 				) : !loading && !error ? (
-					<Empty className="account-quota-empty border">
+					<Empty className="account-quota-empty rounded-none">
 						<EmptyHeader><EmptyDescription>暂无额度数据</EmptyDescription></EmptyHeader>
 					</Empty>
 				) : null}

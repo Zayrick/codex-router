@@ -395,9 +395,7 @@
 
 .account-quota-loading {
 	min-height: 7rem;
-	border: 1px solid var(--border);
-	border-radius: 0.65rem;
-	background: var(--surface);
+	background: var(--surface-subtle);
 }
 
 .account-quota-empty {
@@ -659,6 +657,8 @@
 	min-height: 7.25rem;
 	align-content: space-between;
 	gap: 0.55rem;
+	justify-content: stretch;
+	justify-items: start;
 	padding: 0.75rem;
 	text-align: left;
 }
