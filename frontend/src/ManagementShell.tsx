@@ -52,7 +52,7 @@ const PAGE_COPY: Record<ManagementPage, { title: string; description: string }> 
 	},
 	usage: {
 		title: "用量分析",
-		description: "按时间、API Key 或下游 account id 查看完整 Token 消耗。",
+		description: "按时间、上游路由目标与下游调用身份查看完整 Token 消耗。",
 	},
 	pricing: {
 		title: "模型价格",

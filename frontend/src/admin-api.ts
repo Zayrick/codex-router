@@ -122,6 +122,16 @@ export interface UsageIdentityFilter {
 	identityId: string;
 }
 
+export interface UsageFilters {
+	downstream?: UsageIdentityFilter | null;
+	upstream?: UsageIdentityFilter | null;
+}
+
+export interface UsageBounds {
+	startAt: number;
+	endAt: number;
+}
+
 export interface UsageTotals {
 	requests: number;
 	inputTokens: number;
@@ -318,12 +328,21 @@ export class AdminApiClient {
 
 	getUsage(
 		range: UsageRange,
-		identity: UsageIdentityFilter | null = null,
+		filters: UsageFilters = {},
+		bounds: UsageBounds | null = null,
 	): Promise<UsageDashboard> {
 		const query = new URLSearchParams({ range });
-		if (identity) {
-			query.set("identityType", identity.identityType);
-			query.set("identityId", identity.identityId);
+		if (filters.downstream) {
+			query.set("downstreamType", filters.downstream.identityType);
+			query.set("downstreamId", filters.downstream.identityId);
+		}
+		if (filters.upstream) {
+			query.set("upstreamType", filters.upstream.identityType);
+			query.set("upstreamId", filters.upstream.identityId);
+		}
+		if (bounds) {
+			query.set("startAt", String(bounds.startAt));
+			query.set("endAt", String(bounds.endAt));
 		}
 		return this.requestJson<UsageDashboard>(`/usage?${query.toString()}`);
 	}

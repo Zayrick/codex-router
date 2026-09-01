@@ -28,7 +28,7 @@ use super::{
     pricing::{ModelPrice, sync_model_prices},
     response,
     state::AppState,
-    usage::{UsageBounds, UsageIdentityFilter, UsageRange},
+    usage::{UsageBounds, UsageFilters, UsageIdentityFilter, UsageRange},
 };
 
 const MAX_ADMIN_BODY_BYTES: usize = 16 * 1024;
@@ -141,11 +141,39 @@ async fn dispatch(
                 .find(|(name, _)| name == "range")
                 .map(|(_, value)| value.into_owned());
             let range = UsageRange::parse(range.as_deref()).ok_or_else(invalid_usage_range)?;
+
+            let downstream = query_usage_filter(
+                client_url,
+                "downstreamType",
+                "downstreamId",
+                UsageIdentityFilter::parse_downstream,
+            )?;
+            let upstream = query_usage_filter(
+                client_url,
+                "upstreamType",
+                "upstreamId",
+                UsageIdentityFilter::parse_upstream,
+            )?;
+            let legacy_identity = query_usage_filter(
+                client_url,
+                "identityType",
+                "identityId",
+                UsageIdentityFilter::parse_any,
+            )?;
+            let filters = match legacy_identity {
+                Some(identity) if downstream.is_none() && upstream.is_none() => {
+                    UsageFilters::from_identity(identity)
+                }
+                Some(_) => return Err(invalid_usage_identity_filter()),
+                None => UsageFilters::new(downstream, upstream),
+            };
             let bounds = if range == UsageRange::Cycle {
+                if !filters.upstream_is_account() {
+                    return Err(invalid_usage_range());
+                }
                 let start_at = query_i64(client_url, "startAt")?;
                 let end_at = query_i64(client_url, "endAt")?;
                 match (start_at, end_at) {
-                    (None, None) => None,
                     (Some(start_at), Some(end_at)) => Some(
                         UsageBounds::cycle(start_at, end_at, now_ms)
                             .ok_or_else(invalid_usage_range)?,
@@ -155,30 +183,9 @@ async fn dispatch(
             } else {
                 None
             };
-            let identity_type = client_url
-                .query_pairs()
-                .find(|(name, _)| name == "identityType")
-                .map(|(_, value)| value.into_owned());
-            let identity_id = client_url
-                .query_pairs()
-                .find(|(name, _)| name == "identityId")
-                .map(|(_, value)| value.into_owned());
-            let identity = match (identity_type.as_deref(), identity_id.as_deref()) {
-                (None, None) => None,
-                (Some(kind), Some(id)) => Some(
-                    UsageIdentityFilter::parse(kind, id)
-                        .ok_or_else(invalid_usage_identity_filter)?,
-                ),
-                _ => return Err(invalid_usage_identity_filter()),
-            };
             let dashboard = state
                 .usage
-                .dashboard_with_options(
-                    range,
-                    identity,
-                    bounds,
-                    &config.usage_tracking.model_prices,
-                )
+                .dashboard_with_options(range, filters, bounds, &config.usage_tracking.model_prices)
                 .await
                 .map_err(|error| {
                     tracing::warn!(event = "usage_dashboard", status = "failed", error = %error);
@@ -418,6 +425,29 @@ fn query_i64(url: &Url, name: &str) -> AppResult<Option<i64>> {
         .parse::<i64>()
         .map(Some)
         .map_err(|_| invalid_usage_range())
+}
+
+fn query_usage_filter(
+    url: &Url,
+    type_name: &str,
+    id_name: &str,
+    parse: fn(&str, &str) -> Option<UsageIdentityFilter>,
+) -> AppResult<Option<UsageIdentityFilter>> {
+    let identity_type = url
+        .query_pairs()
+        .find(|(name, _)| name == type_name)
+        .map(|(_, value)| value.into_owned());
+    let identity_id = url
+        .query_pairs()
+        .find(|(name, _)| name == id_name)
+        .map(|(_, value)| value.into_owned());
+    match (identity_type.as_deref(), identity_id.as_deref()) {
+        (None, None) => Ok(None),
+        (Some(kind), Some(id)) => parse(kind, id)
+            .map(Some)
+            .ok_or_else(invalid_usage_identity_filter),
+        _ => Err(invalid_usage_identity_filter()),
+    }
 }
 
 #[derive(Serialize)]

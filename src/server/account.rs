@@ -20,7 +20,7 @@ use super::{
     oauth::current_time_ms,
     response,
     state::AppState,
-    usage::{UsageBounds, UsageIdentityFilter, UsageRange},
+    usage::{UsageBounds, UsageFilters, UsageIdentityFilter, UsageRange},
     usage_store::CodexUsageStateRepository,
 };
 
@@ -162,7 +162,7 @@ async fn account_dashboard(
     state: &AppState,
 ) -> AppResult<Response> {
     let now_ms = current_time_ms();
-    let identity = UsageIdentityFilter::parse(account.kind.identity_type(), &account.id)
+    let identity = UsageIdentityFilter::parse_downstream(account.kind.identity_type(), &account.id)
         .expect("stored public account identity is valid");
     let selected = state
         .account_router
@@ -193,7 +193,7 @@ async fn account_dashboard(
         .usage
         .dashboard_with_options(
             range,
-            Some(identity),
+            UsageFilters::new(Some(identity), None),
             bounds,
             &config.usage_tracking.model_prices,
         )

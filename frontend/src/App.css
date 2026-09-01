@@ -538,8 +538,8 @@
 	color: var(--success);
 }
 
-/* Current-cycle overview */
-.overview-cycle-layout {
+/* Recent-usage overview */
+.overview-recent-layout {
 	display: grid;
 	grid-template-columns: minmax(13rem, 0.32fr) minmax(0, 1fr);
 	align-items: start;
@@ -1057,7 +1057,7 @@
 		padding-top: 1.75rem;
 	}
 
-	.overview-cycle-layout {
+	.overview-recent-layout {
 		grid-template-columns: minmax(0, 1fr);
 	}
 
@@ -1108,8 +1108,8 @@
 	}
 
 	.usage-identity-control {
-		min-width: min(100%, 17rem);
-		flex: 1 1 17rem;
+		min-width: 0;
+		flex: 0 1 auto;
 	}
 
 	.usage-summary-grid {

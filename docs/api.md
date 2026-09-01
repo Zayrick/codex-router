@@ -229,10 +229,14 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 usage 的上游终止 JSON/SSE/WebSocket 事件时把用量写入 SQLite。一个 WebSocket 连接可以记录多个
 response，相同 response ID 只落库一次。模型优先取终止响应，缺失且请求模型可用时使用请求模型。
 
-管理会话可读取 `GET /<admin.path>/admin/usage?range=7d`。`range` 支持 `24h`、`7d`、`30d` 和
-`all`，省略时使用 `7d`。还可同时传入 `identityType` 与 `identityId` 重新计算全部聚合结果；
-`identityType` 支持 `api_key`、`auth_proxy`、`codex_account` 和 `account_group`，ID 使用 `/state`
-返回的稳定记录 ID。两个身份参数必须一起出现，非法范围或筛选返回 `400`。返回 JSON 包含：
+管理会话可读取 `GET /<admin.path>/admin/usage?range=7d`。`range` 支持 `cycle`、`24h`、`7d`、
+`30d` 和 `all`，省略时使用 `7d`。下游筛选使用 `downstreamType` 与 `downstreamId`，类型支持
+`api_key` 和 `auth_proxy`；上游筛选使用 `upstreamType` 与 `upstreamId`，类型支持
+`codex_account` 和 `account_group`。两个维度可以单独使用，也可以同时使用；同时使用时按逻辑与
+重新计算全部聚合结果。ID 使用 `/state` 返回的稳定记录 ID，每组类型与 ID 参数必须一起出现。
+
+`cycle` 只用于单个 `codex_account` 上游，且必须同时传入从该账户周额度窗口计算出的 `startAt`
+和 `endAt`；账户组不提供“当前周期”。非法范围或筛选返回 `400`。返回 JSON 包含：
 
 - `startAt`、`endAt` 和所选 `range`；
 - `totals`：请求数以及输入、缓存命中、缓存创建、输出、推理和总 Token；
@@ -261,7 +265,7 @@ response，相同 response ID 只落库一次。模型优先取终止响应，�
 | `DELETE /codex-accounts` | 删除账户、OAuth、组成员关系和直连路由 |
 | `GET /account-routing` | 读取账户组与调用身份路由 |
 | `PUT /account-routing` | 原子替换经校验的账户组与路由配置 |
-| `GET /usage?range=7d&identityType=codex_account&identityId=<id>` | 读取 SQLite 用量，可按调用身份、Codex 账户或账户组筛选 |
+| `GET /usage?range=7d&upstreamType=codex_account&upstreamId=<id>&downstreamType=api_key&downstreamId=<id>` | 读取 SQLite 用量，可分别或组合筛选上游与下游 |
 | `GET /pricing` | 读取模型价格与已使用模型 |
 | `PUT /pricing` | 替换模型价格配置 |
 | `POST /pricing/sync` | 从价格源同步模型价格 |

@@ -355,7 +355,7 @@ export function DownstreamCostDonut({ usage }: { usage: UsageDashboard }) {
 			fixedMetric="cost"
 			rows={identityRows(usage.identities)}
 			split
-			subtitle="各下游身份在当前周期成本中的占比"
+			subtitle="各下游身份在所选范围成本中的占比"
 			title="下游成本分布"
 		/>
 	);

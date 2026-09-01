@@ -103,6 +103,7 @@ import {
 	type RouteAssignment,
 	type RouteConsumerType,
 	type SubscriptionInfo,
+	type UsageBounds,
 	type UsageDashboard,
 	type UsageIdentityFilter,
 	type UsageIdentityType,
@@ -128,7 +129,9 @@ const MIN_API_KEY_LENGTH = 11;
 const MAX_API_KEY_LENGTH = 512;
 const GENERATED_API_KEY_LENGTH = 20;
 const MAX_ACCOUNT_ID_LENGTH = 256;
-const ALL_USAGE_IDENTITIES_VALUE = "__all_usage_identities__";
+const ALL_USAGE_DOWNSTREAMS_VALUE = "__all_usage_downstreams__";
+const ALL_USAGE_UPSTREAMS_VALUE = "__all_usage_upstreams__";
+const WEEK_MS = 7 * 24 * 60 * 60 * 1_000;
 const UNASSIGNED_ROUTE_TARGET_VALUE = "__unassigned_route_target__";
 const INTEGER_FORMAT = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
 const COMPACT_NUMBER_FORMAT = new Intl.NumberFormat("zh-CN", {
@@ -163,8 +166,9 @@ function App() {
 
 	const [usage, setUsage] = useState<UsageDashboard | null>(null);
 	const [overviewUsage, setOverviewUsage] = useState<UsageDashboard | null>(null);
-	const [usageRange, setUsageRange] = useState<UsageRange>("cycle");
-	const [usageIdentity, setUsageIdentity] = useState<UsageIdentityFilter | null>(null);
+	const [usageRange, setUsageRange] = useState<UsageRange>("7d");
+	const [usageDownstream, setUsageDownstream] = useState<UsageIdentityFilter | null>(null);
+	const [usageUpstream, setUsageUpstream] = useState<UsageIdentityFilter | null>(null);
 	const [usageLoading, setUsageLoading] = useState(false);
 	const [usageError, setUsageError] = useState<string | null>(null);
 
@@ -252,7 +256,7 @@ function App() {
 			setData(state);
 			setScreen("dashboard");
 			setLoginError(null);
-			void refreshUsage("cycle", null);
+			void refreshUsage("7d", null, null);
 			void refreshOverviewUsage();
 			void refreshPricing();
 		} catch (error) {
@@ -305,9 +309,13 @@ function App() {
 
 	function resetForLogin(): void {
 		cancelDeviceLogin();
+		usageRequestRef.current += 1;
 		setData(EMPTY_STATE);
 		setUsage(null);
 		setOverviewUsage(null);
+		setUsageRange("7d");
+		setUsageDownstream(null);
+		setUsageUpstream(null);
 		setSubscriptions({});
 		setScreen("login");
 	}
@@ -323,14 +331,29 @@ function App() {
 
 	async function refreshUsage(
 		range = usageRange,
-		identity = usageIdentity,
+		downstream = usageDownstream,
+		upstream = usageUpstream,
 	): Promise<void> {
 		if (!api) return;
 		const requestId = ++usageRequestRef.current;
 		setUsageLoading(true);
 		setUsageError(null);
 		try {
-			const next = await api.getUsage(range, identity);
+			let bounds: UsageBounds | null = null;
+			if (range === "cycle") {
+				if (upstream?.identityType !== "codex_account") {
+					throw new Error("请选择单个 Codex 上游账户后查看当前周期。");
+				}
+				let subscription = subscriptions[upstream.identityId];
+				if (!subscription) {
+					subscription = await api.getCodexAccountSubscription(upstream.identityId);
+					if (!mountedRef.current || requestId !== usageRequestRef.current) return;
+					setSubscriptions((current) => ({ ...current, [upstream.identityId]: subscription! }));
+				}
+				bounds = currentWeeklyUsageBounds(subscription, Date.now());
+				if (!bounds) throw new Error("所选上游账户暂无可用的周额度周期。");
+			}
+			const next = await api.getUsage(range, { downstream, upstream }, bounds);
 			if (!mountedRef.current || requestId !== usageRequestRef.current) return;
 			setUsage(next);
 		} catch (error) {
@@ -344,7 +367,7 @@ function App() {
 	async function refreshOverviewUsage(): Promise<void> {
 		if (!api) return;
 		try {
-			const next = await api.getUsage("cycle");
+			const next = await api.getUsage("7d");
 			if (mountedRef.current) setOverviewUsage(next);
 		} catch (error) {
 			if (mountedRef.current) handleSessionFailure(error);
@@ -352,13 +375,23 @@ function App() {
 	}
 
 	function changeUsageRange(range: UsageRange): void {
+		if (range === "cycle" && usageUpstream?.identityType !== "codex_account") return;
 		setUsageRange(range);
-		void refreshUsage(range, usageIdentity);
+		void refreshUsage(range, usageDownstream, usageUpstream);
 	}
 
-	function changeUsageIdentity(identity: UsageIdentityFilter | null): void {
-		setUsageIdentity(identity);
-		void refreshUsage(usageRange, identity);
+	function changeUsageDownstream(downstream: UsageIdentityFilter | null): void {
+		setUsageDownstream(downstream);
+		void refreshUsage(usageRange, downstream, usageUpstream);
+	}
+
+	function changeUsageUpstream(upstream: UsageIdentityFilter | null): void {
+		const nextRange = usageRange === "cycle" && upstream?.identityType !== "codex_account"
+			? "7d"
+			: usageRange;
+		setUsageUpstream(upstream);
+		if (nextRange !== usageRange) setUsageRange(nextRange);
+		void refreshUsage(nextRange, usageDownstream, upstream);
 	}
 
 	async function refreshPricing(): Promise<void> {
@@ -716,16 +749,18 @@ function App() {
 					accounts={data.authProxyAccounts}
 					apiKeys={data.apiKeys}
 					codexAccounts={data.codexAccounts}
+					downstream={usageDownstream}
 					error={usageError}
 					groups={data.accountGroups}
-					identity={usageIdentity}
 					loading={usageLoading}
 					now={now}
-					onIdentityChange={changeUsageIdentity}
+					onDownstreamChange={changeUsageDownstream}
 					onRangeChange={changeUsageRange}
 					onRefresh={() => void refreshUsage()}
+					onUpstreamChange={changeUsageUpstream}
 					range={usageRange}
 					usage={usage}
+					upstream={usageUpstream}
 				/>
 			) : null}
 			{activePage === "api-keys" ? (
@@ -834,25 +869,25 @@ function Overview({
 	const activeProxyAccounts = data.authProxyAccounts.filter((entry) => entry.enabled).length;
 	const enabledDownstreams = activeApiKeys + activeProxyAccounts;
 	return (
-		<div className="overview-cycle-layout">
-			<aside className="overview-metrics-column" aria-label="当前周期摘要">
+		<div className="overview-recent-layout">
+			<aside className="overview-metrics-column" aria-label="最近 7 天摘要">
 				<OverviewMetricCard
 					detail={`Account ID ${activeProxyAccounts} · API Key ${activeApiKeys}`}
 					label="下游账户"
 					onClick={() => onNavigate("accounts")}
 					value={formatCount(enabledDownstreams)}
 				/>
-				<OverviewMetricCard detail="Codex 周额度周期累计" label="周期内请求数" onClick={() => onNavigate("usage")} value={usage ? formatCount(usage.totals.requests) : "—"} />
-				<OverviewMetricCard detail="包含输入、输出与缓存 Token" label="周期内 Token 用量" onClick={() => onNavigate("usage")} value={usage ? formatTokens(usage.totals.totalTokens) : "—"} />
-				<OverviewMetricCard detail={usage?.unpricedModels.length ? `${usage.unpricedModels.length} 个模型尚未计价` : "按模型价格配置计算"} label="周期内成本" onClick={() => onNavigate("pricing")} value={usage ? formatCost(usage.totals.costUsd) : "—"} />
+				<OverviewMetricCard detail="最近 7 天累计" label="请求数" onClick={() => onNavigate("usage")} value={usage ? formatCount(usage.totals.requests) : "—"} />
+				<OverviewMetricCard detail="最近 7 天的输入、输出与缓存 Token" label="Token 用量" onClick={() => onNavigate("usage")} value={usage ? formatTokens(usage.totals.totalTokens) : "—"} />
+				<OverviewMetricCard detail={usage?.unpricedModels.length ? `${usage.unpricedModels.length} 个模型尚未计价` : "最近 7 天 · 按模型价格配置计算"} label="成本" onClick={() => onNavigate("pricing")} value={usage ? formatCost(usage.totals.costUsd) : "—"} />
 			</aside>
-			<section className="overview-visuals-column" aria-label="当前周期活动与成本分布">
+			<section className="overview-visuals-column" aria-label="最近 7 天活动与成本分布">
 				{usage ? (
 					<>
 						<ActivityHeatmaps now={now} stacked usage={usage} />
 						<DownstreamCostDonut usage={usage} />
 					</>
-				) : <Card className="min-h-72 flex-row items-center justify-center gap-[.55rem] p-3 text-[.78rem] text-muted-foreground"><Spinner />正在读取当前周期…</Card>}
+				) : <Card className="min-h-72 flex-row items-center justify-center gap-[.55rem] p-3 text-[.78rem] text-muted-foreground"><Spinner />正在读取最近 7 天用量…</Card>}
 			</section>
 		</div>
 	);
@@ -882,53 +917,57 @@ function UsagePanel({
 	accounts,
 	apiKeys,
 	codexAccounts,
+	downstream,
 	error,
 	groups,
-	identity,
 	loading,
 	now,
-	onIdentityChange,
+	onDownstreamChange,
 	onRangeChange,
 	onRefresh,
+	onUpstreamChange,
 	range,
 	usage,
+	upstream,
 }: {
 	accounts: AuthProxyAccount[];
 	apiKeys: ClientApiKey[];
 	codexAccounts: CodexAccount[];
+	downstream: UsageIdentityFilter | null;
 	error: string | null;
 	groups: AccountGroup[];
-	identity: UsageIdentityFilter | null;
 	loading: boolean;
 	now: number;
-	onIdentityChange: (identity: UsageIdentityFilter | null) => void;
+	onDownstreamChange: (identity: UsageIdentityFilter | null) => void;
 	onRangeChange: (range: UsageRange) => void;
 	onRefresh: () => void;
+	onUpstreamChange: (identity: UsageIdentityFilter | null) => void;
 	range: UsageRange;
 	usage: UsageDashboard | null;
+	upstream: UsageIdentityFilter | null;
 }) {
 	const totals = usage?.totals;
 	return (
 		<Card aria-label="用量详情">
 			<CardHeader className="max-lg:grid-cols-1">
 				<CardTitle>用量明细</CardTitle>
-				<CardDescription>筛选调用身份和统计范围，查看请求与 Token 消耗。</CardDescription>
+				<CardDescription>分别筛选下游调用身份和上游路由目标；同时选择时按两者交集统计。</CardDescription>
 				<CardAction className="usage-card-actions max-lg:col-start-1 max-lg:row-auto max-lg:mt-2 max-lg:justify-self-stretch">
 					<div className="usage-identity-control">
-						<span id="usage-identity-label">筛选对象</span>
+						<span id="usage-downstream-label">下游筛选</span>
 						<Select
 							disabled={loading}
-							onValueChange={(value) => onIdentityChange(value === ALL_USAGE_IDENTITIES_VALUE ? null : parseUsageIdentityValue(value))}
-							value={usageIdentityValue(identity) || ALL_USAGE_IDENTITIES_VALUE}
+							onValueChange={(value) => onDownstreamChange(value === ALL_USAGE_DOWNSTREAMS_VALUE ? null : parseUsageIdentityValue(value))}
+							value={usageIdentityValue(downstream) || ALL_USAGE_DOWNSTREAMS_VALUE}
 						>
-							<SelectTrigger aria-labelledby="usage-identity-label" className="w-[clamp(13rem,30vw,23rem)] max-w-full max-[48rem]:w-full">
+							<SelectTrigger aria-labelledby="usage-downstream-label" className="min-w-[7.5rem] max-w-[18rem] max-[28rem]:w-full">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent align="end" position="popper">
 								<SelectGroup>
-									<SelectItem value={ALL_USAGE_IDENTITIES_VALUE}>全部</SelectItem>
+									<SelectItem value={ALL_USAGE_DOWNSTREAMS_VALUE}>全部下游</SelectItem>
 								</SelectGroup>
-								{apiKeys.length || accounts.length || codexAccounts.length || groups.length ? <SelectSeparator /> : null}
+								{apiKeys.length || accounts.length ? <SelectSeparator /> : null}
 								{apiKeys.length ? (
 									<SelectGroup>
 										<SelectLabel>API Keys</SelectLabel>
@@ -941,15 +980,33 @@ function UsagePanel({
 										{accounts.map((entry) => <SelectItem key={entry.id} value={usageIdentityValue({ identityType: "auth_proxy", identityId: entry.id })}>{entry.name}</SelectItem>)}
 									</SelectGroup>
 								) : null}
+							</SelectContent>
+						</Select>
+					</div>
+					<div className="usage-identity-control">
+						<span id="usage-upstream-label">上游筛选</span>
+						<Select
+							disabled={loading}
+							onValueChange={(value) => onUpstreamChange(value === ALL_USAGE_UPSTREAMS_VALUE ? null : parseUsageIdentityValue(value))}
+							value={usageIdentityValue(upstream) || ALL_USAGE_UPSTREAMS_VALUE}
+						>
+							<SelectTrigger aria-labelledby="usage-upstream-label" className="min-w-[7.5rem] max-w-[18rem] max-[28rem]:w-full">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent align="end" position="popper">
+								<SelectGroup>
+									<SelectItem value={ALL_USAGE_UPSTREAMS_VALUE}>全部上游</SelectItem>
+								</SelectGroup>
+								{codexAccounts.length || groups.length ? <SelectSeparator /> : null}
 								{codexAccounts.length ? (
 									<SelectGroup>
-										<SelectLabel>Codex 账户</SelectLabel>
+										<SelectLabel>Codex 上游账户</SelectLabel>
 										{codexAccounts.map((entry) => <SelectItem key={entry.id} value={usageIdentityValue({ identityType: "codex_account", identityId: entry.id })}>{entry.name}</SelectItem>)}
 									</SelectGroup>
 								) : null}
 								{groups.length ? (
 									<SelectGroup>
-										<SelectLabel>账户组</SelectLabel>
+										<SelectLabel>上游组合</SelectLabel>
 										{groups.map((entry) => <SelectItem key={entry.id} value={usageIdentityValue({ identityType: "account_group", identityId: entry.id })}>{entry.name}</SelectItem>)}
 									</SelectGroup>
 								) : null}
@@ -964,7 +1021,7 @@ function UsagePanel({
 							</SelectTrigger>
 							<SelectContent align="end" position="popper">
 								<SelectGroup>
-									<SelectItem value="cycle">当前周期</SelectItem>
+									{upstream?.identityType === "codex_account" ? <SelectItem value="cycle">当前周期</SelectItem> : null}
 									<SelectItem value="24h">最近 24 小时</SelectItem>
 									<SelectItem value="7d">最近 7 天</SelectItem>
 									<SelectItem value="30d">最近 30 天</SelectItem>
@@ -1466,6 +1523,25 @@ function usageIdentityLabel(value: "api_key" | "auth_proxy"): string {
 
 function statusLabel(value: "completed" | "incomplete" | "failed"): string {
 	return value === "completed" ? "已完成" : value === "incomplete" ? "未完整完成" : "失败";
+}
+
+function currentWeeklyUsageBounds(subscription: SubscriptionInfo, now: number): UsageBounds | null {
+	const resetAt = subscription.windows.find((window) => (
+		window.category === "codex" && window.kind === "weekly" && window.resetAt !== null
+	))?.resetAt;
+	if (resetAt === undefined || resetAt === null || !Number.isFinite(resetAt)) return null;
+
+	let endAt = Math.round(resetAt);
+	if (endAt <= now) {
+		endAt += (Math.floor((now - endAt) / WEEK_MS) + 1) * WEEK_MS;
+	}
+	let startAt = endAt - WEEK_MS;
+	if (startAt > now) {
+		const periods = Math.ceil((startAt - now) / WEEK_MS);
+		startAt -= periods * WEEK_MS;
+		endAt -= periods * WEEK_MS;
+	}
+	return startAt >= 0 && startAt <= now && now < endAt ? { startAt, endAt } : null;
 }
 
 function rangeLabel(value: UsageRange): string {

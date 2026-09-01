@@ -102,7 +102,7 @@ pub struct UsageIdentityFilter {
 }
 
 impl UsageIdentityFilter {
-    pub fn parse(kind: &str, id: &str) -> Option<Self> {
+    pub fn parse_any(kind: &str, id: &str) -> Option<Self> {
         let kind = match kind {
             "api_key" => UsageIdentityKind::ApiKey,
             "auth_proxy" => UsageIdentityKind::AuthProxy,
@@ -119,12 +119,65 @@ impl UsageIdentityFilter {
         })
     }
 
+    pub fn parse_downstream(kind: &str, id: &str) -> Option<Self> {
+        Self::parse_any(kind, id).filter(|filter| {
+            matches!(
+                filter.kind,
+                UsageIdentityKind::ApiKey | UsageIdentityKind::AuthProxy
+            )
+        })
+    }
+
+    pub fn parse_upstream(kind: &str, id: &str) -> Option<Self> {
+        Self::parse_any(kind, id).filter(|filter| {
+            matches!(
+                filter.kind,
+                UsageIdentityKind::CodexAccount | UsageIdentityKind::AccountGroup
+            )
+        })
+    }
+
     fn kind(&self) -> &'static str {
         self.kind.as_str()
     }
 
     fn id(&self) -> &str {
         &self.id
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageFilters {
+    downstream: Option<UsageIdentityFilter>,
+    upstream: Option<UsageIdentityFilter>,
+}
+
+impl UsageFilters {
+    pub fn new(
+        downstream: Option<UsageIdentityFilter>,
+        upstream: Option<UsageIdentityFilter>,
+    ) -> Self {
+        Self {
+            downstream,
+            upstream,
+        }
+    }
+
+    pub fn from_identity(filter: UsageIdentityFilter) -> Self {
+        match filter.kind {
+            UsageIdentityKind::ApiKey | UsageIdentityKind::AuthProxy => {
+                Self::new(Some(filter), None)
+            }
+            UsageIdentityKind::CodexAccount | UsageIdentityKind::AccountGroup => {
+                Self::new(None, Some(filter))
+            }
+        }
+    }
+
+    pub fn upstream_is_account(&self) -> bool {
+        self.upstream
+            .as_ref()
+            .is_some_and(|filter| filter.kind == UsageIdentityKind::CodexAccount)
     }
 }
 
@@ -314,16 +367,15 @@ impl UsageStore {
     pub async fn dashboard(
         &self,
         range: UsageRange,
-        identity: Option<UsageIdentityFilter>,
+        filters: UsageFilters,
     ) -> Result<UsageDashboard> {
-        self.dashboard_with_options(range, identity, None, &[])
-            .await
+        self.dashboard_with_options(range, filters, None, &[]).await
     }
 
     pub async fn dashboard_with_options(
         &self,
         range: UsageRange,
-        identity: Option<UsageIdentityFilter>,
+        filters: UsageFilters,
         bounds: Option<UsageBounds>,
         prices: &[ModelPrice],
     ) -> Result<UsageDashboard> {
@@ -331,7 +383,7 @@ impl UsageStore {
         let prices = prices.to_vec();
         tokio::task::spawn_blocking(move || {
             let connection = connection.lock().expect("usage database lock poisoned");
-            query_dashboard(&connection, range, identity.as_ref(), bounds, &prices)
+            query_dashboard(&connection, range, &filters, bounds, &prices)
         })
         .await
         .context("usage database query task failed")?
@@ -842,20 +894,21 @@ pub struct UsageEventRow {
 fn query_dashboard(
     connection: &Connection,
     range: UsageRange,
-    identity: Option<&UsageIdentityFilter>,
+    filters: &UsageFilters,
     bounds: Option<UsageBounds>,
     prices: &[ModelPrice],
 ) -> Result<UsageDashboard> {
     let now = current_time_ms();
-    let (identity_type, identity_id) = identity_parameters(identity);
+    let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
     let earliest_sql = format!(
         "SELECT MIN(recorded_at_ms) FROM usage_events WHERE {}",
-        identity_filter_sql(1, 2)
+        usage_filters_sql(1, 2, 3, 4)
     );
-    let earliest =
-        connection.query_row(&earliest_sql, params![identity_type, identity_id], |row| {
-            row.get::<_, Option<i64>>(0)
-        })?;
+    let earliest = connection.query_row(
+        &earliest_sql,
+        params![downstream_type, downstream_id, upstream_type, upstream_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )?;
     let (start_at, end_at) = if range == UsageRange::Cycle {
         bounds
             .map(|bounds| (bounds.start_at, bounds.end_at))
@@ -869,27 +922,27 @@ fn query_dashboard(
         (start_at, now)
     };
     let prices = price_index(prices);
-    let mut totals = query_totals(connection, start_at, end_at, identity)?;
-    totals.cost_usd = query_total_cost(connection, start_at, end_at, identity, &prices)?;
-    let series = query_series(connection, range, start_at, end_at, identity, &prices)?;
-    let mut models = query_models(connection, start_at, end_at, identity)?;
+    let mut totals = query_totals(connection, start_at, end_at, filters)?;
+    totals.cost_usd = query_total_cost(connection, start_at, end_at, filters, &prices)?;
+    let series = query_series(connection, range, start_at, end_at, filters, &prices)?;
+    let mut models = query_models(connection, start_at, end_at, filters)?;
     for row in &mut models {
         row.totals.cost_usd = cost_for_model(&row.model, &row.totals, &prices);
     }
-    let mut identities = query_identities(connection, start_at, end_at, identity)?;
+    let mut identities = query_identities(connection, start_at, end_at, filters)?;
     apply_identity_costs(
         connection,
         start_at,
         end_at,
-        identity,
+        filters,
         &prices,
         &mut identities,
     )?;
-    let mut recent_events = query_recent_events(connection, start_at, end_at, identity)?;
+    let mut recent_events = query_recent_events(connection, start_at, end_at, filters)?;
     for event in &mut recent_events {
         event.cost_usd = event_cost(event, &prices);
     }
-    let unpriced_models = query_unpriced_models(connection, start_at, end_at, identity, &prices)?;
+    let unpriced_models = query_unpriced_models(connection, start_at, end_at, filters, &prices)?;
     Ok(UsageDashboard {
         range: range.label().into(),
         start_at,
@@ -903,10 +956,20 @@ fn query_dashboard(
     })
 }
 
-fn identity_parameters(identity: Option<&UsageIdentityFilter>) -> (Option<&str>, Option<&str>) {
-    identity
+fn filter_parameters(
+    filters: &UsageFilters,
+) -> (Option<&str>, Option<&str>, Option<&str>, Option<&str>) {
+    let (downstream_type, downstream_id) = filters
+        .downstream
+        .as_ref()
         .map(|value| (Some(value.kind()), Some(value.id())))
-        .unwrap_or((None, None))
+        .unwrap_or((None, None));
+    let (upstream_type, upstream_id) = filters
+        .upstream
+        .as_ref()
+        .map(|value| (Some(value.kind()), Some(value.id())))
+        .unwrap_or((None, None));
+    (downstream_type, downstream_id, upstream_type, upstream_id)
 }
 
 fn identity_filter_sql(kind_parameter: usize, id_parameter: usize) -> String {
@@ -916,6 +979,19 @@ fn identity_filter_sql(kind_parameter: usize, id_parameter: usize) -> String {
              AND identity_type = ?{kind_parameter} AND identity_id = ?{id_parameter}) \
          OR (?{kind_parameter} = 'codex_account' AND codex_account_id = ?{id_parameter}) \
          OR (?{kind_parameter} = 'account_group' AND account_group_id = ?{id_parameter}))"
+    )
+}
+
+fn usage_filters_sql(
+    downstream_kind_parameter: usize,
+    downstream_id_parameter: usize,
+    upstream_kind_parameter: usize,
+    upstream_id_parameter: usize,
+) -> String {
+    format!(
+        "{} AND {}",
+        identity_filter_sql(downstream_kind_parameter, downstream_id_parameter),
+        identity_filter_sql(upstream_kind_parameter, upstream_id_parameter),
     )
 }
 
@@ -933,18 +1009,25 @@ fn query_totals(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
-    identity: Option<&UsageIdentityFilter>,
+    filters: &UsageFilters,
 ) -> Result<UsageTotals> {
-    let identity_filter = identity_filter_sql(3, 4);
+    let usage_filters = usage_filters_sql(3, 4, 5, 6);
     let sql = format!(
         "SELECT {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND {identity_filter}"
+         AND {usage_filters}"
     );
-    let (identity_type, identity_id) = identity_parameters(identity);
+    let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
     Ok(connection.query_row(
         &sql,
-        params![start_at, end_at, identity_type, identity_id],
+        params![
+            start_at,
+            end_at,
+            downstream_type,
+            downstream_id,
+            upstream_type,
+            upstream_id
+        ],
         totals_from_row,
     )?)
 }
@@ -953,23 +1036,25 @@ fn query_models(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
-    identity: Option<&UsageIdentityFilter>,
+    filters: &UsageFilters,
 ) -> Result<Vec<UsageBreakdownRow>> {
-    let identity_filter = identity_filter_sql(3, 4);
+    let usage_filters = usage_filters_sql(3, 4, 5, 6);
     let sql = format!(
         "SELECT model, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND {identity_filter} \
-         GROUP BY model ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, model LIMIT ?5"
+         AND {usage_filters} \
+         GROUP BY model ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, model LIMIT ?7"
     );
     let mut statement = connection.prepare(&sql)?;
-    let (identity_type, identity_id) = identity_parameters(identity);
+    let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
     let rows = statement.query_map(
         params![
             start_at,
             end_at,
-            identity_type,
-            identity_id,
+            downstream_type,
+            downstream_id,
+            upstream_type,
+            upstream_id,
             BREAKDOWN_LIMIT
         ],
         |row| {
@@ -986,24 +1071,26 @@ fn query_identities(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
-    identity: Option<&UsageIdentityFilter>,
+    filters: &UsageFilters,
 ) -> Result<Vec<UsageIdentityRow>> {
-    let identity_filter = identity_filter_sql(3, 4);
+    let usage_filters = usage_filters_sql(3, 4, 5, 6);
     let sql = format!(
         "SELECT identity_type, identity_id, identity_name, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND {identity_filter} \
+         AND {usage_filters} \
          GROUP BY identity_type, identity_id, identity_name \
-         ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, identity_name LIMIT ?5"
+         ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, identity_name LIMIT ?7"
     );
     let mut statement = connection.prepare(&sql)?;
-    let (identity_type, identity_id) = identity_parameters(identity);
+    let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
     let rows = statement.query_map(
         params![
             start_at,
             end_at,
-            identity_type,
-            identity_id,
+            downstream_type,
+            downstream_id,
+            upstream_type,
+            upstream_id,
             BREAKDOWN_LIMIT
         ],
         |row| {
@@ -1023,7 +1110,7 @@ fn query_series(
     range: UsageRange,
     start_at: i64,
     end_at: i64,
-    identity: Option<&UsageIdentityFilter>,
+    filters: &UsageFilters,
     prices: &BTreeMap<String, ModelPrice>,
 ) -> Result<Vec<UsageSeriesPoint>> {
     let bucket_ms = range.bucket_ms();
@@ -1044,7 +1131,7 @@ fn query_series(
     } else {
         bucket_ms
     };
-    let identity_filter = identity_filter_sql(6, 7);
+    let usage_filters = usage_filters_sql(6, 7, 8, 9);
     let sql = format!(
         r#"
         SELECT (((recorded_at_ms - ?1) * ?2) / ?3), model, {TOTAL_COLUMNS},
@@ -1052,12 +1139,12 @@ fn query_series(
                COALESCE(SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END), 0)
         FROM usage_events
         WHERE recorded_at_ms >= ?4 AND recorded_at_ms < ?5
-          AND {identity_filter}
+          AND {usage_filters}
         GROUP BY 1, model ORDER BY 1
         "#,
     );
     let mut statement = connection.prepare(&sql)?;
-    let (identity_type, identity_id) = identity_parameters(identity);
+    let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
     let rows = statement.query_map(
         params![
             aligned_start,
@@ -1065,8 +1152,10 @@ fn query_series(
             bucket_divisor,
             start_at,
             end_at,
-            identity_type,
-            identity_id
+            downstream_type,
+            downstream_id,
+            upstream_type,
+            upstream_id
         ],
         |row| {
             Ok((
@@ -1158,20 +1247,27 @@ fn query_total_cost(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
-    identity: Option<&UsageIdentityFilter>,
+    filters: &UsageFilters,
     prices: &BTreeMap<String, ModelPrice>,
 ) -> Result<f64> {
-    let identity_filter = identity_filter_sql(3, 4);
+    let usage_filters = usage_filters_sql(3, 4, 5, 6);
     let sql = format!(
         "SELECT model, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND {identity_filter} \
+         AND {usage_filters} \
          GROUP BY model"
     );
     let mut statement = connection.prepare(&sql)?;
-    let (identity_type, identity_id) = identity_parameters(identity);
+    let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
     let rows = statement.query_map(
-        params![start_at, end_at, identity_type, identity_id],
+        params![
+            start_at,
+            end_at,
+            downstream_type,
+            downstream_id,
+            upstream_type,
+            upstream_id
+        ],
         |row| Ok((row.get::<_, String>(0)?, totals_from_row_at(row, 1)?)),
     )?;
     let mut cost = 0.0;
@@ -1186,21 +1282,28 @@ fn apply_identity_costs(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
-    identity: Option<&UsageIdentityFilter>,
+    filters: &UsageFilters,
     prices: &BTreeMap<String, ModelPrice>,
     identities: &mut [UsageIdentityRow],
 ) -> Result<()> {
-    let identity_filter = identity_filter_sql(3, 4);
+    let usage_filters = usage_filters_sql(3, 4, 5, 6);
     let sql = format!(
         "SELECT identity_type, identity_id, model, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND {identity_filter} \
+         AND {usage_filters} \
          GROUP BY identity_type, identity_id, model"
     );
     let mut statement = connection.prepare(&sql)?;
-    let (identity_type, identity_id) = identity_parameters(identity);
+    let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
     let rows = statement.query_map(
-        params![start_at, end_at, identity_type, identity_id],
+        params![
+            start_at,
+            end_at,
+            downstream_type,
+            downstream_id,
+            upstream_type,
+            upstream_id
+        ],
         |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1228,19 +1331,26 @@ fn query_unpriced_models(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
-    identity: Option<&UsageIdentityFilter>,
+    filters: &UsageFilters,
     prices: &BTreeMap<String, ModelPrice>,
 ) -> Result<Vec<String>> {
     let sql = format!(
         "SELECT DISTINCT model FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 AND total_tokens > 0 \
          AND {} ORDER BY model",
-        identity_filter_sql(3, 4)
+        usage_filters_sql(3, 4, 5, 6)
     );
     let mut statement = connection.prepare(&sql)?;
-    let (identity_type, identity_id) = identity_parameters(identity);
+    let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
     let rows = statement.query_map(
-        params![start_at, end_at, identity_type, identity_id],
+        params![
+            start_at,
+            end_at,
+            downstream_type,
+            downstream_id,
+            upstream_type,
+            upstream_id
+        ],
         |row| row.get::<_, String>(0),
     )?;
     Ok(rows
@@ -1267,7 +1377,7 @@ fn query_recent_events(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
-    identity: Option<&UsageIdentityFilter>,
+    filters: &UsageFilters,
 ) -> Result<Vec<UsageEventRow>> {
     let sql = format!(
         r#"
@@ -1278,18 +1388,20 @@ fn query_recent_events(
         FROM usage_events
         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2
           AND {}
-        ORDER BY recorded_at_ms DESC, id DESC LIMIT ?5
+        ORDER BY recorded_at_ms DESC, id DESC LIMIT ?7
         "#,
-        identity_filter_sql(3, 4)
+        usage_filters_sql(3, 4, 5, 6)
     );
     let mut statement = connection.prepare(&sql)?;
-    let (identity_type, identity_id) = identity_parameters(identity);
+    let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
     let rows = statement.query_map(
         params![
             start_at,
             end_at,
-            identity_type,
-            identity_id,
+            downstream_type,
+            downstream_id,
+            upstream_type,
+            upstream_id,
             RECENT_EVENT_LIMIT
         ],
         |row| {
@@ -1371,7 +1483,10 @@ mod tests {
 
     async fn wait_for_requests(store: &UsageStore, expected: i64) -> UsageDashboard {
         for _ in 0..100 {
-            let dashboard = store.dashboard(UsageRange::Week, None).await.unwrap();
+            let dashboard = store
+                .dashboard(UsageRange::Week, UsageFilters::default())
+                .await
+                .unwrap();
             if dashboard.totals.requests == expected {
                 return dashboard;
             }
@@ -1441,7 +1556,10 @@ mod tests {
         };
         store.insert(event.clone()).await.unwrap();
         store.insert(event).await.unwrap();
-        let dashboard = store.dashboard(UsageRange::Week, None).await.unwrap();
+        let dashboard = store
+            .dashboard(UsageRange::Week, UsageFilters::default())
+            .await
+            .unwrap();
         assert_eq!(dashboard.totals.requests, 1);
         assert_eq!(dashboard.totals.total_tokens, 15);
         assert_eq!(dashboard.models[0].model, "gpt-5.6-sol");
@@ -1495,7 +1613,12 @@ mod tests {
         };
         let bounds = UsageBounds::cycle(start_at, end_at, end_at).unwrap();
         let dashboard = store
-            .dashboard_with_options(UsageRange::Cycle, None, Some(bounds), &[price])
+            .dashboard_with_options(
+                UsageRange::Cycle,
+                UsageFilters::default(),
+                Some(bounds),
+                &[price],
+            )
             .await
             .unwrap();
 
@@ -1517,7 +1640,10 @@ mod tests {
     async fn finite_activity_ranges_are_always_seven_by_twenty_four_buckets() {
         let (store, path) = temporary_store();
         for range in [UsageRange::Day, UsageRange::Week, UsageRange::Month] {
-            let dashboard = store.dashboard(range, None).await.unwrap();
+            let dashboard = store
+                .dashboard(range, UsageFilters::default())
+                .await
+                .unwrap();
             assert_eq!(dashboard.series.len(), ACTIVITY_BUCKET_COUNT as usize);
             assert_eq!(dashboard.series[0].start_at, dashboard.start_at);
             assert!(
@@ -1583,9 +1709,9 @@ mod tests {
             store.insert(event).await.unwrap();
         }
 
-        let filter = UsageIdentityFilter::parse("auth_proxy", "account-1").unwrap();
+        let filter = UsageIdentityFilter::parse_downstream("auth_proxy", "account-1").unwrap();
         let dashboard = store
-            .dashboard(UsageRange::Week, Some(filter))
+            .dashboard(UsageRange::Week, UsageFilters::new(Some(filter), None))
             .await
             .unwrap();
 
@@ -1606,9 +1732,13 @@ mod tests {
             1
         );
 
-        let account_filter = UsageIdentityFilter::parse("codex_account", "codex-1").unwrap();
+        let account_filter =
+            UsageIdentityFilter::parse_upstream("codex_account", "codex-1").unwrap();
         let account_dashboard = store
-            .dashboard(UsageRange::Week, Some(account_filter))
+            .dashboard(
+                UsageRange::Week,
+                UsageFilters::new(None, Some(account_filter.clone())),
+            )
             .await
             .unwrap();
         assert_eq!(account_dashboard.totals.requests, 1);
@@ -1617,15 +1747,35 @@ mod tests {
             "personal"
         );
 
-        let group_filter = UsageIdentityFilter::parse("account_group", "group-1").unwrap();
+        let group_filter = UsageIdentityFilter::parse_upstream("account_group", "group-1").unwrap();
         let group_dashboard = store
-            .dashboard(UsageRange::Week, Some(group_filter))
+            .dashboard(
+                UsageRange::Week,
+                UsageFilters::new(None, Some(group_filter)),
+            )
             .await
             .unwrap();
         assert_eq!(group_dashboard.totals.requests, 2);
 
-        assert!(UsageIdentityFilter::parse("unknown", "account-1").is_none());
-        assert!(UsageIdentityFilter::parse("api_key", "").is_none());
+        let downstream_filter = UsageIdentityFilter::parse_downstream("api_key", "key-1").unwrap();
+        let combined_dashboard = store
+            .dashboard(
+                UsageRange::Week,
+                UsageFilters::new(Some(downstream_filter), Some(account_filter)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(combined_dashboard.totals.requests, 1);
+        assert_eq!(combined_dashboard.recent_events[0].identity_id, "key-1");
+        assert_eq!(
+            combined_dashboard.recent_events[0].codex_account_id,
+            "codex-1"
+        );
+
+        assert!(UsageIdentityFilter::parse_downstream("codex_account", "codex-1").is_none());
+        assert!(UsageIdentityFilter::parse_upstream("api_key", "key-1").is_none());
+        assert!(UsageIdentityFilter::parse_downstream("unknown", "account-1").is_none());
+        assert!(UsageIdentityFilter::parse_downstream("api_key", "").is_none());
         drop(store);
         remove_temporary_store(&path);
     }
