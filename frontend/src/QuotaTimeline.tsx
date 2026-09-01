@@ -1,4 +1,5 @@
 import { useMemo, type CSSProperties } from "react";
+import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import "./QuotaTimeline.css";
 
@@ -63,7 +64,7 @@ export default function QuotaTimeline({
 		: "timeline-card";
 
 	return (
-		<div className={timelineClassName}>
+		<Card className={`${timelineClassName} gap-0 py-0`}>
 			<ScrollArea className="timeline-scroll" scrollbars="horizontal">
 				<div
 					className="timeline-grid"
@@ -120,7 +121,7 @@ export default function QuotaTimeline({
 					同步于 <time dateTime={new Date(sampledAt).toISOString()}>{formatSampledAt(sampledAt)}</time>
 				</span>
 			</footer>
-		</div>
+		</Card>
 	);
 }
 

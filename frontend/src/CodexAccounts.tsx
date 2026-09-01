@@ -1,5 +1,22 @@
-import { useId, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
+import {
+	CopyIcon,
+	ExternalLinkIcon,
+	InfoIcon,
+	RefreshCwIcon,
+	TriangleAlertIcon,
+	UsersIcon,
+} from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardAction,
+	CardContent,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
 import {
 	Dialog,
 	DialogClose,
@@ -9,7 +26,22 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import {
+	Empty,
+	EmptyDescription,
+	EmptyHeader,
+	EmptyMedia,
+	EmptyTitle,
+} from "@/components/ui/empty";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type {
 	CodexAccount,
 	CodexAccountDeviceAuthorization,
@@ -58,9 +90,13 @@ export default function CodexAccounts({
 	return (
 		<>
 			{accounts.length === 0 ? (
-				<section className="card empty-state unified-empty-state codex-accounts-empty" aria-label="Codex 账户">
-					<strong>暂无 Codex 账户</strong>
-				</section>
+				<Empty className="unified-empty-state border" aria-label="Codex 账户">
+					<EmptyHeader>
+						<EmptyMedia variant="icon"><UsersIcon /></EmptyMedia>
+						<EmptyTitle>暂无 Codex 账户</EmptyTitle>
+						<EmptyDescription>添加账户后即可查看订阅额度并参与请求调度。</EmptyDescription>
+					</EmptyHeader>
+				</Empty>
 			) : (
 				<section className="codex-account-list" aria-label="Codex 账户">
 					{accounts.map((account) => (
@@ -134,19 +170,16 @@ function CodexAccountCard({
 	const email = account.oauth?.email;
 
 	return (
-		<article className={`card account-card codex-account-card${account.enabled ? "" : " is-disabled"}`}>
-			<div className="account-summary">
-				<header className="card-header codex-account-card-header">
-					<div className="codex-account-identity">
-						<strong title={email ?? account.name}>{email || account.name}</strong>
-						<span className="codex-account-subtitle">
-							{email ? <small>{account.name}</small> : null}
-							{email ? <i aria-hidden="true">·</i> : null}
-							<small>{formatPlan(plan)}</small>
-							<AccountDetailsInfo account={account} metadata={metadata} now={now} subscription={subscription} />
-						</span>
-					</div>
-					<div className="account-header-actions codex-account-header-actions">
+		<Card className={`account-card codex-account-card gap-0${account.enabled ? "" : " is-disabled"}`}>
+				<CardHeader className="codex-account-card-header border-b max-[46rem]:grid-cols-1">
+					<CardTitle className="truncate text-base" title={email ?? account.name}>{email || account.name}</CardTitle>
+					<CardDescription className="codex-account-subtitle">
+						{email ? <small>{account.name}</small> : null}
+						{email ? <i aria-hidden="true">·</i> : null}
+						<small>{formatPlan(plan)}</small>
+						<AccountDetailsInfo account={account} metadata={metadata} now={now} subscription={subscription} />
+					</CardDescription>
+					<CardAction className="account-header-actions codex-account-header-actions max-[46rem]:col-start-1 max-[46rem]:row-auto max-[46rem]:mt-2 max-[46rem]:justify-self-stretch">
 						<Switch
 							aria-label={`${account.enabled ? "禁用" : "启用"}${account.name}`}
 							checked={account.enabled}
@@ -154,32 +187,31 @@ function CodexAccountCard({
 							onCheckedChange={() => onToggle()}
 							title={account.enabled ? "禁用账户" : "启用账户"}
 						/>
-						<button aria-label="刷新额度" className="icon-button" disabled={loading || busy || !account.enabled} onClick={onRefresh} title="刷新额度" type="button">
-							<RefreshIcon spinning={loading} />
-						</button>
-						<button className="button button-secondary account-header-button" disabled={busy} onClick={onEdit} type="button">重命名</button>
+						<Button aria-label="刷新额度" disabled={loading || busy || !account.enabled} onClick={onRefresh} size="icon-sm" title="刷新额度" type="button" variant="outline">
+							<RefreshCwIcon className={loading ? "animate-spin" : undefined} />
+						</Button>
+						<Button disabled={busy} onClick={onEdit} size="sm" type="button" variant="outline">重命名</Button>
 						<DeleteConfirmationDialog
 							description="相关路由也会被移除。此操作无法撤销。"
 							onConfirm={onDelete}
 							title={`删除 Codex 账户“${email || account.name}”？`}
-							trigger={<button className="button button-danger-quiet account-header-button" disabled={busy} type="button">删除</button>}
+							trigger={<Button disabled={busy} size="sm" type="button" variant="destructive">删除</Button>}
 						/>
-					</div>
-				</header>
-			</div>
+					</CardAction>
+				</CardHeader>
 
-			<div className="account-quota-section" aria-label={`${email || account.name} 的账户配额`}>
+			<CardContent className="account-quota-section grid gap-3 pt-4" aria-label={`${email || account.name} 的账户配额`}>
 				{loading && !subscription ? (
 					<div className="center-state account-quota-loading" role="status">
-						<span className="spinner" aria-hidden="true" />
+						<Spinner />
 						<span>正在读取配额时间轴…</span>
 					</div>
 				) : null}
 				{error ? (
-					<div className="inline-alert error-alert account-quota-alert" role="alert">
-						<AlertIcon />
-						<span>{error}</span>
-					</div>
+					<Alert variant="destructive">
+						<TriangleAlertIcon />
+						<AlertDescription>{error}</AlertDescription>
+					</Alert>
 				) : null}
 				{subscription?.windows.length ? (
 					<QuotaTimeline
@@ -190,10 +222,12 @@ function CodexAccountCard({
 						windows={subscription.windows}
 					/>
 				) : !loading && !error ? (
-					<p className="muted-message account-quota-empty">暂无额度数据</p>
+					<Empty className="account-quota-empty border">
+						<EmptyHeader><EmptyDescription>暂无额度数据</EmptyDescription></EmptyHeader>
+					</Empty>
 				) : null}
-			</div>
-		</article>
+			</CardContent>
+		</Card>
 	);
 }
 
@@ -208,7 +242,6 @@ function AccountDetailsInfo({
 	now: number;
 	subscription: SubscriptionInfo | null;
 }) {
-	const detailsId = useId();
 	const credits = subscription?.rateLimitResetCredits;
 	const availableCredits = credits?.availableCount ?? null;
 	const applicableCredits = credits?.applicableAvailableCount ?? null;
@@ -219,11 +252,13 @@ function AccountDetailsInfo({
 			: `${Math.max(0, availableCredits)} · 可用 ${Math.max(0, applicableCredits)}`;
 
 	return (
-		<span className="plan-info account-plan-info">
-			<button aria-describedby={detailsId} aria-label="查看账户详情" className="plan-info-button" type="button">
-				<InfoIcon />
-			</button>
-			<span className="plan-tooltip" id={detailsId} role="tooltip">
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<Button aria-label="查看账户详情" size="icon-xs" type="button" variant="ghost">
+					<InfoIcon />
+				</Button>
+			</TooltipTrigger>
+			<TooltipContent align="start" className="grid w-[min(19rem,calc(100vw-5rem))] gap-2" side="bottom" sideOffset={6}>
 				<strong>账户详情</strong>
 				<AccountDetailRow label="Account ID" value={account.oauth?.accountId ?? "未知"} />
 				<AccountDetailRow label="开始时间" value={formatTimestamp(metadata?.subscriptionActiveStart)} />
@@ -239,16 +274,16 @@ function AccountDetailsInfo({
 				/>
 				<AccountDetailRow label="重置积分" value={resetCredits} />
 				<AccountDetailRow label="用量更新时间" value={formatTimestamp(subscription?.fetchedAt)} />
-			</span>
-		</span>
+			</TooltipContent>
+		</Tooltip>
 	);
 }
 
 function AccountDetailRow({ danger = false, label, value }: { danger?: boolean; label: string; value: string }) {
 	return (
-		<span className="plan-tooltip-row">
-			<span>{label}</span>
-			<b className={danger ? "danger-text" : undefined}>{value}</b>
+		<span className="grid grid-cols-[5.25rem_minmax(0,1fr)] items-start gap-3 leading-relaxed">
+			<span className="opacity-70">{label}</span>
+			<b className={danger ? "text-destructive text-right" : "text-right"}>{value}</b>
 		</span>
 	);
 }
@@ -279,8 +314,13 @@ function AccountNameDialog({
 					<DialogTitle>重命名账户</DialogTitle>
 					<DialogDescription>修改该 Codex 账户在管理面板中的显示名称。</DialogDescription>
 				</DialogHeader>
-				<form className="editor-form" onSubmit={submit}>
-					<label htmlFor="codex-account-name"><span>显示名称</span><input autoFocus disabled={busy} id="codex-account-name" maxLength={100} onChange={(event) => setName(event.target.value)} required type="text" value={name} /></label>
+				<form className="grid gap-4" onSubmit={submit}>
+					<FieldGroup>
+						<Field>
+							<FieldLabel htmlFor="codex-account-name">显示名称</FieldLabel>
+							<Input autoFocus disabled={busy} id="codex-account-name" maxLength={100} onChange={(event) => setName(event.target.value)} required type="text" value={name} />
+						</Field>
+					</FieldGroup>
 					<DialogFooter>
 						<DialogClose asChild><Button disabled={busy} type="button" variant="outline">取消</Button></DialogClose>
 						<Button disabled={busy || !name.trim()} type="submit">保存</Button>
@@ -320,17 +360,19 @@ function DeviceLoginDialog({
 					<DialogTitle>登录新账户</DialogTitle>
 					<DialogDescription>打开 OpenAI 登录页并输入设备码以完成授权。</DialogDescription>
 				</DialogHeader>
-				{loading && !flow ? <div className="center-state"><span className="spinner" /><span>获取登录码…</span></div> : null}
+				{loading && !flow ? <div className="center-state"><Spinner /><span>获取登录码…</span></div> : null}
 				{flow ? (
 					<div className="device-login-content">
-						<button className="device-code-button" onClick={() => void copyCode()} type="button">
-							<code>{flow.authorization.userCode}</code><span>{copied ? "已复制" : "点击复制"}</span>
-						</button>
-						<Button asChild><a href={flow.authorization.verificationUri} rel="noreferrer" target="_blank">打开登录页面 <ExternalIcon /></a></Button>
+						<Button className="device-code-button h-auto w-full border-dashed" onClick={() => void copyCode()} type="button" variant="outline">
+							<code>{flow.authorization.userCode}</code>
+							<span>{copied ? "已复制" : "点击复制"}</span>
+							<CopyIcon className="sr-only" />
+						</Button>
+						<Button asChild><a href={flow.authorization.verificationUri} rel="noreferrer" target="_blank">打开登录页面 <ExternalLinkIcon data-icon="inline-end" /></a></Button>
 						<small>等待授权…</small>
 					</div>
 				) : null}
-				{error ? <div className="inline-alert error-alert"><span>{error}</span></div> : null}
+				{error ? <Alert variant="destructive"><TriangleAlertIcon /><AlertDescription>{error}</AlertDescription></Alert> : null}
 				{error ? <DialogFooter><DialogClose asChild><Button type="button" variant="outline">取消</Button></DialogClose><Button disabled={loading} onClick={onRetry} type="button">重新获取</Button></DialogFooter> : null}
 			</DialogContent>
 		</Dialog>
@@ -349,20 +391,4 @@ function isExpired(value: number | null | undefined, now: number): boolean {
 function formatTimestamp(value: number | null | undefined, fallback = "暂无数据"): string {
 	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback;
 	return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
-function RefreshIcon({ spinning }: { spinning: boolean }) {
-	return <svg className={`icon${spinning ? " icon-spinning" : ""}`} aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></svg>;
-}
-
-function InfoIcon() {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><path d="M12 8h.01" /></svg>;
-}
-
-function AlertIcon() {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.75 3h15.7a2 2 0 0 0 1.75-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></svg>;
-}
-
-function ExternalIcon() {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M15 3h6v6" /><path d="m10 14 11-11" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>;
 }

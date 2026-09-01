@@ -5,7 +5,33 @@ import {
 	useState,
 	type FormEvent,
 } from "react";
+import {
+	CheckCircle2Icon,
+	CopyIcon,
+	EyeIcon,
+	EyeOffIcon,
+	KeyRoundIcon,
+	PlusIcon,
+	RefreshCwIcon,
+	TriangleAlertIcon,
+	UsersIcon,
+	XIcon,
+} from "lucide-react";
+import {
+	Alert,
+	AlertAction,
+	AlertDescription,
+} from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardAction,
+	CardContent,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
 import {
 	Dialog,
 	DialogClose,
@@ -15,6 +41,27 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import {
+	Empty,
+	EmptyDescription,
+	EmptyHeader,
+	EmptyMedia,
+	EmptyTitle,
+} from "@/components/ui/empty";
+import {
+	Field,
+	FieldContent,
+	FieldDescription,
+	FieldGroup,
+	FieldLabel,
+} from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+	InputGroup,
+	InputGroupAddon,
+	InputGroupButton,
+	InputGroupInput,
+} from "@/components/ui/input-group";
 import {
 	Select,
 	SelectContent,
@@ -26,7 +73,16 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import {
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@/components/ui/table";
 import AccountGroups from "./AccountGroups";
 import CodexAccounts from "./CodexAccounts";
 import DeleteConfirmationDialog from "./DeleteConfirmationDialog";
@@ -626,25 +682,24 @@ function App() {
 	if (screen === "login") return <ScrollArea className="h-svh"><LoginView error={loginError} loading={loginLoading} onSubmit={(secret) => void handleLogin(secret)} /></ScrollArea>;
 	if (!basePath) return <InvalidPath />;
 	const pageAction = activePage === "api-keys" ? (
-		<button className="button button-primary" onClick={() => setKeyEditor("new")} type="button">
-			<PlusIcon />
+		<Button onClick={() => setKeyEditor("new")} type="button">
+			<PlusIcon data-icon="inline-start" />
 			添加 API Key
-		</button>
+		</Button>
 	) : activePage === "accounts" ? (
-		<button className="button button-primary" onClick={() => setProxyEditor("new")} type="button">
-			<PlusIcon />
+		<Button onClick={() => setProxyEditor("new")} type="button">
+			<PlusIcon data-icon="inline-start" />
 			添加下游账户
-		</button>
+		</Button>
 	) : activePage === "account" ? (
-		<button
-			className="button button-primary"
+		<Button
 			disabled={deviceLoading || deviceFlow !== null}
 			onClick={() => void startDeviceLogin()}
 			type="button"
 		>
-			<PlusIcon />
+			<PlusIcon data-icon="inline-start" />
 			登录新账户
-		</button>
+		</Button>
 	) : undefined;
 
 	return (
@@ -797,7 +852,7 @@ function Overview({
 						<ActivityHeatmaps now={now} stacked usage={usage} />
 						<DownstreamCostDonut usage={usage} />
 					</>
-				) : <div className="card center-state overview-visual-loading"><span className="spinner" aria-hidden="true" />正在读取当前周期…</div>}
+				) : <Card className="center-state overview-visual-loading"><Spinner />正在读取当前周期…</Card>}
 			</section>
 		</div>
 	);
@@ -815,11 +870,11 @@ function OverviewMetricCard({
 	value: string;
 }) {
 	return (
-		<button className="overview-metric-card" onClick={onClick} type="button">
+		<Button className="overview-metric-card h-auto" onClick={onClick} type="button" variant="outline">
 			<span>{label}</span>
 			<strong>{value}</strong>
 			<small>{detail}</small>
-		</button>
+		</Button>
 	);
 }
 
@@ -854,9 +909,11 @@ function UsagePanel({
 }) {
 	const totals = usage?.totals;
 	return (
-		<section className="card usage-card" aria-label="用量详情">
-			<div className="card-header unified-section-header">
-				<div className="usage-card-actions">
+		<Card aria-label="用量详情">
+			<CardHeader className="max-lg:grid-cols-1">
+				<CardTitle>用量明细</CardTitle>
+				<CardDescription>筛选调用身份和统计范围，查看请求与 Token 消耗。</CardDescription>
+				<CardAction className="usage-card-actions max-lg:col-start-1 max-lg:row-auto max-lg:mt-2 max-lg:justify-self-stretch">
 					<div className="usage-identity-control">
 						<span id="usage-identity-label">筛选对象</span>
 						<Select
@@ -864,7 +921,7 @@ function UsagePanel({
 							onValueChange={(value) => onIdentityChange(value === ALL_USAGE_IDENTITIES_VALUE ? null : parseUsageIdentityValue(value))}
 							value={usageIdentityValue(identity) || ALL_USAGE_IDENTITIES_VALUE}
 						>
-							<SelectTrigger aria-labelledby="usage-identity-label" className="w-[clamp(13rem,30vw,23rem)] max-w-full data-[size=default]:h-[2.35rem] max-[48rem]:w-full">
+							<SelectTrigger aria-labelledby="usage-identity-label" className="w-[clamp(13rem,30vw,23rem)] max-w-full max-[48rem]:w-full">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent align="end" position="popper">
@@ -902,7 +959,7 @@ function UsagePanel({
 					<div className="usage-range-control">
 						<span id="usage-range-label">统计范围</span>
 						<Select disabled={loading} onValueChange={(value) => onRangeChange(value as UsageRange)} value={range}>
-							<SelectTrigger aria-labelledby="usage-range-label" className="data-[size=default]:h-[2.35rem] max-[28rem]:w-full">
+							<SelectTrigger aria-labelledby="usage-range-label" className="max-[28rem]:w-full">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent align="end" position="popper">
@@ -916,11 +973,12 @@ function UsagePanel({
 							</SelectContent>
 						</Select>
 					</div>
-					<button aria-label="刷新用量" className="icon-button" disabled={loading} onClick={onRefresh} type="button"><RefreshIcon spinning={loading} /></button>
-				</div>
-			</div>
-			{error ? <div className="inline-alert error-alert usage-alert">{error}</div> : null}
-			{loading && !usage ? <div className="center-state usage-loading"><span className="spinner" />正在读取用量…</div> : null}
+					<Button aria-label="刷新用量" disabled={loading} onClick={onRefresh} size="icon" type="button" variant="outline"><RefreshCwIcon className={loading ? "animate-spin" : undefined} /></Button>
+				</CardAction>
+			</CardHeader>
+			<CardContent className="grid gap-4">
+			{error ? <Alert variant="destructive"><TriangleAlertIcon /><AlertDescription>{error}</AlertDescription></Alert> : null}
+			{loading && !usage ? <div className="center-state usage-loading"><Spinner />正在读取用量…</div> : null}
 			{usage && totals ? (
 				<div className={loading ? "usage-content is-refreshing" : "usage-content"}>
 					<div className="usage-summary-grid">
@@ -933,20 +991,33 @@ function UsagePanel({
 					<ActivityHeatmaps now={now} usage={usage} />
 					<UsageLineCharts now={now} usage={usage} />
 					<UsageBreakdownDonuts usage={usage} />
-					<div className="usage-events">
+					<Card className="usage-events" size="sm">
 						<div className="usage-section-heading"><strong>最近请求</strong></div>
 						<ScrollArea className="table-wrap" scrollbars="horizontal">
-							<table className="usage-events-table"><thead><tr><th>时间</th><th>调用身份</th><th>路由目标</th><th>模型</th><th>Token</th><th>成本</th></tr></thead><tbody>{usage.recentEvents.map((event) => <tr key={event.id}><td><time dateTime={new Date(event.recordedAt).toISOString()}>{formatCompactDate(event.recordedAt)}</time></td><td><strong>{event.identityName}</strong><small>{usageIdentityLabel(event.identityType)}</small></td><td><strong>{event.accountGroupName || event.codexAccountName || "—"}</strong>{event.accountGroupName || event.codexAccountName ? <small>{event.accountGroupName ? event.codexAccountName : "Codex 账户"}</small> : null}</td><td><code>{event.model}</code></td><td><strong>{formatTokens(event.totalTokens)}</strong><small>{statusLabel(event.status)}</small></td><td><strong>{formatCost(event.costUsd)}</strong></td></tr>)}</tbody></table>
+							<Table className="usage-events-table">
+								<TableHeader><TableRow><TableHead>时间</TableHead><TableHead>调用身份</TableHead><TableHead>路由目标</TableHead><TableHead>模型</TableHead><TableHead>Token</TableHead><TableHead>成本</TableHead></TableRow></TableHeader>
+								<TableBody>{usage.recentEvents.map((event) => (
+									<TableRow key={event.id}>
+										<TableCell><time dateTime={new Date(event.recordedAt).toISOString()}>{formatCompactDate(event.recordedAt)}</time></TableCell>
+										<TableCell><strong>{event.identityName}</strong><small>{usageIdentityLabel(event.identityType)}</small></TableCell>
+										<TableCell><strong>{event.accountGroupName || event.codexAccountName || "—"}</strong>{event.accountGroupName || event.codexAccountName ? <small>{event.accountGroupName ? event.codexAccountName : "Codex 账户"}</small> : null}</TableCell>
+										<TableCell><code>{event.model}</code></TableCell>
+										<TableCell><strong>{formatTokens(event.totalTokens)}</strong><small>{statusLabel(event.status)}</small></TableCell>
+										<TableCell><strong>{formatCost(event.costUsd)}</strong></TableCell>
+									</TableRow>
+								))}</TableBody>
+							</Table>
 						</ScrollArea>
-					</div>
+					</Card>
 				</div>
 			) : null}
-		</section>
+			</CardContent>
+		</Card>
 	);
 }
 
 function UsageMetric({ label, value, detail, tone }: { label: string; value: string; detail?: string | undefined; tone: "blue" | "teal" | "violet" | "orange" }) {
-	return <div className={`usage-metric usage-metric-${tone}`}><span>{label}</span><strong>{value}</strong>{detail ? <small>{detail}</small> : null}</div>;
+	return <Card className={`usage-metric usage-metric-${tone}`} size="sm"><span>{label}</span><strong>{value}</strong>{detail ? <small>{detail}</small> : null}</Card>;
 }
 
 type IdentityEntry = ClientApiKey | AuthProxyAccount;
@@ -983,48 +1054,56 @@ function IdentityTable({
 
 	if (entries.length === 0) {
 		return (
-			<section className="card empty-state identity-empty-state" aria-label={isKey ? "API Keys" : "下游账户"}>
-				<strong>{isKey ? "暂无 API Key" : "暂无下游账户"}</strong>
-			</section>
+			<Empty className="identity-empty-state border" aria-label={isKey ? "API Keys" : "下游账户"}>
+				<EmptyHeader>
+					<EmptyMedia variant="icon">{isKey ? <KeyRoundIcon /> : <UsersIcon />}</EmptyMedia>
+					<EmptyTitle>{isKey ? "暂无 API Key" : "暂无下游账户"}</EmptyTitle>
+					<EmptyDescription>{isKey ? "添加 API Key 后即可为客户端分配路由目标。" : "添加下游账户后即可按 account_id 管理路由。"}</EmptyDescription>
+				</EmptyHeader>
+			</Empty>
 		);
 	}
 
 	return (
 		<ScrollArea className="table-wrap identity-table-wrap" aria-label={isKey ? "API Keys" : "下游账户"} role="region" scrollbars="horizontal">
-			<table className="unified-identity-table"><thead><tr><th>名称</th><th>{isKey ? "Key" : "account_id"}</th><th>账户 / 账户组</th><th>状态</th><th>操作</th></tr></thead><tbody>{entries.map((entry) => {
+			<Table className="unified-identity-table">
+				<TableHeader><TableRow><TableHead>名称</TableHead><TableHead>{isKey ? "Key" : "account_id"}</TableHead><TableHead>账户 / 账户组</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
+				<TableBody>{entries.map((entry) => {
 					const route = routes.find((item) => item.consumerType === kind && item.consumerId === entry.id);
 					const key = isKey ? (entry as ClientApiKey).key : null;
 					const visible = key !== null && visibleKeys.has(entry.id);
 					return (
-						<tr className={entry.enabled ? "" : "row-disabled"} key={entry.id}>
-							<td><strong>{entry.name}</strong></td>
-							<td>
+						<TableRow className={entry.enabled ? "" : "row-disabled"} key={entry.id}>
+							<TableCell><strong>{entry.name}</strong></TableCell>
+							<TableCell>
 								{key !== null ? (
 									<div className="key-value-cell">
 										<code>{visible ? key : maskApiKey(key)}</code>
-										<button
+										<Button
 											aria-label={visible ? `隐藏 ${entry.name}` : `显示 ${entry.name}`}
-											className="icon-button small-icon-button"
 											onClick={() => toggleKeyVisibility(entry.id)}
+											size="icon-sm"
 											title={visible ? "隐藏 Key" : "显示 Key"}
 											type="button"
+											variant="ghost"
 										>
-											<EyeIcon off={visible} />
-										</button>
-										<button
+											{visible ? <EyeOffIcon /> : <EyeIcon />}
+										</Button>
+										<Button
 											aria-label={`复制 ${entry.name}`}
-											className="icon-button small-icon-button"
 											onClick={() => void navigator.clipboard.writeText(key)}
+											size="icon-sm"
 											title="复制 Key"
 											type="button"
+											variant="ghost"
 										>
 											<CopyIcon />
-										</button>
+										</Button>
 									</div>
 								) : <code title={(entry as AuthProxyAccount).accountId}>{(entry as AuthProxyAccount).accountId}</code>}
-							</td>
-							<td><span className={`route-state-badge ${route ? "assigned" : "unassigned"}`}>{route ? routeTargetName(route, targets.accounts, targets.groups) : "未分配"}</span></td>
-							<td>
+							</TableCell>
+							<TableCell><Badge className={`route-state-badge ${route ? "assigned" : "unassigned"}`} variant={route ? "secondary" : "outline"}>{route ? routeTargetName(route, targets.accounts, targets.groups) : "未分配"}</Badge></TableCell>
+							<TableCell>
 								<Switch
 									aria-label={`${entry.enabled ? "停用" : "启用"} ${entry.name}`}
 									checked={entry.enabled}
@@ -1032,21 +1111,22 @@ function IdentityTable({
 									onCheckedChange={() => onToggle(entry)}
 									title={entry.enabled ? "停用" : "启用"}
 								/>
-							</td>
-							<td>
+							</TableCell>
+							<TableCell>
 								<div className="table-actions">
-									<button className="button button-secondary button-compact" disabled={busy.has(entry.id)} onClick={() => onEdit(entry)} type="button">编辑</button>
+									<Button disabled={busy.has(entry.id)} onClick={() => onEdit(entry)} size="sm" type="button" variant="outline">编辑</Button>
 									<DeleteConfirmationDialog
 										description="此操作无法撤销。"
 										onConfirm={() => onDelete(entry)}
 										title={`删除${isKey ? " API Key" : "下游账户"}“${entry.name}”？`}
-										trigger={<button className="button button-danger button-compact" disabled={busy.has(entry.id)} type="button">删除</button>}
+										trigger={<Button disabled={busy.has(entry.id)} size="sm" type="button" variant="destructive">删除</Button>}
 									/>
 								</div>
-							</td>
-						</tr>
+							</TableCell>
+						</TableRow>
 					);
-			})}</tbody></table>
+				})}</TableBody>
+			</Table>
 		</ScrollArea>
 	);
 }
@@ -1082,40 +1162,46 @@ function ApiKeyEditor({
 
 	return (
 		<Dialog open onOpenChange={(open) => { if (!open && !loading) onCancel(); }}>
-			<DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col p-0 sm:max-w-lg" showCloseButton={!loading}>
-				<ScrollArea className="min-h-0 flex-1">
-					<div className="grid gap-4 p-4">
-						<DialogHeader>
-							<DialogTitle>{entry === "new" ? "添加 API Key" : "编辑 API Key"}</DialogTitle>
-							<DialogDescription>配置 API Key、路由目标与启用状态。</DialogDescription>
-						</DialogHeader>
-						<form className="editor-form" onSubmit={submit}>
-					<label htmlFor="api-key-name">
-						<span>名称</span>
-						<input autoFocus disabled={loading} id="api-key-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：my-laptop" required type="text" value={name} />
-					</label>
-					<label htmlFor="api-key-value">
-						<span>Key</span>
-						<div className="input-with-action">
-							<input autoComplete="off" disabled={loading} id="api-key-value" maxLength={MAX_API_KEY_LENGTH} minLength={MIN_API_KEY_LENGTH} onChange={(event) => setKey(event.target.value)} required spellCheck={false} type={visible ? "text" : "password"} value={key} />
-							<button aria-label={visible ? "隐藏" : "显示"} className="input-action" onClick={() => setVisible((value) => !value)} type="button"><EyeIcon off={visible} /></button>
-						</div>
-					</label>
-					<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，该 API Key 的请求将不可用。" />
-					<div className="editor-tools">
-						<Button className="shrink-0" disabled={loading} onClick={() => setKey(generateApiKey())} type="button" variant="outline">重新生成</Button>
-						<div className="switch-row">
-							<label htmlFor="api-key-enabled"><strong>启用</strong></label>
-							<Switch checked={enabled} disabled={loading} id="api-key-enabled" onCheckedChange={setEnabled} />
-						</div>
-					</div>
-							<DialogFooter>
-								<DialogClose asChild><Button disabled={loading} type="button" variant="outline">取消</Button></DialogClose>
-								<Button disabled={loading || !name.trim() || !validApiKey(key)} type="submit">{loading ? <span className="spinner" /> : null}{loading ? "保存中…" : "保存"}</Button>
-							</DialogFooter>
-						</form>
-					</div>
-				</ScrollArea>
+			<DialogContent className="flex h-[min(40rem,calc(100svh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg" showCloseButton={!loading}>
+				<DialogHeader className="shrink-0 border-b px-4 py-4 pr-12 text-left sm:px-6 sm:pr-14">
+					<DialogTitle>{entry === "new" ? "添加 API Key" : "编辑 API Key"}</DialogTitle>
+					<DialogDescription>配置 API Key、路由目标与启用状态。</DialogDescription>
+				</DialogHeader>
+				<form className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={submit}>
+					<ScrollArea className="h-full min-h-0 flex-1">
+						<FieldGroup className="p-4 sm:p-6">
+							<Field>
+								<FieldLabel htmlFor="api-key-name">名称</FieldLabel>
+								<Input autoFocus disabled={loading} id="api-key-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：my-laptop" required type="text" value={name} />
+							</Field>
+							<Field>
+								<FieldLabel htmlFor="api-key-value">Key</FieldLabel>
+								<InputGroup>
+									<InputGroupInput autoComplete="off" disabled={loading} id="api-key-value" maxLength={MAX_API_KEY_LENGTH} minLength={MIN_API_KEY_LENGTH} onChange={(event) => setKey(event.target.value)} required spellCheck={false} type={visible ? "text" : "password"} value={key} />
+									<InputGroupAddon align="inline-end">
+										<InputGroupButton aria-label={visible ? "隐藏" : "显示"} onClick={() => setVisible((value) => !value)} size="icon-xs">
+											{visible ? <EyeOffIcon /> : <EyeIcon />}
+										</InputGroupButton>
+									</InputGroupAddon>
+								</InputGroup>
+								<FieldDescription>至少 {MIN_API_KEY_LENGTH} 个字符，并包含字母、数字与符号。</FieldDescription>
+							</Field>
+							<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，该 API Key 的请求将不可用。" />
+							<Field className="rounded-lg border p-3" orientation="horizontal">
+								<FieldContent>
+									<FieldLabel htmlFor="api-key-enabled">启用</FieldLabel>
+									<FieldDescription>允许客户端使用这个 API Key 调用服务。</FieldDescription>
+								</FieldContent>
+								<Switch checked={enabled} disabled={loading} id="api-key-enabled" onCheckedChange={setEnabled} />
+							</Field>
+							<Button className="w-fit" disabled={loading} onClick={() => setKey(generateApiKey())} type="button" variant="outline">重新生成 Key</Button>
+						</FieldGroup>
+					</ScrollArea>
+					<DialogFooter className="m-0 shrink-0 rounded-none px-4 py-3 sm:px-6 sm:py-4">
+						<DialogClose asChild><Button disabled={loading} type="button" variant="outline">取消</Button></DialogClose>
+						<Button disabled={loading || !name.trim() || !validApiKey(key)} type="submit">{loading ? <Spinner /> : null}{loading ? "保存中…" : "保存"}</Button>
+					</DialogFooter>
+				</form>
 			</DialogContent>
 		</Dialog>
 	);
@@ -1151,34 +1237,38 @@ function ProxyEditor({
 
 	return (
 		<Dialog open onOpenChange={(open) => { if (!open && !loading) onCancel(); }}>
-			<DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col p-0 sm:max-w-lg" showCloseButton={!loading}>
-				<ScrollArea className="min-h-0 flex-1">
-					<div className="grid gap-4 p-4">
-						<DialogHeader>
-							<DialogTitle>{entry === "new" ? "添加下游账户" : "编辑下游账户"}</DialogTitle>
-							<DialogDescription>配置 account_id、路由目标与启用状态。</DialogDescription>
-						</DialogHeader>
-						<form className="editor-form" onSubmit={submit}>
-					<label htmlFor="proxy-name">
-						<span>名称</span>
-						<input autoFocus disabled={loading} id="proxy-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：production" required type="text" value={name} />
-					</label>
-					<label htmlFor="proxy-account-id">
-						<span>account_id</span>
-						<input autoCapitalize="none" autoComplete="off" disabled={loading} id="proxy-account-id" maxLength={MAX_ACCOUNT_ID_LENGTH} onChange={(event) => setAccountId(event.target.value)} required spellCheck={false} type="text" value={accountId} />
-					</label>
-					<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，将继续使用来访请求中的上游凭据。" />
-					<div className="switch-row">
-						<label htmlFor="proxy-enabled"><strong>启用</strong></label>
-						<Switch checked={enabled} disabled={loading} id="proxy-enabled" onCheckedChange={setEnabled} />
-					</div>
-							<DialogFooter>
-								<DialogClose asChild><Button disabled={loading} type="button" variant="outline">取消</Button></DialogClose>
-								<Button disabled={loading || !name.trim() || !validAccountId(accountId)} type="submit">{loading ? <span className="spinner" /> : null}{loading ? "保存中…" : "保存"}</Button>
-							</DialogFooter>
-						</form>
-					</div>
-				</ScrollArea>
+			<DialogContent className="flex h-[min(36rem,calc(100svh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg" showCloseButton={!loading}>
+				<DialogHeader className="shrink-0 border-b px-4 py-4 pr-12 text-left sm:px-6 sm:pr-14">
+					<DialogTitle>{entry === "new" ? "添加下游账户" : "编辑下游账户"}</DialogTitle>
+					<DialogDescription>配置 account_id、路由目标与启用状态。</DialogDescription>
+				</DialogHeader>
+				<form className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={submit}>
+					<ScrollArea className="h-full min-h-0 flex-1">
+						<FieldGroup className="p-4 sm:p-6">
+							<Field>
+								<FieldLabel htmlFor="proxy-name">名称</FieldLabel>
+								<Input autoFocus disabled={loading} id="proxy-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：production" required type="text" value={name} />
+							</Field>
+							<Field>
+								<FieldLabel htmlFor="proxy-account-id">account_id</FieldLabel>
+								<Input autoCapitalize="none" autoComplete="off" disabled={loading} id="proxy-account-id" maxLength={MAX_ACCOUNT_ID_LENGTH} onChange={(event) => setAccountId(event.target.value)} required spellCheck={false} type="text" value={accountId} />
+								<FieldDescription>填写下游 auth proxy 请求中使用的 account_id。</FieldDescription>
+							</Field>
+							<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，将继续使用来访请求中的上游凭据。" />
+							<Field className="rounded-lg border p-3" orientation="horizontal">
+								<FieldContent>
+									<FieldLabel htmlFor="proxy-enabled">启用</FieldLabel>
+									<FieldDescription>允许该 account_id 使用当前路由设置。</FieldDescription>
+								</FieldContent>
+								<Switch checked={enabled} disabled={loading} id="proxy-enabled" onCheckedChange={setEnabled} />
+							</Field>
+						</FieldGroup>
+					</ScrollArea>
+					<DialogFooter className="m-0 shrink-0 rounded-none px-4 py-3 sm:px-6 sm:py-4">
+						<DialogClose asChild><Button disabled={loading} type="button" variant="outline">取消</Button></DialogClose>
+						<Button disabled={loading || !name.trim() || !validAccountId(accountId)} type="submit">{loading ? <Spinner /> : null}{loading ? "保存中…" : "保存"}</Button>
+					</DialogFooter>
+				</form>
 			</DialogContent>
 		</Dialog>
 	);
@@ -1200,14 +1290,14 @@ function AccountTargetSelect({
 	unassignedHint: string;
 }) {
 	return (
-		<label className="route-target-field" htmlFor="identity-account-target">
-			<span id="identity-account-target-label">账户或账户组</span>
+		<Field className="route-target-field">
+			<FieldLabel htmlFor="identity-account-target" id="identity-account-target-label">账户或账户组</FieldLabel>
 			<Select
 				disabled={loading}
 				onValueChange={(value) => onChange(parseRouteTargetValue(value === UNASSIGNED_ROUTE_TARGET_VALUE ? "" : value))}
 				value={routeTargetValue(target) || UNASSIGNED_ROUTE_TARGET_VALUE}
 			>
-				<SelectTrigger aria-labelledby="identity-account-target-label" className="w-full data-[size=default]:h-[3.15rem]" id="identity-account-target">
+				<SelectTrigger aria-labelledby="identity-account-target-label" className="w-full" id="identity-account-target">
 					<SelectValue />
 				</SelectTrigger>
 				<SelectContent position="popper">
@@ -1233,8 +1323,8 @@ function AccountTargetSelect({
 					) : null}
 				</SelectContent>
 			</Select>
-			<small>{groups.length === 0 && accounts.length === 0 ? "请先在 Codex 账户页添加账户或账户组。" : unassignedHint}</small>
-		</label>
+			<FieldDescription>{groups.length === 0 && accounts.length === 0 ? "请先在 Codex 账户页添加账户或账户组。" : unassignedHint}</FieldDescription>
+		</Field>
 	);
 }
 
@@ -1242,11 +1332,37 @@ function LoginView({ error, loading, onSubmit }: { error: string | null; loading
 	const [secret, setSecret] = useState("");
 	const [visible, setVisible] = useState(false);
 	function submit(event: FormEvent<HTMLFormElement>): void { event.preventDefault(); if (secret && !loading) onSubmit(secret); }
-	return <div className="auth-shell"><aside className="auth-aside"><div className="auth-aside-title"><span>Codex</span><span>Router</span></div></aside><div className="auth-main"><main className="auth-card"><div className="auth-mobile-brand"><ProductMark compact /><strong>Codex Router</strong></div><h1>登录管理面板</h1>{error ? <div className="inline-alert error-alert">{error}</div> : null}<form className="auth-form" onSubmit={submit}><label htmlFor="admin-secret">管理密钥</label><div className="input-with-action"><input autoFocus disabled={loading} id="admin-secret" onChange={(event) => setSecret(event.target.value)} required type={visible ? "text" : "password"} value={secret} /><button aria-label={visible ? "隐藏" : "显示"} className="input-action" onClick={() => setVisible((value) => !value)} type="button"><EyeIcon off={visible} /></button></div><button className="button button-primary auth-submit" disabled={loading || !secret}>{loading ? <span className="spinner" /> : null}{loading ? "登录中…" : "登录"}</button></form></main></div></div>;
+	return (
+		<div className="auth-shell">
+			<aside className="auth-aside"><div className="auth-aside-title"><span>Codex</span><span>Router</span></div></aside>
+			<div className="auth-main">
+				<main className="auth-card">
+					<div className="auth-mobile-brand"><ProductMark compact /><strong>Codex Router</strong></div>
+					<h1>登录管理面板</h1>
+					<p className="auth-description">输入服务端配置的管理密钥以继续。</p>
+					{error ? <Alert className="mt-4" variant="destructive"><TriangleAlertIcon /><AlertDescription>{error}</AlertDescription></Alert> : null}
+					<form className="auth-form" onSubmit={submit}>
+						<Field>
+							<FieldLabel htmlFor="admin-secret">管理密钥</FieldLabel>
+							<InputGroup className="h-10">
+								<InputGroupInput autoFocus disabled={loading} id="admin-secret" onChange={(event) => setSecret(event.target.value)} required type={visible ? "text" : "password"} value={secret} />
+								<InputGroupAddon align="inline-end">
+									<InputGroupButton aria-label={visible ? "隐藏" : "显示"} onClick={() => setVisible((value) => !value)} size="icon-sm">
+										{visible ? <EyeOffIcon /> : <EyeIcon />}
+									</InputGroupButton>
+								</InputGroupAddon>
+							</InputGroup>
+						</Field>
+						<Button className="auth-submit" disabled={loading || !secret} size="lg" type="submit">{loading ? <Spinner /> : null}{loading ? "登录中…" : "登录"}</Button>
+					</form>
+				</main>
+			</div>
+		</div>
+	);
 }
 
 function LoadingView() {
-	return <div className="loading-screen"><ProductMark /><span className="spinner" /><strong>加载中…</strong></div>;
+	return <div className="loading-screen"><ProductMark /><Spinner /><strong>加载中…</strong></div>;
 }
 
 function InvalidPath() {
@@ -1254,7 +1370,15 @@ function InvalidPath() {
 }
 
 function StatusToast({ notice, onClose }: { notice: Notice; onClose: () => void }) {
-	return <div className={`status-toast ${notice.tone}`} role="status"><span className="toast-icon"><NoticeIcon success={notice.tone === "success"} /></span><p>{notice.text}</p><button aria-label="关闭通知" onClick={onClose} type="button"><CloseIcon /></button></div>;
+	return (
+		<Alert className={`status-toast ${notice.tone}`} role="status" variant={notice.tone === "error" ? "destructive" : "default"}>
+			{notice.tone === "success" ? <CheckCircle2Icon /> : <TriangleAlertIcon />}
+			<AlertDescription>{notice.text}</AlertDescription>
+			<AlertAction>
+				<Button aria-label="关闭通知" onClick={onClose} size="icon-sm" type="button" variant="ghost"><XIcon /></Button>
+			</AlertAction>
+		</Alert>
+	);
 }
 
 function routeTargetName(route: RouteAssignment, accounts: CodexAccount[], groups: AccountGroup[]): string {
@@ -1407,30 +1531,6 @@ function generateApiKey(): string {
 		}
 		if (/[a-z]/.test(value) && /[0-9]/.test(value)) return `sk-${value}`;
 	}
-}
-
-function PlusIcon() {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M12 5v14" /><path d="M5 12h14" /></svg>;
-}
-
-function RefreshIcon({ spinning }: { spinning: boolean }) {
-	return <svg className={`icon${spinning ? " icon-spinning" : ""}`} aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></svg>;
-}
-
-function CloseIcon() {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="m6 6 12 12" /><path d="M18 6 6 18" /></svg>;
-}
-
-function EyeIcon({ off }: { off: boolean }) {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">{off ? <><path d="m3 3 18 18" /><path d="M10.6 6.15A10.6 10.6 0 0 1 12 6c6.5 0 10 6 10 6a16.8 16.8 0 0 1-3 3.8" /><path d="M6.6 6.6C3.5 8.4 2 12 2 12s3.5 6 10 6a10.7 10.7 0 0 0 3.4-.55" /></> : <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="2.5" /></>}</svg>;
-}
-
-function CopyIcon() {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24"><rect height="13" rx="2" width="13" x="8" y="8" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></svg>;
-}
-
-function NoticeIcon({ success }: { success: boolean }) {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">{success ? <path d="m5 12 4.2 4.2L19 6.5" /> : <><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.75 3h15.7a2 2 0 0 0 1.75-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></>}</svg>;
 }
 
 export default App;

@@ -5,7 +5,27 @@ import {
 	useState,
 	type FormEvent,
 } from "react";
+import {
+	EyeIcon,
+	EyeOffIcon,
+	RefreshCwIcon,
+	TriangleAlertIcon,
+} from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader } from "@/components/ui/empty";
+import { Field, FieldLabel } from "@/components/ui/field";
+import {
+	InputGroup,
+	InputGroupAddon,
+	InputGroupButton,
+	InputGroupInput,
+} from "@/components/ui/input-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Spinner } from "@/components/ui/spinner";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { UsageDashboard, UsageRange } from "./admin-api";
 import { ProductMark } from "./ManagementShell";
 import QuotaTimeline, { type QuotaTimelineWindow } from "./QuotaTimeline";
@@ -148,64 +168,70 @@ function AccountUsage() {
 					<div className="public-account-brand">
 						<ProductMark compact />
 						<div><strong>Codex Router</strong><span>账户用量</span></div>
-						<button
-							className="button button-secondary public-account-change"
+						<Button
 							disabled={loading}
 							onClick={clearAccount}
+							size="sm"
 							type="button"
+							variant="outline"
 						>
 							更换凭据
-						</button>
+						</Button>
 					</div>
 					<div className="public-account-heading">
-						<span className="public-account-kind">
+						<Badge className="public-account-kind" variant="outline">
 							{snapshot.account.identityType === "auth_proxy" ? "ACCOUNT ID" : "API KEY"}
-						</span>
+						</Badge>
 						<h1>用量信息</h1>
 						<p>查看额度周期、Token 活动与模型消耗分布。</p>
 					</div>
 				</header>
 
-				{error ? <div className="public-account-alert" role="alert">{error}</div> : null}
+				{error ? <Alert className="public-account-alert" variant="destructive"><TriangleAlertIcon /><AlertDescription>{error}</AlertDescription></Alert> : null}
 
 				<div className={loading ? "public-account-content is-refreshing" : "public-account-content"}>
-					<section className="public-account-range-bar" aria-label="统计时间范围">
+					<Card className="public-account-range-bar" aria-label="统计时间范围">
 						<div className="public-account-range-copy">
 							<strong>统计范围</strong>
 							<span>{formatDateRange(usage.startAt, usage.endAt)}</span>
 						</div>
 						<div className="public-account-range-actions">
-							<ScrollArea className="public-account-range-options" role="group" aria-label="选择统计时间范围" scrollbars="horizontal">
-								<div className="public-account-range-options-content">
+							<ScrollArea className="public-account-range-scroll" aria-label="选择统计时间范围" scrollbars="horizontal">
+								<ToggleGroup
+									className="min-w-max"
+									disabled={loading}
+									onValueChange={(value) => { if (value) changeRange(value as UsageRange); }}
+									spacing={0}
+									type="single"
+									value={range}
+									variant="outline"
+								>
 									{RANGE_OPTIONS.map((option) => (
-										<button
-											aria-pressed={range === option.value}
-											className={range === option.value ? "active" : ""}
-											disabled={loading}
+										<ToggleGroupItem
 											key={option.value}
-											onClick={() => changeRange(option.value)}
-											type="button"
+											value={option.value}
 										>
 											{option.label}
-										</button>
+										</ToggleGroupItem>
 									))}
-								</div>
+								</ToggleGroup>
 							</ScrollArea>
-							<button
+							<Button
 								aria-label="刷新账户用量"
-								className="public-account-refresh"
 								disabled={loading}
 								onClick={() => void load(range)}
+								size="icon"
 								title="刷新账户用量"
 								type="button"
+								variant="outline"
 							>
-								<RefreshIcon spinning={loading} />
-							</button>
+								<RefreshCwIcon className={loading ? "animate-spin" : undefined} />
+							</Button>
 						</div>
-					</section>
+					</Card>
 
 					<div className="public-account-overview">
-						<aside className="public-account-metrics" aria-label="账户用量指标">
+						<Card className="public-account-metrics" aria-label="账户用量指标">
 							<header><span>账户指标</span><small>{rangeLabel(usage.range)}</small></header>
 							<AccountMetric label="请求次数" value={formatCount(totals.requests)} />
 							<AccountMetric
@@ -216,7 +242,7 @@ function AccountUsage() {
 								label="成本"
 								value={formatCost(totals.costUsd)}
 							/>
-						</aside>
+						</Card>
 
 						<section className="public-account-visuals" aria-label="账户用量图表">
 							<div className="public-account-activity-stack activity-card-grid-stacked">
@@ -237,7 +263,7 @@ function AccountUsage() {
 								windows={snapshot.quota.windows}
 							/>
 						) : (
-							<div className="public-account-quota-empty">额度时间条尚未完成首次同步。</div>
+							<Empty className="public-account-quota-empty border"><EmptyHeader><EmptyDescription>额度时间条尚未完成首次同步。</EmptyDescription></EmptyHeader></Empty>
 						)}
 					</section>
 				</div>
@@ -280,63 +306,47 @@ function AccountLookupView({ error, loading, onSubmit }: AccountLookupViewProps)
 					<p className="auth-description">输入 API Key 或 account id，查看对应账户的额度与 Token 消耗。</p>
 
 					{error ? (
-						<div className="inline-alert error-alert" role="alert">
-							<LookupIcon name="alert" />
-							<span>{error}</span>
-						</div>
+						<Alert className="mt-4" variant="destructive">
+							<TriangleAlertIcon />
+							<AlertDescription>{error}</AlertDescription>
+						</Alert>
 					) : null}
 
 					<form className="auth-form" onSubmit={submit}>
-						<label htmlFor="account-credential">API Key 或 account id</label>
-						<div className="input-with-action">
-							<input
-								id="account-credential"
-								autoCapitalize="none"
-								autoComplete="off"
-								autoCorrect="off"
-								autoFocus
-								disabled={loading}
-								maxLength={512}
-								onChange={(event) => setCredential(event.target.value)}
-								placeholder="输入 API Key 或 account id"
-								required
-								spellCheck={false}
-								type={visible ? "text" : "password"}
-								value={credential}
-							/>
-							<button
-								aria-label={visible ? "隐藏访问凭据" : "显示访问凭据"}
-								className="input-action"
-								disabled={loading}
-								onClick={() => setVisible((value) => !value)}
-								type="button"
-							>
-								<LookupIcon name={visible ? "eye-off" : "eye"} />
-							</button>
-						</div>
-						<button className="button button-primary auth-submit" disabled={loading}>
-							{loading ? <span className="spinner" aria-hidden="true" /> : null}
+						<Field>
+							<FieldLabel htmlFor="account-credential">API Key 或 account id</FieldLabel>
+							<InputGroup className="h-10">
+								<InputGroupInput
+									id="account-credential"
+									autoCapitalize="none"
+									autoComplete="off"
+									autoCorrect="off"
+									autoFocus
+									disabled={loading}
+									maxLength={512}
+									onChange={(event) => setCredential(event.target.value)}
+									placeholder="输入 API Key 或 account id"
+									required
+									spellCheck={false}
+									type={visible ? "text" : "password"}
+									value={credential}
+								/>
+								<InputGroupAddon align="inline-end">
+									<InputGroupButton aria-label={visible ? "隐藏访问凭据" : "显示访问凭据"} disabled={loading} onClick={() => setVisible((value) => !value)} size="icon-sm">
+										{visible ? <EyeOffIcon /> : <EyeIcon />}
+									</InputGroupButton>
+								</InputGroupAddon>
+							</InputGroup>
+						</Field>
+						<Button className="auth-submit" disabled={loading} size="lg" type="submit">
+							{loading ? <Spinner /> : null}
 							{loading ? "查询中…" : "查看账户用量"}
-						</button>
+						</Button>
 					</form>
 					<p className="auth-footnote">访问凭据仅用于本次用量查询</p>
 				</main>
 			</div>
 		</div>
-	);
-}
-
-function LookupIcon({ name }: { name: "alert" | "eye" | "eye-off" }) {
-	return (
-		<svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
-			{name === "alert" ? (
-				<><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.75 3h15.7a2 2 0 0 0 1.75-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></>
-			) : name === "eye" ? (
-				<><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="2.5" /></>
-			) : (
-				<><path d="m3 3 18 18" /><path d="M10.6 6.15A10.6 10.6 0 0 1 12 6c6.5 0 10 6 10 6a16.8 16.8 0 0 1-3 3.8" /><path d="M6.6 6.6C3.5 8.4 2 12 2 12s3.5 6 10 6a10.7 10.7 0 0 0 3.4-.55" /></>
-			)}
-		</svg>
 	);
 }
 
@@ -346,15 +356,6 @@ function AccountMetric({ label, value }: { label: string; value: string }) {
 			<span>{label}</span>
 			<strong>{value}</strong>
 		</div>
-	);
-}
-
-function RefreshIcon({ spinning }: { spinning: boolean }) {
-	return (
-		<svg className={spinning ? "is-spinning" : ""} aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
-			<path d="M20 6v5h-5" /><path d="M4 18v-5h5" />
-			<path d="M18.5 9A7 7 0 0 0 6.2 6.2L4 9" /><path d="M5.5 15a7 7 0 0 0 12.3 2.8L20 15" />
-		</svg>
 	);
 }
 

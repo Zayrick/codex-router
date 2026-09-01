@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import AccountUsage from "./AccountUsage";
 import App from "./App";
 import "./index.css";
@@ -14,6 +15,6 @@ const application = managementPath ? <App /> : <AccountUsage />;
 
 createRoot(root).render(
 	<StrictMode>
-		{application}
+		<TooltipProvider>{application}</TooltipProvider>
 	</StrictMode>,
 );

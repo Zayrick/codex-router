@@ -1,6 +1,15 @@
 import { useState, type FormEvent } from "react";
+import { PlusIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardAction,
+	CardContent,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
 	Dialog,
@@ -23,6 +32,12 @@ import {
 	FieldTitle,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+	Empty,
+	EmptyDescription,
+	EmptyHeader,
+	EmptyTitle,
+} from "@/components/ui/empty";
 import {
 	Select,
 	SelectContent,
@@ -78,42 +93,41 @@ export default function AccountGroups({
 	}
 
 	return (
-		<section className="card account-groups-card" aria-labelledby="account-groups-title">
-			<div className="card-header unified-section-header">
-				<div>
-					<h2 id="account-groups-title">账户组</h2>
-					<p>将多个 Codex 账户组成调度池，再分配给 API Key 或下游账户。</p>
-				</div>
-				<button
-					className="button button-primary"
-					disabled={saving}
-					onClick={() => setEditor("new")}
-					type="button"
-				>
-					<PlusIcon />
-					添加账户组
-				</button>
-			</div>
+		<Card className="account-groups-card" aria-labelledby="account-groups-title">
+			<CardHeader className="max-sm:grid-cols-1">
+				<CardTitle id="account-groups-title">账户组</CardTitle>
+				<CardDescription>将多个 Codex 账户组成调度池，再分配给 API Key 或下游账户。</CardDescription>
+				<CardAction className="max-sm:col-start-1 max-sm:row-auto max-sm:mt-2 max-sm:justify-self-stretch max-sm:[&>[data-slot=button]]:w-full">
+					<Button disabled={saving} onClick={() => setEditor("new")} type="button">
+						<PlusIcon data-icon="inline-start" />
+						添加账户组
+					</Button>
+				</CardAction>
+			</CardHeader>
 
-			{groups.length === 0 ? (
-				<div className="account-groups-empty">
-					<strong>暂无账户组</strong>
-					<span>创建后即可在 API Key 和下游账户中直接选择。</span>
-				</div>
-			) : (
-				<div className="account-group-list">
-					{groups.map((group) => (
-						<AccountGroupCard
-							accounts={accounts}
-							group={group}
-							key={group.id}
-							onDelete={() => void deleteGroup(group)}
-							onEdit={() => setEditor(group)}
-							saving={saving}
-						/>
-					))}
-				</div>
-			)}
+			<CardContent>
+				{groups.length === 0 ? (
+					<Empty className="account-groups-empty border">
+						<EmptyHeader>
+							<EmptyTitle>暂无账户组</EmptyTitle>
+							<EmptyDescription>创建后即可在 API Key 和下游账户中直接选择。</EmptyDescription>
+						</EmptyHeader>
+					</Empty>
+				) : (
+					<div className="account-group-list">
+						{groups.map((group) => (
+							<AccountGroupCard
+								accounts={accounts}
+								group={group}
+								key={group.id}
+								onDelete={() => void deleteGroup(group)}
+								onEdit={() => setEditor(group)}
+								saving={saving}
+							/>
+						))}
+					</div>
+				)}
+			</CardContent>
 
 			{editor ? (
 				<GroupEditorDialog
@@ -125,7 +139,7 @@ export default function AccountGroups({
 					saving={saving}
 				/>
 			) : null}
-		</section>
+		</Card>
 	);
 }
 
@@ -147,31 +161,29 @@ function AccountGroupCard({
 		.filter((account): account is CodexAccount => Boolean(account));
 
 	return (
-		<article className="account-group-card">
-			<div className="account-group-card-heading">
-				<div>
-					<strong>{group.name}</strong>
-					<span>{strategyLabel(group.strategy)} · {group.strategy === "fallback" ? "调用身份保持" : group.sessionAffinity ? `会话保持 ${formatTtl(group.sessionAffinityTtl)}` : "无会话保持"}</span>
-				</div>
-				<div className="account-group-actions">
-					<button className="button button-secondary button-compact" disabled={saving} onClick={onEdit} type="button">编辑</button>
+		<Card className="account-group-card" size="sm">
+			<CardHeader>
+				<CardTitle className="truncate" title={group.name}>{group.name}</CardTitle>
+				<CardDescription className="truncate">{strategyLabel(group.strategy)} · {group.strategy === "fallback" ? "调用身份保持" : group.sessionAffinity ? `会话保持 ${formatTtl(group.sessionAffinityTtl)}` : "无会话保持"}</CardDescription>
+				<CardAction className="account-group-actions">
+					<Button disabled={saving} onClick={onEdit} size="sm" type="button" variant="outline">编辑</Button>
 					<DeleteConfirmationDialog
 						description="使用该组的调用身份将变为未分配。此操作无法撤销。"
 						onConfirm={onDelete}
 						title={`删除账户组“${group.name}”？`}
-						trigger={<button className="button button-danger-quiet button-compact" disabled={saving} type="button">删除</button>}
+						trigger={<Button disabled={saving} size="sm" type="button" variant="destructive">删除</Button>}
 					/>
-				</div>
-			</div>
-			<div className="account-group-members">
+				</CardAction>
+			</CardHeader>
+			<CardContent className="account-group-members">
 				{members.map((account) => (
-					<span className={account.enabled ? "" : "disabled-member"} key={account.id}>
+					<Badge className={account.enabled ? "" : "disabled-member"} key={account.id} variant="outline">
 						{account.name}
-					</span>
+					</Badge>
 				))}
 				{members.length === 0 ? <small>尚未添加成员</small> : null}
-			</div>
-		</article>
+			</CardContent>
+		</Card>
 	);
 }
 
@@ -218,14 +230,14 @@ function GroupEditorDialog({
 	return (
 		<Dialog open onOpenChange={(open) => { if (!open && !saving) onCancel(); }}>
 			<DialogContent className="flex h-[min(48rem,calc(100svh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl" showCloseButton={!saving}>
-				<DialogHeader className="shrink-0 border-b px-6 py-5 pr-14 text-left">
+				<DialogHeader className="shrink-0 border-b px-4 py-4 pr-12 text-left sm:px-6 sm:pr-14">
 					<DialogTitle>{entry === "new" ? "添加账户组" : "编辑账户组"}</DialogTitle>
 					<DialogDescription>将账户整理为一个可复用的路由池，并设置请求分配方式。</DialogDescription>
 				</DialogHeader>
 
 				<form aria-busy={saving} className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={submit}>
 					<ScrollArea className="h-full min-h-0 flex-1">
-						<FieldGroup className="gap-6 p-6">
+						<FieldGroup className="p-4 sm:p-6">
 							<Field>
 								<FieldLabel htmlFor="group-name">组名称</FieldLabel>
 								<Input
@@ -246,7 +258,7 @@ function GroupEditorDialog({
 
 							<FieldSet>
 								<FieldLegend className="mb-0">组内账户</FieldLegend>
-								<div className="flex items-start justify-between gap-3">
+								<div className="flex flex-col items-start justify-between gap-2 sm:flex-row">
 									<FieldDescription className="m-0">请求只会在所选账户之间调度。</FieldDescription>
 									<Badge variant={selectedAccountCount > 0 ? "secondary" : "outline"}>
 										{selectedAccountCount} / {accounts.length} 已选
@@ -254,7 +266,7 @@ function GroupEditorDialog({
 								</div>
 
 								{accounts.length === 0 ? (
-									<div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+									<div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground sm:p-6">
 										暂无 Codex 账户，请先添加账户后再配置成员。
 									</div>
 								) : (
@@ -370,7 +382,7 @@ function GroupEditorDialog({
 						</FieldGroup>
 					</ScrollArea>
 
-					<DialogFooter className="m-0 shrink-0 rounded-none px-6 py-4">
+					<DialogFooter className="m-0 shrink-0 rounded-none px-4 py-3 sm:px-6 sm:py-4">
 						<DialogClose asChild>
 							<Button disabled={saving} type="button" variant="outline">取消</Button>
 						</DialogClose>
@@ -421,8 +433,4 @@ function strategyHint(value: AccountGroupStrategy): string {
 	if (value === "weighted-round-robin") return "按各账户 Codex 额度窗口的平均“剩余百分比 ÷ 剩余分钟”平滑分配。";
 	if (value === "fallback") return "每个 API Key 或下游 account id 固定使用一个账户，仅在该账户不可用时切换。";
 	return "按账户顺序平均轮换请求。";
-}
-
-function PlusIcon() {
-	return <svg className="icon" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M12 5v14" /><path d="M5 12h14" /></svg>;
 }

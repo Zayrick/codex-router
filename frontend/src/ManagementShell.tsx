@@ -1,5 +1,22 @@
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { useState, type MouseEvent, type ReactNode } from "react";
+import {
+	ChartNoAxesColumnIcon,
+	CircleDollarSignIcon,
+	HomeIcon,
+	KeyRoundIcon,
+	LogOutIcon,
+	MenuIcon,
+	UserRoundIcon,
+	UsersIcon,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+	Sheet,
+	SheetContent,
+	SheetDescription,
+	SheetTitle,
+} from "@/components/ui/sheet";
 
 export type ManagementPage =
 	| "overview"
@@ -66,15 +83,6 @@ export default function ManagementShell({
 	const [mobileOpen, setMobileOpen] = useState(false);
 	const pageCopy = PAGE_COPY[activePage];
 
-	useEffect(() => {
-		if (!mobileOpen) return;
-		const closeOnEscape = (event: KeyboardEvent) => {
-			if (event.key === "Escape") setMobileOpen(false);
-		};
-		window.addEventListener("keydown", closeOnEscape);
-		return () => window.removeEventListener("keydown", closeOnEscape);
-	}, [mobileOpen]);
-
 	function navigate(
 		event: MouseEvent<HTMLAnchorElement>,
 		page: ManagementPage,
@@ -94,72 +102,51 @@ export default function ManagementShell({
 	}
 
 	return (
-		<div className={mobileOpen ? "management-shell mobile-sidebar-open" : "management-shell"}>
-			<button
-				aria-label="关闭导航"
-				className="sidebar-backdrop"
-				onClick={() => setMobileOpen(false)}
-				type="button"
-			/>
-
-			<aside className="management-sidebar" id="management-sidebar">
-				<header className="sidebar-header">
-					<a
-						aria-label="Codex Router 首页"
-						className="sidebar-brand"
-						href={managementPageHref(basePath, "overview")}
-						onClick={(event) => navigate(event, "overview")}
-					>
-						<ProductMark />
-						<span className="sidebar-brand-copy">
-							<strong>Codex Router</strong>
-							<small>Management</small>
-						</span>
-					</a>
-				</header>
-
-				<nav className="sidebar-navigation-shell" aria-label="主导航">
-					<ScrollArea className="min-h-0 flex-1">
-						<div className="sidebar-navigation">
-							<NavGroup label="运行">
-								<NavItem activePage={activePage} basePath={basePath} icon="home" label="概览" onNavigate={navigate} page="overview" />
-								<NavItem activePage={activePage} basePath={basePath} icon="usage" label="用量分析" onNavigate={navigate} page="usage" />
-								<NavItem activePage={activePage} basePath={basePath} icon="pricing" label="模型价格" onNavigate={navigate} page="pricing" />
-							</NavGroup>
-							<NavGroup label="调用身份">
-								<NavItem activePage={activePage} basePath={basePath} icon="key" label="API Keys" onNavigate={navigate} page="api-keys" />
-								<NavItem activePage={activePage} basePath={basePath} icon="accounts" label="下游账户" onNavigate={navigate} page="accounts" />
-							</NavGroup>
-							<NavGroup label="调度">
-								<NavItem activePage={activePage} basePath={basePath} icon="account" label="Codex 账户" onNavigate={navigate} page="account" />
-							</NavGroup>
-						</div>
-					</ScrollArea>
-				</nav>
-
-				<div className="sidebar-footer">
-					<button className="sidebar-logout" onClick={onLogout} type="button" title="退出">
-						<ShellIcon name="logout" />
-						<span>退出管理</span>
-					</button>
-				</div>
+		<div className="management-shell">
+			<aside className="management-sidebar" id="management-sidebar-desktop">
+				<SidebarContent
+					activePage={activePage}
+					basePath={basePath}
+					navigate={navigate}
+					onLogout={onLogout}
+				/>
 			</aside>
+
+			<Sheet onOpenChange={setMobileOpen} open={mobileOpen}>
+				<SheetContent
+					className="mobile-management-sidebar w-[min(17rem,calc(100vw-2rem))] gap-0 p-3"
+					id="management-sidebar"
+					showCloseButton={false}
+					side="left"
+				>
+					<SheetTitle className="sr-only">管理导航</SheetTitle>
+					<SheetDescription className="sr-only">前往管理面板的各个页面。</SheetDescription>
+					<SidebarContent
+						activePage={activePage}
+						basePath={basePath}
+						navigate={navigate}
+						onLogout={onLogout}
+					/>
+				</SheetContent>
+			</Sheet>
 
 			<section className="panel-workspace">
 				<ScrollArea className="min-h-0 flex-1">
 					<main className="panel-main">
 						<section className="dashboard-heading" aria-labelledby="dashboard-title">
 							<div className="dashboard-heading-copy">
-								<button
+								<Button
 									aria-controls="management-sidebar"
 									aria-expanded={mobileOpen}
 									aria-label="打开导航"
 									className="workspace-menu-button"
 									onClick={() => setMobileOpen(true)}
+									size="icon"
 									type="button"
+									variant="outline"
 								>
 									<ShellIcon name="menu" />
-								</button>
+								</Button>
 								<div>
 									<p className="page-eyebrow">{pageEyebrow(activePage)}</p>
 									<h1 id="dashboard-title">{pageCopy.title}</h1>
@@ -174,6 +161,63 @@ export default function ManagementShell({
 				</ScrollArea>
 			</section>
 		</div>
+	);
+}
+
+function SidebarContent({
+	activePage,
+	basePath,
+	navigate,
+	onLogout,
+}: {
+	activePage: ManagementPage;
+	basePath: string;
+	navigate: (event: MouseEvent<HTMLAnchorElement>, page: ManagementPage) => void;
+	onLogout: () => void;
+}) {
+	return (
+		<>
+			<header className="sidebar-header">
+				<a
+					aria-label="Codex Router 首页"
+					className="sidebar-brand"
+					href={managementPageHref(basePath, "overview")}
+					onClick={(event) => navigate(event, "overview")}
+				>
+					<ProductMark />
+					<span className="sidebar-brand-copy">
+						<strong>Codex Router</strong>
+						<small>Management</small>
+					</span>
+				</a>
+			</header>
+
+			<nav className="sidebar-navigation-shell" aria-label="主导航">
+				<ScrollArea className="min-h-0 flex-1">
+					<div className="sidebar-navigation">
+						<NavGroup label="运行">
+							<NavItem activePage={activePage} basePath={basePath} icon="home" label="概览" onNavigate={navigate} page="overview" />
+							<NavItem activePage={activePage} basePath={basePath} icon="usage" label="用量分析" onNavigate={navigate} page="usage" />
+							<NavItem activePage={activePage} basePath={basePath} icon="pricing" label="模型价格" onNavigate={navigate} page="pricing" />
+						</NavGroup>
+						<NavGroup label="调用身份">
+							<NavItem activePage={activePage} basePath={basePath} icon="key" label="API Keys" onNavigate={navigate} page="api-keys" />
+							<NavItem activePage={activePage} basePath={basePath} icon="accounts" label="下游账户" onNavigate={navigate} page="accounts" />
+						</NavGroup>
+						<NavGroup label="调度">
+							<NavItem activePage={activePage} basePath={basePath} icon="account" label="Codex 账户" onNavigate={navigate} page="account" />
+						</NavGroup>
+					</div>
+				</ScrollArea>
+			</nav>
+
+			<div className="sidebar-footer">
+				<Button className="sidebar-logout justify-start" onClick={onLogout} title="退出" type="button" variant="ghost">
+					<ShellIcon name="logout" />
+					<span>退出管理</span>
+				</Button>
+			</div>
+		</>
 	);
 }
 
@@ -203,15 +247,16 @@ function NavItem({
 }) {
 	const active = activePage === page;
 	return (
-		<a
-			aria-current={active ? "page" : undefined}
-			className={`sidebar-nav-item${active ? " active" : ""}`}
-			href={managementPageHref(basePath, page)}
-			onClick={(event) => onNavigate(event, page)}
-		>
-			<span className="sidebar-nav-icon"><ShellIcon name={icon} /></span>
-			<span className="sidebar-nav-label">{label}</span>
-		</a>
+		<Button asChild className="sidebar-nav-item h-auto justify-start" variant={active ? "secondary" : "ghost"}>
+			<a
+				aria-current={active ? "page" : undefined}
+				href={managementPageHref(basePath, page)}
+				onClick={(event) => onNavigate(event, page)}
+			>
+				<span className="sidebar-nav-icon"><ShellIcon name={icon} /></span>
+				<span className="sidebar-nav-label">{label}</span>
+			</a>
+		</Button>
 	);
 }
 
@@ -241,30 +286,22 @@ function managementPageHref(basePath: string, page: ManagementPage): string {
 }
 
 function ShellIcon({ name }: { name: ShellIconName }) {
-	return (
-		<svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
-			{shellIconPaths(name)}
-		</svg>
-	);
-}
-
-function shellIconPaths(name: ShellIconName): ReactNode {
 	switch (name) {
 		case "home":
-			return <><path d="m3 10 9-7 9 7" /><path d="M5 9v11h14V9" /><path d="M9 20v-6h6v6" /></>;
+			return <HomeIcon aria-hidden="true" />;
 		case "usage":
-			return <><path d="M4 19V9" /><path d="M10 19V5" /><path d="M16 19v-7" /><path d="M22 19H2" /></>;
+			return <ChartNoAxesColumnIcon aria-hidden="true" />;
 		case "pricing":
-			return <><circle cx="12" cy="12" r="9" /><path d="M15.5 8.5h-5a2 2 0 0 0 0 4h3a2 2 0 0 1 0 4H8.5" /><path d="M12 6.5v2M12 16.5v2" /></>;
+			return <CircleDollarSignIcon aria-hidden="true" />;
 		case "key":
-			return <><circle cx="8" cy="15" r="4" /><path d="m11 12 8-8" /><path d="m15 8 2 2" /><path d="m17 6 2 2" /></>;
+			return <KeyRoundIcon aria-hidden="true" />;
 		case "accounts":
-			return <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>;
+			return <UsersIcon aria-hidden="true" />;
 		case "account":
-			return <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>;
+			return <UserRoundIcon aria-hidden="true" />;
 		case "logout":
-			return <><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /></>;
+			return <LogOutIcon aria-hidden="true" />;
 		case "menu":
-			return <><path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" /></>;
+			return <MenuIcon aria-hidden="true" />;
 	}
 }

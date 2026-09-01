@@ -1,4 +1,5 @@
 import { useId, useMemo, useState, type CSSProperties } from "react";
+import { Card } from "@/components/ui/card";
 import {
 	Select,
 	SelectContent,
@@ -186,7 +187,7 @@ function ActivityCard({
 	const columns = Math.max(1, Math.ceil(series.length / 7));
 	const minimumWidth = columns * 8 + Math.max(0, columns - 1) * 3;
 	return (
-		<article className={`usage-activity-card ${className}`}>
+		<Card className={`usage-activity-card ${className}`}>
 			<header className="usage-activity-card-header">
 				<div>
 					<h3>{title}</h3>
@@ -228,7 +229,7 @@ function ActivityCard({
 				) : <div className="visual-empty">当前范围暂无活动数据</div>}
 			</div>
 			<div className="activity-legend">{legend}</div>
-		</article>
+		</Card>
 	);
 }
 
@@ -300,7 +301,7 @@ function LineTrendCard({
 	const futureStart = coordinates.at(-1)?.x ?? left;
 	const total = actual.reduce((sum, entry) => sum + entry.value, 0);
 	return (
-		<article className="line-trend-card">
+		<Card className="line-trend-card">
 		<header>
 			<div><h3>{title}</h3><p>{subtitle}</p></div>
 			<strong style={{ color }}>{formatValue(total)}</strong>
@@ -324,7 +325,7 @@ function LineTrendCard({
 				<text className="trend-axis-label" textAnchor="end" x={width - right} y={height - 6}>{formatShortDate(series.at(-1)?.startAt ?? series[0]!.startAt)}</text>
 			</svg>
 		) : <div className="visual-empty">当前范围暂无趋势数据</div>}
-	</article>
+	</Card>
 	);
 }
 
@@ -379,7 +380,7 @@ function DonutBreakdownCard({
 	const total = values.reduce((sum, value) => sum + Math.max(0, value), 0);
 	const segments = donutSegments(values, total);
 	return (
-		<article className={`donut-card${split ? " donut-card-split" : ""}`}>
+		<Card className={`donut-card${split ? " donut-card-split" : ""}`}>
 		<header>
 			<div>
 				<h3>{title}</h3>
@@ -439,7 +440,7 @@ function DonutBreakdownCard({
 				{metric === "cost" ? "配置模型价格后显示成本占比" : "当前范围暂无可展示的用量"}
 			</div>
 		)}
-	</article>
+	</Card>
 	);
 }
 
