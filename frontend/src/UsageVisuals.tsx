@@ -2,18 +2,16 @@ import { useMemo, useState, type CSSProperties } from "react";
 import {
 	CartesianGrid,
 	Cell,
+	Label,
 	Legend,
 	Line,
 	LineChart,
 	Pie,
 	PieChart,
-	ReferenceArea,
-	ReferenceDot,
-	ResponsiveContainer,
 	Tooltip,
 	XAxis,
 	YAxis,
-	type TooltipContentProps,
+	type LegendPayload,
 } from "recharts";
 import { Card } from "@/components/ui/card";
 import {
@@ -52,29 +50,26 @@ const DONUT_COLORS = [
 	"#10b981",
 	"#ef4444",
 ];
+const CHART_TOOLTIP_STYLE = {
+	backgroundColor: "var(--surface-raised)",
+	border: "1px solid var(--border-strong)",
+	borderRadius: "0.55rem",
+	boxShadow: "var(--shadow-md)",
+	color: "var(--text)",
+	fontSize: "0.65rem",
+} satisfies CSSProperties;
 
 type DonutMetric = "tokens" | "cost";
 type DonutRow = {
 	id: string;
 	label: string;
-	meta: string;
 	tokens: number;
 	cost: number;
 };
-type DonutChartRow = DonutRow & {
-	amount: number;
+type TrendLine = {
 	color: string;
-	percent: number;
-};
-type TrendChartPoint = UsageSeriesPoint & {
-	primaryValue: number | null;
-	secondaryValue: number | null;
-};
-type TrendLineDefinition = {
-	color: string;
-	dataKey: "primaryValue" | "secondaryValue";
+	dataKey: "totalTokens" | "cachedInputTokens" | "costUsd";
 	name: string;
-	value: (point: UsageSeriesPoint) => number;
 };
 
 export function ActivityHeatmaps({
@@ -269,32 +264,19 @@ export function UsageLineCharts({ now, usage }: { now: number; usage: UsageDashb
 		<div className="usage-line-grid">
 			<LineTrendCard
 				formatValue={formatTokens}
+				lines={[
+					{ color: "#4f7cff", dataKey: "totalTokens", name: "总 Token" },
+					{ color: "#8b5cf6", dataKey: "cachedInputTokens", name: "缓存 Token" },
+				]}
 				now={now}
-				primary={{
-					color: "#4f7cff",
-					dataKey: "primaryValue",
-					name: "总 Token",
-					value: (point) => point.totalTokens,
-				}}
-				secondary={{
-					color: "#8b5cf6",
-					dataKey: "secondaryValue",
-					name: "缓存 Token",
-					value: (point) => point.cachedInputTokens,
-				}}
 				series={usage.series}
 				subtitle="总 Token 与缓存 Token 随时间变化"
 				title="Token 趋势"
 			/>
 			<LineTrendCard
 				formatValue={formatCost}
+				lines={[{ color: "#14b8a6", dataKey: "costUsd", name: "成本" }]}
 				now={now}
-				primary={{
-					color: "#14b8a6",
-					dataKey: "primaryValue",
-					name: "成本",
-					value: (point) => point.costUsd,
-				}}
 				series={usage.series}
 				subtitle="已配置模型价格覆盖的成本"
 				title="成本趋势"
@@ -305,142 +287,75 @@ export function UsageLineCharts({ now, usage }: { now: number; usage: UsageDashb
 
 function LineTrendCard({
 	formatValue,
+	lines,
 	now,
-	primary,
-	secondary,
 	series,
 	subtitle,
 	title,
 }: {
 	formatValue: (value: number) => string;
+	lines: TrendLine[];
 	now: number;
-	primary: TrendLineDefinition;
-	secondary?: TrendLineDefinition;
 	series: UsageSeriesPoint[];
 	subtitle: string;
 	title: string;
 }) {
-	const lines = secondary ? [primary, secondary] : [primary];
-	const chartData: TrendChartPoint[] = series.map((point) => ({
-		...point,
-		primaryValue: point.startAt <= now ? Math.max(0, primary.value(point)) : null,
-		secondaryValue: point.startAt <= now && secondary ? Math.max(0, secondary.value(point)) : null,
-	}));
-	const actual = chartData.filter((point): point is TrendChartPoint & { primaryValue: number } => point.primaryValue !== null);
-	const maximum = Math.max(
-		1,
-		...actual.flatMap((point) => lines.map((line) => point[line.dataKey] ?? 0)),
-	);
-	const total = actual.reduce((sum, point) => sum + point.primaryValue, 0);
-	const firstAt = series[0]?.startAt ?? 0;
-	const lastAt = series.at(-1)?.startAt ?? firstAt;
-	const domainEnd = lastAt > firstAt ? lastAt : firstAt + 1;
-	const ticks = firstAt === lastAt ? [firstAt] : [firstAt, lastAt];
-	const latest = actual.at(-1);
-	const futureStart = latest?.startAt ?? firstAt;
+	const primary = lines[0];
+	const total = primary
+		? series.reduce((sum, point) => point.startAt <= now ? sum + Math.max(0, point[primary.dataKey]) : sum, 0)
+		: 0;
 	return (
 		<Card className="line-trend-card min-w-0 gap-3 p-3">
 		<header>
 			<div><h3>{title}</h3><p>{subtitle}</p></div>
-			<strong style={{ color: primary.color }}>{formatValue(total)}</strong>
+			<strong style={{ color: primary?.color }}>{formatValue(total)}</strong>
 		</header>
 		{series.length > 0 ? (
 			<div className="trend-chart">
-				<ResponsiveContainer height="100%" minWidth={0} width="100%">
-					<LineChart
-						accessibilityLayer
-						aria-label={`${title}折线图`}
-						data={chartData}
-						margin={{ top: secondary ? 2 : 15, right: 12, bottom: 0, left: 4 }}
-						role="img"
-					>
-						{secondary ? (
-							<Legend
-								align="right"
-								height={24}
-								iconSize={14}
-								iconType="plainline"
-								verticalAlign="top"
-								wrapperStyle={{ color: "var(--text-secondary)", fontSize: "0.62rem" }}
-							/>
-						) : null}
-						<CartesianGrid stroke="var(--border)" strokeDasharray="3 4" vertical={false} />
-						<XAxis
-							axisLine={false}
-							dataKey="startAt"
-							domain={[firstAt, domainEnd]}
-							height={24}
-							tick={{ fill: "var(--text-tertiary)", fontSize: 9 }}
-							tickFormatter={formatShortDate}
-							tickLine={false}
-							tickMargin={9}
-							ticks={ticks}
-							type="number"
+				<LineChart
+					accessibilityLayer
+					aria-label={`${title}折线图`}
+					data={series}
+					margin={{ top: lines.length > 1 ? 2 : 15, right: 12, bottom: 0, left: 4 }}
+					responsive
+					role="img"
+					style={{ width: "100%", height: "100%" }}
+				>
+					{lines.length > 1 ? (
+						<Legend content={<ChartLegend align="end" />} itemSorter={null} position="top" />
+					) : null}
+					<CartesianGrid stroke="var(--border)" strokeDasharray="3 4" vertical={false} />
+					<XAxis
+						axisLine={false}
+						dataKey="startAt"
+						domain={["dataMin", "dataMax"]}
+						tick={{ fill: "var(--text-tertiary)", fontSize: 9 }}
+						tickFormatter={formatShortDate}
+						tickLine={false}
+						type="number"
+					/>
+					<YAxis hide />
+					<Tooltip
+						contentStyle={CHART_TOOLTIP_STYLE}
+						formatter={(value, name) => [formatValue(Number(value)), name]}
+						labelFormatter={(label) => formatDateTime(Number(label))}
+					/>
+					{lines.map((line) => (
+						<Line
+							dataKey={(point: UsageSeriesPoint) => point.startAt <= now ? Math.max(0, point[line.dataKey]) : null}
+							dot={false}
+							isAnimationActive={false}
+							key={line.dataKey}
+							name={line.name}
+							stroke={line.color}
+							strokeWidth={2.4}
+							type="monotone"
 						/>
-						<YAxis domain={[0, maximum]} hide ticks={[0, maximum / 2, maximum]} />
-						{futureStart < lastAt ? (
-							<ReferenceArea fill="var(--border)" fillOpacity={0.32} stroke="none" x1={futureStart} x2={lastAt} />
-						) : null}
-						{lines.map((line) => (
-							<Line
-								activeDot={{ fill: line.color, r: 4, stroke: "var(--surface)", strokeWidth: 2 }}
-								connectNulls={false}
-								dataKey={line.dataKey}
-								dot={false}
-								isAnimationActive={false}
-								key={line.dataKey}
-								name={line.name}
-								stroke={line.color}
-								strokeWidth={2.4}
-								type="monotone"
-							/>
-						))}
-						{latest ? lines.map((line) => {
-							const lineValue = latest[line.dataKey];
-							return lineValue === null ? null : (
-								<ReferenceDot fill={line.color} key={line.dataKey} r={3.4} stroke="none" x={latest.startAt} y={lineValue} />
-							);
-						}) : null}
-						<Tooltip
-							content={(props) => <TrendChartTooltip {...props} formatValue={formatValue} lines={lines} />}
-							cursor={{ stroke: "var(--border-strong)", strokeDasharray: "3 3" }}
-						/>
-					</LineChart>
-				</ResponsiveContainer>
+					))}
+				</LineChart>
 			</div>
 		) : <div className="visual-empty">当前范围暂无趋势数据</div>}
 	</Card>
-	);
-}
-
-function TrendChartTooltip({
-	active,
-	formatValue,
-	lines,
-	payload,
-}: TooltipContentProps & {
-	formatValue: (value: number) => string;
-	lines: TrendLineDefinition[];
-}) {
-	const point = payload[0]?.payload as TrendChartPoint | undefined;
-	if (!active || !point || point.primaryValue === null) return null;
-	return (
-		<div className="chart-tooltip">
-			<strong>{formatDateTime(point.startAt)}</strong>
-			<div className="chart-tooltip-series-list">
-				{lines.map((line) => {
-					const value = point[line.dataKey];
-					return value === null ? null : (
-						<span className="chart-tooltip-series" key={line.dataKey}>
-							<i style={{ background: line.color }} />
-							<b>{line.name}</b>
-							<em>{formatValue(value)}</em>
-						</span>
-					);
-				})}
-			</div>
-			<small>{formatCount(point.requests)} 次请求</small>
-		</div>
 	);
 }
 
@@ -469,7 +384,6 @@ export function DownstreamCostDonut({ usage }: { usage: UsageDashboard }) {
 		<DonutBreakdownCard
 			fixedMetric="cost"
 			rows={identityRows(usage.identities)}
-			split
 			subtitle="各下游身份在所选范围成本中的占比"
 			title="下游成本分布"
 		/>
@@ -479,32 +393,26 @@ export function DownstreamCostDonut({ usage }: { usage: UsageDashboard }) {
 function DonutBreakdownCard({
 	fixedMetric,
 	rows,
-	split = false,
 	subtitle,
 	title,
 }: {
 	fixedMetric?: DonutMetric;
 	rows: DonutRow[];
-	split?: boolean;
 	subtitle?: string;
 	title: string;
 }) {
 	const [selectedMetric, setSelectedMetric] = useState<DonutMetric>("tokens");
 	const metric = fixedMetric ?? selectedMetric;
-	const values = rows.map((row) => metric === "tokens" ? row.tokens : row.cost);
-	const total = values.reduce((sum, value) => sum + Math.max(0, value), 0);
-	const chartRows = rows.flatMap((row, index): DonutChartRow[] => {
-		const amount = values[index] ?? 0;
-		if (!(amount > 0) || !(total > 0)) return [];
-		return [{
+	const chartRows = rows
+		.map((row, index) => ({
 			...row,
-			amount,
-			color: DONUT_COLORS[index % DONUT_COLORS.length] ?? DONUT_COLORS[0]!,
-			percent: amount / total * 100,
-		}];
-	});
+			color: DONUT_COLORS[index % DONUT_COLORS.length] ?? "#4f7cff",
+		}))
+		.filter((row) => row[metric] > 0)
+		.sort((left, right) => right[metric] - left[metric]);
+	const total = chartRows.reduce((sum, row) => sum + row[metric], 0);
 	return (
-		<Card className={`donut-card grid min-w-0 gap-3 p-3${split ? " donut-card-split" : ""}`}>
+		<Card className="donut-card grid min-w-0 gap-3 p-3">
 		<header>
 			<div>
 				<h3>{title}</h3>
@@ -525,60 +433,45 @@ function DonutBreakdownCard({
 			)}
 		</header>
 		{total > 0 ? (
-			<div className="donut-content">
-				<div className="donut-figure">
-					<div className="donut-chart">
-						<ResponsiveContainer height="100%" minWidth={0} width="100%">
-							<PieChart
-								accessibilityLayer
-								aria-label={`${title}${metric === "tokens" ? "Token" : "成本"}占比圆环图`}
-								margin={{ top: 0, right: 0, bottom: 0, left: 0 }}
-								role="img"
-							>
-								<Pie
-									data={[{ amount: total }]}
-									dataKey="amount"
-									endAngle={-270}
-									fill="var(--border)"
-									innerRadius="58%"
-									isAnimationActive={false}
-									outerRadius="78%"
-									startAngle={90}
-									stroke="none"
-									tooltipType="none"
-								/>
-								<Pie
-									data={chartRows}
-									dataKey="amount"
-									endAngle={-270}
-									innerRadius="58%"
-									isAnimationActive={false}
-									nameKey="label"
-									outerRadius="78%"
-									startAngle={90}
-									stroke="none"
-								>
-									{chartRows.map((row) => <Cell fill={row.color} key={row.id} />)}
-								</Pie>
-								<Tooltip
-									content={(props) => <DonutChartTooltip {...props} metric={metric} />}
-									cursor={false}
-								/>
-							</PieChart>
-						</ResponsiveContainer>
-						<div className="donut-center"><span>{metric === "tokens" ? "总 Token" : "总成本"}</span><strong>{metric === "tokens" ? formatTokens(total) : formatCost(total)}</strong></div>
-					</div>
-				</div>
-				<div className="donut-legend">
-					{chartRows.map((row) => (
-						<div className="donut-legend-row" key={row.id}>
-							<i style={{ background: row.color }} />
-							<div><strong title={row.label}>{row.label}</strong><span>{row.meta}</span></div>
-							<b>{formatPercent(row.percent)}</b>
-							<small>{metric === "tokens" ? formatTokens(row.amount) : formatCost(row.amount)}</small>
-						</div>
-					))}
-				</div>
+			<div className="donut-chart">
+				<PieChart
+					accessibilityLayer
+					aria-label={`${title}${metric === "tokens" ? "Token" : "成本"}占比圆环图`}
+					responsive
+					role="img"
+					style={{ width: "100%", height: "100%" }}
+				>
+					<Pie
+						data={chartRows}
+						dataKey={metric}
+						innerRadius="55%"
+						isAnimationActive={false}
+						nameKey="label"
+						outerRadius="78%"
+						stroke="none"
+					>
+						{chartRows.map((row) => <Cell fill={row.color} key={row.id} />)}
+						<Label
+							fill="var(--text)"
+							fontSize={12}
+							fontWeight={700}
+							position="center"
+							value={metric === "tokens" ? formatTokens(total) : formatCost(total)}
+						/>
+					</Pie>
+					<Legend
+						content={<ChartLegend layout="vertical" />}
+						itemSorter={null}
+						position="right"
+					/>
+					<Tooltip
+						contentStyle={CHART_TOOLTIP_STYLE}
+						formatter={(value, name) => [
+							metric === "tokens" ? formatTokens(Number(value)) : formatCost(Number(value)),
+							name,
+						]}
+					/>
+				</PieChart>
 			</div>
 		) : (
 			<div className="visual-empty donut-empty">
@@ -589,18 +482,23 @@ function DonutBreakdownCard({
 	);
 }
 
-function DonutChartTooltip({
-	active,
-	metric,
+function ChartLegend({
+	align = "center",
+	layout = "horizontal",
 	payload,
-}: TooltipContentProps & { metric: DonutMetric }) {
-	const row = payload[0]?.payload as DonutChartRow | undefined;
-	if (!active || !row) return null;
+}: {
+	align?: "center" | "end";
+	layout?: "horizontal" | "vertical";
+	payload?: ReadonlyArray<LegendPayload>;
+}) {
 	return (
-		<div className="chart-tooltip">
-			<strong>{row.label}</strong>
-			<span>{metric === "tokens" ? formatTokens(row.amount) : formatCost(row.amount)}</span>
-			<small>{formatPercent(row.percent)} · {row.meta}</small>
+		<div className={`chart-legend chart-legend-${align} chart-legend-${layout}`}>
+			{payload?.map((item, index) => item.value ? (
+				<span className="chart-legend-item" key={`${item.value}-${index}`}>
+					<i style={{ backgroundColor: item.color }} />
+					<span title={item.value}>{item.value}</span>
+				</span>
+			) : null)}
 		</div>
 	);
 }
@@ -609,7 +507,6 @@ function modelRows(rows: UsageModelRow[]): DonutRow[] {
 	return rows.map((row) => ({
 		id: row.model,
 		label: row.model,
-		meta: `${formatCount(row.requests)} 次请求`,
 		tokens: row.totalTokens,
 		cost: row.costUsd,
 	}));
@@ -619,7 +516,6 @@ function identityRows(rows: UsageIdentityRow[]): DonutRow[] {
 	return rows.map((row) => ({
 		id: `${row.identityType}:${row.identityId}`,
 		label: row.identityName,
-		meta: row.identityType === "auth_proxy" ? "Account ID" : "API Key",
 		tokens: row.totalTokens,
 		cost: row.costUsd,
 	}));
@@ -649,10 +545,6 @@ function healthLevel(success: number, failed: number): number {
 	if (rate < 0.8) return 3;
 	if (rate < 0.95) return 4;
 	return 5;
-}
-
-function formatPercent(value: number): string {
-	return `${value < 0.1 ? "<0.1" : value.toFixed(1)}%`;
 }
 
 function formatTokens(value: number): string {

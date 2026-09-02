@@ -817,199 +817,52 @@
 	min-width: 0;
 }
 
-/* Doughnut charts */
-.donut-content {
-	display: grid;
-	grid-template-columns: minmax(9rem, 0.7fr) minmax(10rem, 1fr);
-	align-items: center;
-	gap: 1rem;
+.chart-legend {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 0.35rem 0.75rem;
+	color: var(--text-secondary);
+	font-size: 0.62rem;
 }
 
-.donut-figure {
-	display: grid;
-	place-items: center;
+.chart-legend-end {
+	justify-content: flex-end;
 }
 
-.donut-chart {
-	position: relative;
-	display: grid;
-	width: min(100%, 12rem);
-	aspect-ratio: 1;
-	place-items: center;
+.chart-legend-vertical {
+	align-items: flex-start;
+	flex-direction: column;
+	flex-wrap: nowrap;
+	justify-content: center;
 }
 
-.donut-chart svg {
-	display: block;
-	width: 100%;
-}
-
-.donut-center {
-	position: absolute;
-	top: 50%;
-	left: 50%;
-	display: grid;
-	max-width: 5.5rem;
-	justify-items: center;
-	gap: 0.2rem;
-	transform: translate(-50%, -50%);
-	pointer-events: none;
-	text-align: center;
-}
-
-.donut-center span {
-	color: var(--text-tertiary);
-	font-size: 0.56rem;
-}
-
-.donut-center strong {
+.chart-legend-item {
+	display: inline-flex;
+	min-width: 0;
 	max-width: 100%;
+	align-items: center;
+	gap: 0.35rem;
+}
+
+.chart-legend-item i {
+	width: 0.5rem;
+	height: 0.5rem;
+	flex: 0 0 auto;
+	border-radius: 0.18rem;
+}
+
+.chart-legend-item span {
 	overflow: hidden;
-	font-size: 0.92rem;
-	font-variant-numeric: tabular-nums;
-	letter-spacing: -0.035em;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.chart-tooltip {
-	display: grid;
-	max-width: min(18rem, 70vw);
-	gap: 0.22rem;
-	padding: 0.55rem 0.65rem;
-	border: 1px solid var(--border-strong);
-	border-radius: 0.55rem;
-	background: var(--surface-raised);
-	box-shadow: var(--shadow-md);
-	color: var(--text);
-	font-size: 0.65rem;
-	line-height: 1.4;
-}
-
-.chart-tooltip strong {
-	font-size: 0.67rem;
-}
-
-.chart-tooltip span {
-	font-variant-numeric: tabular-nums;
-}
-
-.chart-tooltip-series-list {
-	display: grid;
-	gap: 0.2rem;
-}
-
-.chart-tooltip-series {
-	display: grid;
-	grid-template-columns: auto minmax(0, 1fr) auto;
-	align-items: center;
-	gap: 0.42rem;
-}
-
-.chart-tooltip-series i {
-	width: 0.48rem;
-	height: 0.48rem;
-	border-radius: 50%;
-}
-
-.chart-tooltip-series b {
-	font-size: 0.62rem;
-	font-weight: 650;
-}
-
-.chart-tooltip-series em {
-	font-size: 0.62rem;
-	font-style: normal;
-	font-weight: 650;
-}
-
-.chart-tooltip small {
-	color: var(--text-tertiary);
-	font-size: 0.59rem;
-}
-
-.donut-legend {
-	display: grid;
-	align-content: center;
-	gap: 0.52rem;
-}
-
-.donut-legend-row {
-	display: grid;
-	grid-template-columns: auto minmax(0, 1fr) auto;
-	align-items: center;
-	gap: 0.15rem 0.55rem;
-}
-
-.donut-legend-row > i {
-	grid-row: 1 / 3;
-	display: block;
-	width: 0.55rem;
-	height: 0.55rem;
-	border-radius: 50%;
-}
-
-.donut-legend-row > div {
-	grid-row: 1 / 3;
-	display: grid;
+/* Doughnut charts */
+.donut-chart {
+	width: 100%;
+	height: 18rem;
 	min-width: 0;
-	gap: 0.08rem;
-}
-
-.donut-legend-row strong {
-	overflow: hidden;
-	font-size: 0.66rem;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.donut-legend-row span,
-.donut-legend-row small {
-	color: var(--text-tertiary);
-	font-size: 0.56rem;
-}
-
-.donut-legend-row b {
-	font-size: 0.64rem;
-	font-variant-numeric: tabular-nums;
-}
-
-.donut-legend-row small {
-	grid-column: 3;
-	text-align: right;
-}
-
-.donut-card-split {
-	grid-template-columns: minmax(10rem, 1fr) auto;
-	grid-template-rows: auto 1fr;
-	align-items: stretch;
-	column-gap: 0.75rem;
-}
-
-.donut-card-split > header {
-	grid-column: 1;
-	grid-row: 1;
-}
-
-.donut-card-split .donut-content {
-	display: contents;
-}
-
-.donut-card-split .donut-legend {
-	grid-column: 1;
-	grid-row: 2;
-	align-content: end;
-}
-
-.donut-card-split .donut-figure {
-	grid-column: 2;
-	grid-row: 1 / span 2;
-	min-width: 0;
-	padding-left: 0.75rem;
-	border-left: 1px solid var(--border);
-}
-
-.donut-card-split .donut-empty {
-	grid-column: 1 / -1;
 }
 
 .donut-empty {
@@ -1130,10 +983,6 @@
 		grid-template-columns: minmax(0, 1fr);
 	}
 
-	.donut-content {
-		grid-template-columns: minmax(8rem, 0.7fr) minmax(10rem, 1fr);
-	}
-
 	.usage-card-actions {
 		width: 100%;
 		justify-content: flex-start;
@@ -1236,31 +1085,6 @@
 	.usage-activity-summary {
 		justify-items: start;
 		text-align: left;
-	}
-
-	.donut-content {
-		grid-template-columns: minmax(0, 1fr);
-	}
-
-	.donut-card-split {
-		grid-template-columns: minmax(0, 1fr);
-		grid-template-rows: auto;
-	}
-
-	.donut-card-split .donut-content {
-		display: grid;
-	}
-
-	.donut-card-split .donut-figure,
-	.donut-card-split .donut-legend,
-	.donut-card-split > header {
-		grid-column: auto;
-		grid-row: auto;
-	}
-
-	.donut-card-split .donut-figure {
-		padding-left: 0;
-		border-left: 0;
 	}
 
 	.pricing-add-row,

@@ -202,11 +202,6 @@
 	margin-block: auto;
 }
 
-.public-account-visuals .donut-content {
-	grid-template-columns: minmax(7.5rem, 0.75fr) minmax(7.5rem, 1fr);
-	gap: 0.65rem;
-}
-
 @media (max-width: 58rem) {
 	.public-account-header {
 		align-items: flex-start;
