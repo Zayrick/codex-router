@@ -1,4 +1,20 @@
-import { useId, useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
+import {
+	CartesianGrid,
+	Cell,
+	Legend,
+	Line,
+	LineChart,
+	Pie,
+	PieChart,
+	ReferenceArea,
+	ReferenceDot,
+	ResponsiveContainer,
+	Tooltip,
+	XAxis,
+	YAxis,
+	type TooltipContentProps,
+} from "recharts";
 import { Card } from "@/components/ui/card";
 import {
 	Select,
@@ -44,6 +60,21 @@ type DonutRow = {
 	meta: string;
 	tokens: number;
 	cost: number;
+};
+type DonutChartRow = DonutRow & {
+	amount: number;
+	color: string;
+	percent: number;
+};
+type TrendChartPoint = UsageSeriesPoint & {
+	primaryValue: number | null;
+	secondaryValue: number | null;
+};
+type TrendLineDefinition = {
+	color: string;
+	dataKey: "primaryValue" | "secondaryValue";
+	name: string;
+	value: (point: UsageSeriesPoint) => number;
 };
 
 export function ActivityHeatmaps({
@@ -217,7 +248,7 @@ function ActivityCard({
 									return (
 										<span
 											aria-label={cell.title}
-										className={`activity-cell ${future ? "activity-cell-future" : cell.className}`}
+											className={`activity-cell ${future ? "activity-cell-future" : cell.className}`}
 											key={point.startAt}
 											title={cell.title}
 										/>
@@ -237,95 +268,179 @@ export function UsageLineCharts({ now, usage }: { now: number; usage: UsageDashb
 	return (
 		<div className="usage-line-grid">
 			<LineTrendCard
-				color="#4f7cff"
 				formatValue={formatTokens}
 				now={now}
+				primary={{
+					color: "#4f7cff",
+					dataKey: "primaryValue",
+					name: "总 Token",
+					value: (point) => point.totalTokens,
+				}}
+				secondary={{
+					color: "#8b5cf6",
+					dataKey: "secondaryValue",
+					name: "缓存 Token",
+					value: (point) => point.cachedInputTokens,
+				}}
 				series={usage.series}
-				subtitle="总 Token 随时间变化"
+				subtitle="总 Token 与缓存 Token 随时间变化"
 				title="Token 趋势"
-				value={(point) => point.totalTokens}
 			/>
 			<LineTrendCard
-				color="#14b8a6"
 				formatValue={formatCost}
 				now={now}
+				primary={{
+					color: "#14b8a6",
+					dataKey: "primaryValue",
+					name: "成本",
+					value: (point) => point.costUsd,
+				}}
 				series={usage.series}
 				subtitle="已配置模型价格覆盖的成本"
 				title="成本趋势"
-				value={(point) => point.costUsd}
 			/>
 		</div>
 	);
 }
 
 function LineTrendCard({
-	color,
 	formatValue,
 	now,
+	primary,
+	secondary,
 	series,
 	subtitle,
 	title,
-	value,
 }: {
-	color: string;
 	formatValue: (value: number) => string;
 	now: number;
+	primary: TrendLineDefinition;
+	secondary?: TrendLineDefinition;
 	series: UsageSeriesPoint[];
 	subtitle: string;
 	title: string;
-	value: (point: UsageSeriesPoint) => number;
 }) {
-	const gradientId = `trend-${useId().replaceAll(":", "")}`;
-	const width = 600;
-	const height = 180;
-	const left = 18;
-	const right = 12;
-	const top = 15;
-	const bottom = 28;
-	const chartWidth = width - left - right;
-	const chartHeight = height - top - bottom;
-	const actual = series
-		.map((point, index) => ({ point, index, value: Math.max(0, value(point)) }))
-		.filter((entry) => entry.point.startAt <= now);
-	const maximum = Math.max(1, ...actual.map((entry) => entry.value));
-	const denominator = Math.max(1, series.length - 1);
-	const coordinates = actual.map((entry) => ({
-		x: left + entry.index / denominator * chartWidth,
-		y: top + (1 - entry.value / maximum) * chartHeight,
-		value: entry.value,
+	const lines = secondary ? [primary, secondary] : [primary];
+	const chartData: TrendChartPoint[] = series.map((point) => ({
+		...point,
+		primaryValue: point.startAt <= now ? Math.max(0, primary.value(point)) : null,
+		secondaryValue: point.startAt <= now && secondary ? Math.max(0, secondary.value(point)) : null,
 	}));
-	const linePath = coordinates.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
-	const areaPath = coordinates.length > 0
-		? `${linePath} L${coordinates.at(-1)!.x.toFixed(2)},${top + chartHeight} L${coordinates[0]!.x.toFixed(2)},${top + chartHeight} Z`
-		: "";
-	const futureStart = coordinates.at(-1)?.x ?? left;
-	const total = actual.reduce((sum, entry) => sum + entry.value, 0);
+	const actual = chartData.filter((point): point is TrendChartPoint & { primaryValue: number } => point.primaryValue !== null);
+	const maximum = Math.max(
+		1,
+		...actual.flatMap((point) => lines.map((line) => point[line.dataKey] ?? 0)),
+	);
+	const total = actual.reduce((sum, point) => sum + point.primaryValue, 0);
+	const firstAt = series[0]?.startAt ?? 0;
+	const lastAt = series.at(-1)?.startAt ?? firstAt;
+	const domainEnd = lastAt > firstAt ? lastAt : firstAt + 1;
+	const ticks = firstAt === lastAt ? [firstAt] : [firstAt, lastAt];
+	const latest = actual.at(-1);
+	const futureStart = latest?.startAt ?? firstAt;
 	return (
 		<Card className="line-trend-card min-w-0 gap-3 p-3">
 		<header>
 			<div><h3>{title}</h3><p>{subtitle}</p></div>
-			<strong style={{ color }}>{formatValue(total)}</strong>
+			<strong style={{ color: primary.color }}>{formatValue(total)}</strong>
 		</header>
 		{series.length > 0 ? (
-			<svg aria-label={`${title}折线图`} role="img" viewBox={`0 0 ${width} ${height}`}>
-				<defs>
-					<linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
-						<stop offset="0%" stopColor={color} stopOpacity="0.26" />
-						<stop offset="100%" stopColor={color} stopOpacity="0" />
-					</linearGradient>
-				</defs>
-				{[0, 0.5, 1].map((ratio) => (
-					<line className="trend-grid-line" key={ratio} x1={left} x2={width - right} y1={top + ratio * chartHeight} y2={top + ratio * chartHeight} />
-				))}
-				{futureStart < width - right ? <rect className="trend-future-area" height={chartHeight} width={width - right - futureStart} x={futureStart} y={top} /> : null}
-				{areaPath ? <path d={areaPath} fill={`url(#${gradientId})`} /> : null}
-				{linePath ? <path className="trend-line" d={linePath} fill="none" stroke={color} /> : null}
-				{coordinates.length > 0 ? <circle cx={coordinates.at(-1)?.x} cy={coordinates.at(-1)?.y} fill={color} r="3.4" /> : null}
-				<text className="trend-axis-label" x={left} y={height - 6}>{formatShortDate(series[0]!.startAt)}</text>
-				<text className="trend-axis-label" textAnchor="end" x={width - right} y={height - 6}>{formatShortDate(series.at(-1)?.startAt ?? series[0]!.startAt)}</text>
-			</svg>
+			<div className="trend-chart">
+				<ResponsiveContainer height="100%" minWidth={0} width="100%">
+					<LineChart
+						accessibilityLayer
+						aria-label={`${title}折线图`}
+						data={chartData}
+						margin={{ top: secondary ? 2 : 15, right: 12, bottom: 0, left: 4 }}
+						role="img"
+					>
+						{secondary ? (
+							<Legend
+								align="right"
+								height={24}
+								iconSize={14}
+								iconType="plainline"
+								verticalAlign="top"
+								wrapperStyle={{ color: "var(--text-secondary)", fontSize: "0.62rem" }}
+							/>
+						) : null}
+						<CartesianGrid stroke="var(--border)" strokeDasharray="3 4" vertical={false} />
+						<XAxis
+							axisLine={false}
+							dataKey="startAt"
+							domain={[firstAt, domainEnd]}
+							height={24}
+							tick={{ fill: "var(--text-tertiary)", fontSize: 9 }}
+							tickFormatter={formatShortDate}
+							tickLine={false}
+							tickMargin={9}
+							ticks={ticks}
+							type="number"
+						/>
+						<YAxis domain={[0, maximum]} hide ticks={[0, maximum / 2, maximum]} />
+						{futureStart < lastAt ? (
+							<ReferenceArea fill="var(--border)" fillOpacity={0.32} stroke="none" x1={futureStart} x2={lastAt} />
+						) : null}
+						{lines.map((line) => (
+							<Line
+								activeDot={{ fill: line.color, r: 4, stroke: "var(--surface)", strokeWidth: 2 }}
+								connectNulls={false}
+								dataKey={line.dataKey}
+								dot={false}
+								isAnimationActive={false}
+								key={line.dataKey}
+								name={line.name}
+								stroke={line.color}
+								strokeWidth={2.4}
+								type="monotone"
+							/>
+						))}
+						{latest ? lines.map((line) => {
+							const lineValue = latest[line.dataKey];
+							return lineValue === null ? null : (
+								<ReferenceDot fill={line.color} key={line.dataKey} r={3.4} stroke="none" x={latest.startAt} y={lineValue} />
+							);
+						}) : null}
+						<Tooltip
+							content={(props) => <TrendChartTooltip {...props} formatValue={formatValue} lines={lines} />}
+							cursor={{ stroke: "var(--border-strong)", strokeDasharray: "3 3" }}
+						/>
+					</LineChart>
+				</ResponsiveContainer>
+			</div>
 		) : <div className="visual-empty">当前范围暂无趋势数据</div>}
 	</Card>
+	);
+}
+
+function TrendChartTooltip({
+	active,
+	formatValue,
+	lines,
+	payload,
+}: TooltipContentProps & {
+	formatValue: (value: number) => string;
+	lines: TrendLineDefinition[];
+}) {
+	const point = payload[0]?.payload as TrendChartPoint | undefined;
+	if (!active || !point || point.primaryValue === null) return null;
+	return (
+		<div className="chart-tooltip">
+			<strong>{formatDateTime(point.startAt)}</strong>
+			<div className="chart-tooltip-series-list">
+				{lines.map((line) => {
+					const value = point[line.dataKey];
+					return value === null ? null : (
+						<span className="chart-tooltip-series" key={line.dataKey}>
+							<i style={{ background: line.color }} />
+							<b>{line.name}</b>
+							<em>{formatValue(value)}</em>
+						</span>
+					);
+				})}
+			</div>
+			<small>{formatCount(point.requests)} 次请求</small>
+		</div>
 	);
 }
 
@@ -378,7 +493,16 @@ function DonutBreakdownCard({
 	const metric = fixedMetric ?? selectedMetric;
 	const values = rows.map((row) => metric === "tokens" ? row.tokens : row.cost);
 	const total = values.reduce((sum, value) => sum + Math.max(0, value), 0);
-	const segments = donutSegments(values, total);
+	const chartRows = rows.flatMap((row, index): DonutChartRow[] => {
+		const amount = values[index] ?? 0;
+		if (!(amount > 0) || !(total > 0)) return [];
+		return [{
+			...row,
+			amount,
+			color: DONUT_COLORS[index % DONUT_COLORS.length] ?? DONUT_COLORS[0]!,
+			percent: amount / total * 100,
+		}];
+	});
 	return (
 		<Card className={`donut-card grid min-w-0 gap-3 p-3${split ? " donut-card-split" : ""}`}>
 		<header>
@@ -404,35 +528,56 @@ function DonutBreakdownCard({
 			<div className="donut-content">
 				<div className="donut-figure">
 					<div className="donut-chart">
-						<svg aria-label={`${title}${metric === "tokens" ? "Token" : "成本"}占比圆环图`} role="img" viewBox="0 0 180 180">
-							<circle className="donut-track" cx="90" cy="90" fill="none" r="62" strokeWidth="18" />
-							{segments.map((segment) => (
-								<path
-									d={arcPath(90, 90, 62, segment.start, segment.end)}
-									fill="none"
-									key={segment.index}
-									stroke={DONUT_COLORS[segment.index % DONUT_COLORS.length]}
-									strokeLinecap="butt"
-									strokeWidth="18"
+						<ResponsiveContainer height="100%" minWidth={0} width="100%">
+							<PieChart
+								accessibilityLayer
+								aria-label={`${title}${metric === "tokens" ? "Token" : "成本"}占比圆环图`}
+								margin={{ top: 0, right: 0, bottom: 0, left: 0 }}
+								role="img"
+							>
+								<Pie
+									data={[{ amount: total }]}
+									dataKey="amount"
+									endAngle={-270}
+									fill="var(--border)"
+									innerRadius="58%"
+									isAnimationActive={false}
+									outerRadius="78%"
+									startAngle={90}
+									stroke="none"
+									tooltipType="none"
 								/>
-							))}
-						</svg>
-						<div><span>{metric === "tokens" ? "总 Token" : "总成本"}</span><strong>{metric === "tokens" ? formatTokens(total) : formatCost(total)}</strong></div>
+								<Pie
+									data={chartRows}
+									dataKey="amount"
+									endAngle={-270}
+									innerRadius="58%"
+									isAnimationActive={false}
+									nameKey="label"
+									outerRadius="78%"
+									startAngle={90}
+									stroke="none"
+								>
+									{chartRows.map((row) => <Cell fill={row.color} key={row.id} />)}
+								</Pie>
+								<Tooltip
+									content={(props) => <DonutChartTooltip {...props} metric={metric} />}
+									cursor={false}
+								/>
+							</PieChart>
+						</ResponsiveContainer>
+						<div className="donut-center"><span>{metric === "tokens" ? "总 Token" : "总成本"}</span><strong>{metric === "tokens" ? formatTokens(total) : formatCost(total)}</strong></div>
 					</div>
 				</div>
 				<div className="donut-legend">
-					{rows.map((row, index) => {
-						const amount = values[index] ?? 0;
-						if (!(amount > 0)) return null;
-						return (
-							<div className="donut-legend-row" key={row.id}>
-								<i style={{ background: DONUT_COLORS[index % DONUT_COLORS.length] }} />
-								<div><strong title={row.label}>{row.label}</strong><span>{row.meta}</span></div>
-								<b>{amount / total * 100 < 0.1 ? "<0.1" : (amount / total * 100).toFixed(1)}%</b>
-								<small>{metric === "tokens" ? formatTokens(amount) : formatCost(amount)}</small>
-							</div>
-						);
-					})}
+					{chartRows.map((row) => (
+						<div className="donut-legend-row" key={row.id}>
+							<i style={{ background: row.color }} />
+							<div><strong title={row.label}>{row.label}</strong><span>{row.meta}</span></div>
+							<b>{formatPercent(row.percent)}</b>
+							<small>{metric === "tokens" ? formatTokens(row.amount) : formatCost(row.amount)}</small>
+						</div>
+					))}
 				</div>
 			</div>
 		) : (
@@ -441,6 +586,22 @@ function DonutBreakdownCard({
 			</div>
 		)}
 	</Card>
+	);
+}
+
+function DonutChartTooltip({
+	active,
+	metric,
+	payload,
+}: TooltipContentProps & { metric: DonutMetric }) {
+	const row = payload[0]?.payload as DonutChartRow | undefined;
+	if (!active || !row) return null;
+	return (
+		<div className="chart-tooltip">
+			<strong>{row.label}</strong>
+			<span>{metric === "tokens" ? formatTokens(row.amount) : formatCost(row.amount)}</span>
+			<small>{formatPercent(row.percent)} · {row.meta}</small>
+		</div>
 	);
 }
 
@@ -490,31 +651,8 @@ function healthLevel(success: number, failed: number): number {
 	return 5;
 }
 
-function donutSegments(values: number[], total: number) {
-	let cursor = -90;
-	return values.flatMap((value, index) => {
-		if (!(value > 0) || !(total > 0)) return [];
-		const sweep = value / total * 360;
-		const start = cursor;
-		const end = cursor + sweep;
-		cursor += sweep;
-		return [{ index, start, end }];
-	});
-}
-
-function arcPath(cx: number, cy: number, radius: number, start: number, end: number): string {
-	const startPoint = polarPoint(cx, cy, radius, start);
-	if (end - start >= 360 - Number.EPSILON * 360) {
-		const oppositePoint = polarPoint(cx, cy, radius, start + 180);
-		return `M ${startPoint.x} ${startPoint.y} A ${radius} ${radius} 0 1 1 ${oppositePoint.x} ${oppositePoint.y} A ${radius} ${radius} 0 1 1 ${startPoint.x} ${startPoint.y} Z`;
-	}
-	const endPoint = polarPoint(cx, cy, radius, end);
-	return `M ${startPoint.x} ${startPoint.y} A ${radius} ${radius} 0 ${end - start > 180 ? 1 : 0} 1 ${endPoint.x} ${endPoint.y}`;
-}
-
-function polarPoint(cx: number, cy: number, radius: number, angle: number) {
-	const radians = angle * Math.PI / 180;
-	return { x: cx + radius * Math.cos(radians), y: cy + radius * Math.sin(radians) };
+function formatPercent(value: number): string {
+	return `${value < 0.1 ? "<0.1" : value.toFixed(1)}%`;
 }
 
 function formatTokens(value: number): string {

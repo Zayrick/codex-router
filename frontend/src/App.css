@@ -811,32 +811,10 @@
 	letter-spacing: -0.035em;
 }
 
-.line-trend-card svg {
-	display: block;
+.trend-chart {
 	width: 100%;
-	height: auto;
-	overflow: visible;
-}
-
-.trend-grid-line {
-	stroke: var(--border);
-	stroke-width: 1;
-	stroke-dasharray: 3 4;
-}
-
-.trend-future-area {
-	fill: color-mix(in srgb, var(--border) 32%, transparent);
-}
-
-.trend-line {
-	stroke-width: 2.4;
-	stroke-linecap: round;
-	stroke-linejoin: round;
-}
-
-.trend-axis-label {
-	fill: var(--text-tertiary);
-	font-size: 9px;
+	height: 11.25rem;
+	min-width: 0;
 }
 
 /* Doughnut charts */
@@ -856,6 +834,7 @@
 	position: relative;
 	display: grid;
 	width: min(100%, 12rem);
+	aspect-ratio: 1;
 	place-items: center;
 }
 
@@ -864,11 +843,7 @@
 	width: 100%;
 }
 
-.donut-track {
-	stroke: var(--border);
-}
-
-.donut-chart > div {
+.donut-center {
 	position: absolute;
 	top: 50%;
 	left: 50%;
@@ -877,15 +852,16 @@
 	justify-items: center;
 	gap: 0.2rem;
 	transform: translate(-50%, -50%);
+	pointer-events: none;
 	text-align: center;
 }
 
-.donut-chart > div span {
+.donut-center span {
 	color: var(--text-tertiary);
 	font-size: 0.56rem;
 }
 
-.donut-chart > div strong {
+.donut-center strong {
 	max-width: 100%;
 	overflow: hidden;
 	font-size: 0.92rem;
@@ -893,6 +869,62 @@
 	letter-spacing: -0.035em;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.chart-tooltip {
+	display: grid;
+	max-width: min(18rem, 70vw);
+	gap: 0.22rem;
+	padding: 0.55rem 0.65rem;
+	border: 1px solid var(--border-strong);
+	border-radius: 0.55rem;
+	background: var(--surface-raised);
+	box-shadow: var(--shadow-md);
+	color: var(--text);
+	font-size: 0.65rem;
+	line-height: 1.4;
+}
+
+.chart-tooltip strong {
+	font-size: 0.67rem;
+}
+
+.chart-tooltip span {
+	font-variant-numeric: tabular-nums;
+}
+
+.chart-tooltip-series-list {
+	display: grid;
+	gap: 0.2rem;
+}
+
+.chart-tooltip-series {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.42rem;
+}
+
+.chart-tooltip-series i {
+	width: 0.48rem;
+	height: 0.48rem;
+	border-radius: 50%;
+}
+
+.chart-tooltip-series b {
+	font-size: 0.62rem;
+	font-weight: 650;
+}
+
+.chart-tooltip-series em {
+	font-size: 0.62rem;
+	font-style: normal;
+	font-weight: 650;
+}
+
+.chart-tooltip small {
+	color: var(--text-tertiary);
+	font-size: 0.59rem;
 }
 
 .donut-legend {
