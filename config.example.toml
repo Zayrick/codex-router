@@ -33,9 +33,22 @@ database_path = "usage.sqlite3"
 # multiplier = 1.0
 
 [notifications]
+# Event switches default to true when omitted for backward compatibility.
+# reset_watch_enabled = true
+# quota_reset_enabled = true
+# usage_warning_enabled = true
+# all_accounts = true
+# account_ids = ["00000000-0000-4000-8000-000000000001"]
+# bark_enabled = true
 # bark_push_url = "https://api.day.app/device-key"
+# dingtalk_enabled = true
 # dingtalk_webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=access-token"
 # dingtalk_secret = "SEC..."
+
+[public_account]
+# When enabled, a credential routed to a group can see quota timelines for all
+# Codex accounts in that group on the public account page.
+show_quota = true
 
 [state]
 

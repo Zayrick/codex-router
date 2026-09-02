@@ -196,8 +196,8 @@ mod tests {
     };
 
     use super::super::config::{
-        AdminConfig, AppConfig, ConfigStore, NotificationConfig, PersistentState, ServerConfig,
-        UpstreamConfig,
+        AdminConfig, AppConfig, ConfigStore, NotificationConfig, PersistentState,
+        PublicAccountConfig, ServerConfig, UpstreamConfig,
     };
     use super::*;
 
@@ -234,6 +234,7 @@ mod tests {
                 ..Default::default()
             },
             notifications: NotificationConfig::default(),
+            public_account: PublicAccountConfig::default(),
             state: PersistentState {
                 api_keys: vec![
                     ClientApiKey {

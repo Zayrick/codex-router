@@ -12,9 +12,9 @@ TOML 文件中，下游 Token 用量保存在 SQLite 中，React 管理界面随
 - `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket 转发；
 - Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
 - 统一 Codex 账户池、设备授权、账户组、下游 API Key 与下游账户管理 API；
-- React 管理页面与公开账户用量查询页；
+- React 管理页面与公开账户用量查询页，账户组可展示组内全部额度时间轴；
 - 按 API Key、下游账户、Codex 账户/组、模型和 HTTP/WebSocket 统计实际 Token 用量；
-- 后台 OAuth 刷新、用量采集、reset watch、Bark 与钉钉通知；
+- 后台 OAuth 刷新、用量采集，以及可按事件和账户配置的 reset watch、Bark 与钉钉通知；
 - 原生流式正文和双向 WebSocket bridge。
 
 `GET /` 提供账户用量查询页，提交 API Key 或 account id 后在原页显示对应调用身份的用量；管理页面只在精确的
@@ -102,7 +102,8 @@ API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
 
 下游 Token 用量单独写入 `usage_tracking.database_path` 指定的 SQLite 数据库。相对路径以配置文件
 目录为基准；管理页提供 24 小时、7 天、30 天和全部范围的趋势、模型/身份拆分及最近请求明细，
-并可按具体 API Key、下游 account id、Codex 账户或账户组重新计算全部用量视图。
+并可按具体 API Key、下游 account id、Codex 账户或账户组重新计算全部用量视图。用户端时间筛选
+提供 24 小时、7 天、30 天和全部范围；用户端额度是否显示、通知和模型价格统一在管理端“设置”页维护。
 
 管理会话和 OAuth 设备轮询状态使用 HMAC-SHA256 签名。改变 `admin.secret` 会立即使已有管理会话
 与未完成的设备授权 state 失效。

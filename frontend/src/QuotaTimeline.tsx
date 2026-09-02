@@ -1,4 +1,5 @@
 import { useMemo, type CSSProperties } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -44,7 +45,9 @@ interface QuotaTimelineProps {
 	sampledAt: number;
 	now: number;
 	planType?: string | null | undefined;
+	accountName?: string | undefined;
 	className?: string;
+	showLegend?: boolean;
 }
 
 export default function QuotaTimeline({
@@ -52,7 +55,9 @@ export default function QuotaTimeline({
 	sampledAt,
 	now,
 	planType,
+	accountName,
 	className,
+	showLegend = true,
 }: QuotaTimelineProps) {
 	const span = useMemo(
 		() => quotaSpan(windows, validTimestamp(sampledAt) ?? now),
@@ -62,6 +67,13 @@ export default function QuotaTimeline({
 	const nowLeft = percentAt(now, span.start, span.end);
 	return (
 		<Card className={cn("gap-0 py-0", className)}>
+			{accountName ? (
+				<header className="timeline-account-header">
+					<div className="timeline-account-avatar">{accountName.slice(0, 1).toUpperCase() || "C"}</div>
+					<strong>{accountName}</strong>
+					{planType ? <Badge variant="secondary">{formatPlan(planType)}</Badge> : null}
+				</header>
+			) : null}
 			<ScrollArea scrollbars="horizontal">
 				<div
 					className="timeline-grid"
@@ -74,7 +86,7 @@ export default function QuotaTimeline({
 					<div className="timeline-axis">
 						<div className="axis-heading">
 							<span>配额</span>
-							{planType ? <b>{formatPlan(planType)}</b> : null}
+							{planType && !accountName ? <b>{formatPlan(planType)}</b> : null}
 						</div>
 						<div className="axis-days">
 							{days.map((day) => (
@@ -111,13 +123,15 @@ export default function QuotaTimeline({
 					))}
 				</div>
 			</ScrollArea>
-			<footer className="timeline-legend">
-				<span><i className="legend-live" />当前周期</span>
-				<span><i className="legend-future" />后续周期</span>
-				<span className="legend-note">
-					同步于 <time dateTime={new Date(sampledAt).toISOString()}>{formatSampledAt(sampledAt)}</time>
-				</span>
-			</footer>
+			{showLegend ? (
+				<footer className="timeline-legend">
+					<span><i className="legend-live" />当前周期</span>
+					<span><i className="legend-future" />后续周期</span>
+					<span className="legend-note">
+						同步于 <time dateTime={new Date(sampledAt).toISOString()}>{formatSampledAt(sampledAt)}</time>
+					</span>
+				</footer>
+			) : null}
 		</Card>
 	);
 }

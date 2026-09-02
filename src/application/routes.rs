@@ -123,6 +123,8 @@ pub enum AdminRoute {
     State,
     CodexAccountSubscription,
     Usage,
+    SettingsGet,
+    SettingsUpdate,
     PricingGet,
     PricingUpdate,
     PricingSync,
@@ -166,6 +168,8 @@ pub fn match_admin_route(
         ("GET", "state") => AdminRoute::State,
         ("GET", "codex-accounts/subscription") => AdminRoute::CodexAccountSubscription,
         ("GET", "usage") => AdminRoute::Usage,
+        ("GET", "settings") => AdminRoute::SettingsGet,
+        ("PUT", "settings") => AdminRoute::SettingsUpdate,
         ("GET", "pricing") => AdminRoute::PricingGet,
         ("PUT", "pricing") => AdminRoute::PricingUpdate,
         ("POST", "pricing/sync") => AdminRoute::PricingSync,
@@ -252,6 +256,13 @@ mod tests {
             Some(MatchedAdminRoute {
                 base_path: "/secret/admin".into(),
                 route: AdminRoute::Usage,
+            })
+        );
+        assert_eq!(
+            match_admin_route("PUT", "/secret/admin/settings", "secret"),
+            Some(MatchedAdminRoute {
+                base_path: "/secret/admin".into(),
+                route: AdminRoute::SettingsUpdate,
             })
         );
         assert_eq!(match_admin_route("GET", "/secret/admin", "bad/path"), None);

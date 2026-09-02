@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -18,7 +18,7 @@ use crate::{
         ACCOUNT_ROUTING_KEY, AccountRoutingState, AuthProxyAccount, CODEX_ACCOUNT_OAUTH_KEY_PREFIX,
         CURRENT_ROUTING_VERSION, ClientApiKey, CodexAccount, RouteAssignment, RouteConsumerKind,
         RouteTargetKind, StateStore, StoredAccountRouting, StoredOAuthCredentials,
-        derived_record_id, normalized_account_name, unique_account_name,
+        derived_record_id, normalized_account_name, unique_account_name, valid_record_id,
     },
     core::{ApiError, AppResult},
     upstream::{bark::parse_bark_push_url, dingtalk::signed_dingtalk_webhook},
@@ -40,6 +40,8 @@ pub struct AppConfig {
     pub usage_tracking: UsageTrackingConfig,
     #[serde(default)]
     pub notifications: NotificationConfig,
+    #[serde(default)]
+    pub public_account: PublicAccountConfig,
     #[serde(default)]
     pub state: PersistentState,
 }
@@ -104,11 +106,166 @@ pub struct UpstreamConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NotificationConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_watch_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_reset_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_warning_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all_accounts: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub account_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bark_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bark_push_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dingtalk_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dingtalk_webhook_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dingtalk_secret: Option<String>,
+}
+
+impl NotificationConfig {
+    pub fn reset_watch_is_enabled(&self) -> bool {
+        self.reset_watch_enabled.unwrap_or(true)
+    }
+
+    pub fn quota_reset_is_enabled(&self) -> bool {
+        self.quota_reset_enabled.unwrap_or(true)
+    }
+
+    pub fn usage_warning_is_enabled(&self) -> bool {
+        self.usage_warning_enabled.unwrap_or(true)
+    }
+
+    pub fn includes_account(&self, account_id: &str) -> bool {
+        self.all_accounts.unwrap_or(self.account_ids.is_empty())
+            || self.account_ids.iter().any(|id| id == account_id)
+    }
+
+    pub fn bark_is_enabled(&self) -> bool {
+        self.bark_enabled
+            .unwrap_or_else(|| self.bark_push_url.is_some())
+            && self.bark_push_url.is_some()
+    }
+
+    pub fn dingtalk_is_enabled(&self) -> bool {
+        self.dingtalk_enabled.unwrap_or_else(|| {
+            self.dingtalk_webhook_url.is_some() && self.dingtalk_secret.is_some()
+        }) && self.dingtalk_webhook_url.is_some()
+            && self.dingtalk_secret.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicAccountConfig {
+    #[serde(default = "default_true")]
+    pub show_quota: bool,
+}
+
+impl Default for PublicAccountConfig {
+    fn default() -> Self {
+        Self { show_quota: true }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminSettings {
+    pub public_account: PublicAccountSettings,
+    pub notifications: AdminNotificationSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicAccountSettings {
+    pub show_quota: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminNotificationSettings {
+    pub reset_watch_enabled: bool,
+    pub quota_reset_enabled: bool,
+    pub usage_warning_enabled: bool,
+    pub all_accounts: bool,
+    pub account_ids: Vec<String>,
+    pub reset_watch_api_url: String,
+    pub bark: BarkNotificationSettings,
+    pub dingtalk: DingTalkNotificationSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BarkNotificationSettings {
+    pub enabled: bool,
+    pub push_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DingTalkNotificationSettings {
+    pub enabled: bool,
+    pub webhook_url: String,
+    pub secret: String,
+}
+
+impl From<&AppConfig> for AdminSettings {
+    fn from(config: &AppConfig) -> Self {
+        let known_accounts = config
+            .state
+            .account_routing
+            .accounts
+            .iter()
+            .map(|account| account.id.as_str())
+            .collect::<HashSet<_>>();
+        let account_ids = config
+            .notifications
+            .account_ids
+            .iter()
+            .filter(|id| known_accounts.contains(id.as_str()))
+            .cloned()
+            .collect();
+        Self {
+            public_account: PublicAccountSettings {
+                show_quota: config.public_account.show_quota,
+            },
+            notifications: AdminNotificationSettings {
+                reset_watch_enabled: config.notifications.reset_watch_is_enabled(),
+                quota_reset_enabled: config.notifications.quota_reset_is_enabled(),
+                usage_warning_enabled: config.notifications.usage_warning_is_enabled(),
+                all_accounts: config
+                    .notifications
+                    .all_accounts
+                    .unwrap_or(config.notifications.account_ids.is_empty()),
+                account_ids,
+                reset_watch_api_url: config.upstream.codex_resets_url.clone(),
+                bark: BarkNotificationSettings {
+                    enabled: config.notifications.bark_is_enabled(),
+                    push_url: config
+                        .notifications
+                        .bark_push_url
+                        .clone()
+                        .unwrap_or_default(),
+                },
+                dingtalk: DingTalkNotificationSettings {
+                    enabled: config.notifications.dingtalk_is_enabled(),
+                    webhook_url: config
+                        .notifications
+                        .dingtalk_webhook_url
+                        .clone()
+                        .unwrap_or_default(),
+                    secret: config
+                        .notifications
+                        .dingtalk_secret
+                        .clone()
+                        .unwrap_or_default(),
+                },
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -208,6 +365,38 @@ impl ConfigStore {
         Ok(prices)
     }
 
+    pub async fn replace_admin_settings(
+        &self,
+        settings: AdminSettings,
+    ) -> AppResult<AdminSettings> {
+        let settings = normalized_admin_settings(settings);
+        let stored = settings.clone();
+        self.update(move |config| {
+            validate_admin_settings(&stored, config)?;
+            config.public_account.show_quota = stored.public_account.show_quota;
+            config.upstream.codex_resets_url = stored.notifications.reset_watch_api_url.clone();
+            config.notifications.reset_watch_enabled =
+                Some(stored.notifications.reset_watch_enabled);
+            config.notifications.quota_reset_enabled =
+                Some(stored.notifications.quota_reset_enabled);
+            config.notifications.usage_warning_enabled =
+                Some(stored.notifications.usage_warning_enabled);
+            config.notifications.all_accounts = Some(stored.notifications.all_accounts);
+            config.notifications.account_ids = stored.notifications.account_ids.clone();
+            config.notifications.bark_enabled = Some(stored.notifications.bark.enabled);
+            config.notifications.bark_push_url =
+                non_empty_value(&stored.notifications.bark.push_url);
+            config.notifications.dingtalk_enabled = Some(stored.notifications.dingtalk.enabled);
+            config.notifications.dingtalk_webhook_url =
+                non_empty_value(&stored.notifications.dingtalk.webhook_url);
+            config.notifications.dingtalk_secret =
+                non_empty_value(&stored.notifications.dingtalk.secret);
+            Ok(())
+        })
+        .await?;
+        Ok(settings)
+    }
+
     async fn update(
         &self,
         operation: impl FnOnce(&mut AppConfig) -> AppResult<()>,
@@ -221,6 +410,76 @@ impl ConfigStore {
         *current = next;
         Ok(())
     }
+}
+
+fn normalized_admin_settings(mut settings: AdminSettings) -> AdminSettings {
+    settings.notifications.reset_watch_api_url =
+        settings.notifications.reset_watch_api_url.trim().to_owned();
+    settings.notifications.bark.push_url = settings.notifications.bark.push_url.trim().to_owned();
+    settings.notifications.dingtalk.webhook_url = settings
+        .notifications
+        .dingtalk
+        .webhook_url
+        .trim()
+        .to_owned();
+    settings.notifications.dingtalk.secret =
+        settings.notifications.dingtalk.secret.trim().to_owned();
+    let mut seen = HashSet::new();
+    settings
+        .notifications
+        .account_ids
+        .retain(|id| seen.insert(id.clone()));
+    if settings.notifications.all_accounts {
+        settings.notifications.account_ids.clear();
+    }
+    settings
+}
+
+fn validate_admin_settings(settings: &AdminSettings, config: &AppConfig) -> AppResult<()> {
+    let reset_url = Url::parse(&settings.notifications.reset_watch_api_url)
+        .map_err(|_| invalid_admin_settings())?;
+    if reset_url.scheme() != "https" || reset_url.host_str().is_none() {
+        return Err(invalid_admin_settings());
+    }
+
+    let known_accounts = config
+        .state
+        .account_routing
+        .accounts
+        .iter()
+        .map(|account| account.id.as_str())
+        .collect::<HashSet<_>>();
+    if settings.notifications.account_ids.len() > known_accounts.len()
+        || settings
+            .notifications
+            .account_ids
+            .iter()
+            .any(|id| !valid_record_id(id) || !known_accounts.contains(id.as_str()))
+    {
+        return Err(invalid_admin_settings());
+    }
+
+    if !settings.notifications.bark.push_url.is_empty() {
+        parse_bark_push_url(&settings.notifications.bark.push_url)
+            .map_err(|_| invalid_admin_settings())?;
+    } else if settings.notifications.bark.enabled {
+        return Err(invalid_admin_settings());
+    }
+
+    let dingtalk = &settings.notifications.dingtalk;
+    match (dingtalk.webhook_url.is_empty(), dingtalk.secret.is_empty()) {
+        (false, false) => {
+            signed_dingtalk_webhook(&dingtalk.webhook_url, &dingtalk.secret, 0)
+                .map_err(|_| invalid_admin_settings())?;
+        }
+        (true, true) if !dingtalk.enabled => {}
+        _ => return Err(invalid_admin_settings()),
+    }
+    Ok(())
+}
+
+fn non_empty_value(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 #[async_trait]
@@ -533,6 +792,15 @@ fn validate_config(config: &AppConfig) -> Result<()> {
             "notifications.dingtalk_webhook_url and notifications.dingtalk_secret must be set together"
         ),
     }
+    let mut notification_account_ids = HashSet::new();
+    if config
+        .notifications
+        .account_ids
+        .iter()
+        .any(|id| !valid_record_id(id) || !notification_account_ids.insert(id.as_str()))
+    {
+        bail!("notifications.account_ids contains an invalid or duplicate account id");
+    }
     Ok(())
 }
 
@@ -607,6 +875,12 @@ fn invalid_model_prices() -> ApiError {
         .with_code("invalid_model_prices")
 }
 
+fn invalid_admin_settings() -> ApiError {
+    ApiError::new(400, "设置配置无效，请检查地址、凭据与账户范围。")
+        .with_kind("invalid_request_error")
+        .with_code("invalid_admin_settings")
+}
+
 fn default_bind() -> String {
     "127.0.0.1:8787".into()
 }
@@ -631,6 +905,10 @@ fn default_usage_database_path() -> String {
     "usage.sqlite3".into()
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 fn default_codex_resets_url() -> String {
     "https://codex-resets.com/api/v1/status".into()
 }
@@ -652,6 +930,7 @@ mod tests {
             },
             usage_tracking: UsageTrackingConfig::default(),
             notifications: NotificationConfig::default(),
+            public_account: PublicAccountConfig::default(),
             state: PersistentState::default(),
         }
     }
@@ -667,6 +946,77 @@ mod tests {
         value.upstream.chatgpt_proxy = Some("socks5://proxy.example:1080".into());
         value.server.cors_origin = "https://client.example\ninvalid".into();
         assert!(validate_config(&value).is_err());
+    }
+
+    #[test]
+    fn admin_settings_keep_legacy_notification_defaults_and_validate_account_scope() {
+        let mut value = config();
+        value.notifications.bark_push_url = Some("https://api.day.app/device-key".into());
+        value.state.account_routing.accounts.push(CodexAccount {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            name: "主账户".into(),
+            enabled: true,
+        });
+
+        let mut settings = AdminSettings::from(&value);
+        assert!(settings.public_account.show_quota);
+        assert!(settings.notifications.reset_watch_enabled);
+        assert!(settings.notifications.quota_reset_enabled);
+        assert!(settings.notifications.usage_warning_enabled);
+        assert!(settings.notifications.all_accounts);
+        assert!(settings.notifications.bark.enabled);
+
+        settings.notifications.all_accounts = false;
+        settings.notifications.account_ids = vec!["00000000-0000-4000-8000-000000000001".into()];
+        assert!(validate_admin_settings(&settings, &value).is_ok());
+        settings.notifications.account_ids = vec!["00000000-0000-4000-8000-000000000002".into()];
+        assert!(validate_admin_settings(&settings, &value).is_err());
+    }
+
+    #[tokio::test]
+    async fn admin_settings_are_normalized_and_persisted() {
+        let path = std::env::temp_dir().join(format!(
+            "codex-router-settings-test-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        let mut value = config();
+        let account_id = "00000000-0000-4000-8000-000000000001";
+        value.state.account_routing.accounts.push(CodexAccount {
+            id: account_id.into(),
+            name: "主账户".into(),
+            enabled: true,
+        });
+        fs::write(&path, toml::to_string_pretty(&value).unwrap())
+            .await
+            .unwrap();
+        let store = ConfigStore::load(path.clone()).await.unwrap();
+        let mut settings = AdminSettings::from(&store.snapshot().await);
+        settings.public_account.show_quota = false;
+        settings.notifications.reset_watch_enabled = false;
+        settings.notifications.all_accounts = false;
+        settings.notifications.account_ids = vec![account_id.into(), account_id.into()];
+        settings.notifications.reset_watch_api_url =
+            "  https://status.example.com/resets  ".into();
+        settings.notifications.bark.enabled = true;
+        settings.notifications.bark.push_url = " https://api.day.app/device-key ".into();
+
+        let saved = store.replace_admin_settings(settings).await.unwrap();
+        let snapshot = store.snapshot().await;
+
+        assert!(!saved.public_account.show_quota);
+        assert_eq!(saved.notifications.account_ids, vec![account_id]);
+        assert_eq!(
+            saved.notifications.reset_watch_api_url,
+            "https://status.example.com/resets"
+        );
+        assert!(!snapshot.public_account.show_quota);
+        assert_eq!(snapshot.notifications.reset_watch_enabled, Some(false));
+        assert_eq!(
+            snapshot.notifications.bark_push_url.as_deref(),
+            Some("https://api.day.app/device-key")
+        );
+
+        let _ = fs::remove_file(path).await;
     }
 
     #[test]

@@ -109,6 +109,29 @@ export interface AdminState extends AccountRoutingConfiguration {
 	authProxyAccounts: AuthProxyAccount[];
 }
 
+export interface AdminSettings {
+	publicAccount: {
+		showQuota: boolean;
+	};
+	notifications: {
+		resetWatchEnabled: boolean;
+		quotaResetEnabled: boolean;
+		usageWarningEnabled: boolean;
+		allAccounts: boolean;
+		accountIds: string[];
+		resetWatchApiUrl: string;
+		bark: {
+			enabled: boolean;
+			pushUrl: string;
+		};
+		dingtalk: {
+			enabled: boolean;
+			webhookUrl: string;
+			secret: string;
+		};
+	};
+}
+
 export type UsageRange = "cycle" | "24h" | "7d" | "30d" | "all";
 
 export type UsageIdentityType =
@@ -266,6 +289,17 @@ export class AdminApiClient {
 
 	getState(): Promise<AdminState> {
 		return this.requestJson<AdminState>("/state");
+	}
+
+	getSettings(): Promise<AdminSettings> {
+		return this.requestJson<AdminSettings>("/settings");
+	}
+
+	replaceSettings(settings: AdminSettings): Promise<AdminSettings> {
+		return this.requestJson<AdminSettings>(
+			"/settings",
+			jsonRequest("PUT", settings),
+		);
 	}
 
 	async getCodexAccountSubscription(id: string): Promise<SubscriptionInfo> {

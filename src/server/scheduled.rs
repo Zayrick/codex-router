@@ -51,7 +51,9 @@ pub fn spawn(state: AppState, interval_seconds: u64) -> tokio::task::JoinHandle<
 pub async fn run_once(state: &AppState) {
     let config = state.config.snapshot().await;
     let now_ms = current_time_ms();
-    if let Err(error) = monitor_reset_watch(state, &config, now_ms).await {
+    if config.notifications.reset_watch_is_enabled()
+        && let Err(error) = monitor_reset_watch(state, &config, now_ms).await
+    {
         log_failure("scheduled_reset_watch", &error);
     }
 
@@ -78,7 +80,8 @@ pub async fn run_once(state: &AppState) {
                 }
                 if account.enabled
                     && let Err(error) =
-                        monitor_usage(state, config, &oauth, &account.id, now_ms).await
+                        monitor_usage(state, config, &oauth, &account.id, &account.name, now_ms)
+                            .await
                 {
                     log_failure("scheduled_usage_monitor", &error);
                 }
@@ -113,6 +116,7 @@ async fn monitor_usage(
     config: &AppConfig,
     oauth: &OAuthRepository<'_>,
     account_id: &str,
+    account_name: &str,
     now_ms: i64,
 ) -> AppResult<()> {
     let client = CodexClient::new(oauth, &state.chatgpt);
@@ -126,7 +130,13 @@ async fn monitor_usage(
     let repository = CodexUsageStateRepository::new(state.config.as_ref(), account_id);
     let previous = repository.read().await?;
     let evaluation = evaluate_codex_usage(previous.as_ref(), &subscription, now_ms);
-    if let Some(notification) = evaluation.notification() {
+    if config.notifications.includes_account(account_id)
+        && let Some(notification) = evaluation.notification(
+            account_name,
+            config.notifications.quota_reset_is_enabled(),
+            config.notifications.usage_warning_is_enabled(),
+        )
+    {
         deliver_notification(state, config, &notification, now_ms).await;
     }
     repository.store(&evaluation.state).await
@@ -154,6 +164,9 @@ async fn send_bark(
     config: &AppConfig,
     notification: &PushNotification,
 ) -> AppResult<()> {
+    if !config.notifications.bark_is_enabled() {
+        return Ok(());
+    }
     let Some(endpoint) = config.notifications.bark_push_url.as_deref() else {
         return Ok(());
     };
@@ -183,6 +196,9 @@ async fn send_dingtalk(
     notification: &PushNotification,
     now_ms: i64,
 ) -> AppResult<()> {
+    if !config.notifications.dingtalk_is_enabled() {
+        return Ok(());
+    }
     let (Some(webhook), Some(secret)) = (
         config.notifications.dingtalk_webhook_url.as_deref(),
         config.notifications.dingtalk_secret.as_deref(),

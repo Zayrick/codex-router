@@ -11,7 +11,6 @@ import {
 	Card,
 	CardAction,
 	CardContent,
-	CardDescription,
 	CardHeader,
 	CardTitle,
 } from "@/components/ui/card";
@@ -97,7 +96,6 @@ export default function ModelPricingCard({
 		<Card aria-labelledby="pricing-title">
 		<CardHeader className="border-b max-sm:grid-cols-1">
 			<CardTitle id="pricing-title">模型价格</CardTitle>
-			<CardDescription>按每百万 Token 的美元单价计算成本，配置会写入服务器的 <code>config.toml</code>。</CardDescription>
 			<CardAction className="pricing-header-actions max-sm:col-start-1 max-sm:row-auto max-sm:mt-2 max-sm:w-full max-sm:justify-self-stretch">
 				<Button disabled={syncing || saving} onClick={onSync} type="button" variant="outline">
 					{syncing ? <Spinner /> : <RefreshCwIcon />}

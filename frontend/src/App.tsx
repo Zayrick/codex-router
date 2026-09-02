@@ -91,6 +91,7 @@ import {
 	AdminApiError,
 	AdminSessionExpiredError,
 	type AccountGroup,
+	type AdminSettings,
 	type AdminState,
 	type AuthProxyAccount,
 	type AuthProxyAccountInput,
@@ -113,7 +114,7 @@ import ManagementShell, {
 	ProductMark,
 	type ManagementPage,
 } from "./ManagementShell";
-import ModelPricingCard from "./ModelPricingCard";
+import SettingsPage from "./SettingsPage";
 import {
 	ActivityHeatmaps,
 	DownstreamCostDonut,
@@ -163,6 +164,10 @@ function App() {
 	const [loginError, setLoginError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<Notice | null>(null);
 	const [now, setNow] = useState(() => Date.now());
+	const [settings, setSettings] = useState<AdminSettings | null>(null);
+	const [settingsLoading, setSettingsLoading] = useState(false);
+	const [settingsSaving, setSettingsSaving] = useState(false);
+	const [settingsError, setSettingsError] = useState<string | null>(null);
 
 	const [usage, setUsage] = useState<UsageDashboard | null>(null);
 	const [overviewUsage, setOverviewUsage] = useState<UsageDashboard | null>(null);
@@ -250,10 +255,16 @@ function App() {
 
 	async function initialize(): Promise<void> {
 		if (!api) return;
+		setSettingsLoading(true);
 		try {
-			const state = await api.getState();
+			const [state, nextSettings] = await Promise.all([
+				api.getState(),
+				api.getSettings(),
+			]);
 			if (!mountedRef.current) return;
 			setData(state);
+			setSettings(nextSettings);
+			setSettingsError(null);
 			setScreen("dashboard");
 			setLoginError(null);
 			void refreshUsage("7d", null, null);
@@ -267,6 +278,8 @@ function App() {
 				setScreen("login");
 				setLoginError(errorMessage(error, "无法读取管理状态，请稍后重试。"));
 			}
+		} finally {
+			if (mountedRef.current) setSettingsLoading(false);
 		}
 	}
 
@@ -313,6 +326,8 @@ function App() {
 		setData(EMPTY_STATE);
 		setUsage(null);
 		setOverviewUsage(null);
+		setSettings(null);
+		setSettingsError(null);
 		setUsageRange("7d");
 		setUsageDownstream(null);
 		setUsageUpstream(null);
@@ -446,6 +461,24 @@ function App() {
 		}
 	}
 
+	async function saveSettings(nextSettings: AdminSettings): Promise<void> {
+		if (!api || settingsSaving) return;
+		setSettingsSaving(true);
+		setSettingsError(null);
+		try {
+			const saved = await api.replaceSettings(nextSettings);
+			if (!mountedRef.current) return;
+			setSettings(saved);
+			showNotice("设置已保存。", "success");
+		} catch (error) {
+			if (!handleSessionFailure(error)) {
+				setSettingsError(errorMessage(error, "保存设置失败。"));
+			}
+		} finally {
+			if (mountedRef.current) setSettingsSaving(false);
+		}
+	}
+
 	async function refreshSubscription(account: CodexAccount): Promise<void> {
 		if (!api || subscriptionInFlightRef.current.has(account.id)) return;
 		subscriptionInFlightRef.current.add(account.id);
@@ -489,6 +522,13 @@ function App() {
 			const routing = await api.getAccountRouting();
 			if (!mountedRef.current) return;
 			setData((current) => ({ ...current, codexAccounts: accounts, ...routing }));
+			setSettings((current) => current ? {
+				...current,
+				notifications: {
+					...current.notifications,
+					accountIds: current.notifications.accountIds.filter((id) => id !== account.id),
+				},
+			} : current);
 			setSubscriptions((current) => omitKey(current, account.id));
 			showNotice("账户已删除。", "success");
 		} catch (error) {
@@ -814,16 +854,25 @@ function App() {
 					/>
 				</>
 			) : null}
-			{activePage === "pricing" ? (
-				<ModelPricingCard
-					error={pricingError}
-					loading={pricingLoading}
-					onSave={(prices) => void savePricing(prices)}
-					onSync={() => void syncPricing()}
-					prices={modelPrices}
-					saving={pricingSaving}
-					syncing={pricingSyncing}
-					usedModels={usedModels}
+			{activePage === "settings" ? (
+				<SettingsPage
+					accounts={data.codexAccounts}
+					error={settingsError}
+					key={settings ? JSON.stringify(settings) : "settings-loading"}
+					loading={settingsLoading}
+					onSave={(nextSettings) => void saveSettings(nextSettings)}
+					pricing={{
+						error: pricingError,
+						loading: pricingLoading,
+						onSave: (prices) => void savePricing(prices),
+						onSync: () => void syncPricing(),
+						prices: modelPrices,
+						saving: pricingSaving,
+						syncing: pricingSyncing,
+						usedModels,
+					}}
+					saving={settingsSaving}
+					settings={settings}
 				/>
 			) : null}
 
@@ -879,7 +928,7 @@ function Overview({
 				/>
 				<OverviewMetricCard detail="最近 7 天累计" label="请求数" onClick={() => onNavigate("usage")} value={usage ? formatCount(usage.totals.requests) : "—"} />
 				<OverviewMetricCard detail="最近 7 天的输入、输出与缓存 Token" label="Token 用量" onClick={() => onNavigate("usage")} value={usage ? formatTokens(usage.totals.totalTokens) : "—"} />
-				<OverviewMetricCard detail={usage?.unpricedModels.length ? `${usage.unpricedModels.length} 个模型尚未计价` : "最近 7 天 · 按模型价格配置计算"} label="成本" onClick={() => onNavigate("pricing")} value={usage ? formatCost(usage.totals.costUsd) : "—"} />
+				<OverviewMetricCard detail={usage?.unpricedModels.length ? `${usage.unpricedModels.length} 个模型尚未计价` : "最近 7 天 · 按模型价格配置计算"} label="成本" onClick={() => onNavigate("settings")} value={usage ? formatCost(usage.totals.costUsd) : "—"} />
 			</aside>
 			<section className="overview-visuals-column" aria-label="最近 7 天活动与成本分布">
 				{usage ? (
@@ -1483,12 +1532,13 @@ function managementBasePath(pathname: string): string | null {
 function managementPageFromSearch(search: string): ManagementPage {
 	const page = new URLSearchParams(search).get("page");
 	if (page === "routing") return "account";
-	return page === "usage" || page === "pricing" || page === "api-keys" || page === "accounts" || page === "account" ? page : "overview";
+	if (page === "pricing") return "settings";
+	return page === "usage" || page === "settings" || page === "api-keys" || page === "accounts" || page === "account" ? page : "overview";
 }
 
 function managementPageTitle(page: ManagementPage): string {
 	if (page === "usage") return "用量分析";
-	if (page === "pricing") return "模型价格";
+	if (page === "settings") return "设置";
 	if (page === "api-keys") return "API Keys";
 	if (page === "accounts") return "下游账户";
 	if (page === "account") return "Codex 账户";

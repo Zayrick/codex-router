@@ -1,11 +1,11 @@
 import { useState, type MouseEvent, type ReactNode } from "react";
 import {
 	ChartNoAxesColumnIcon,
-	CircleDollarSignIcon,
 	HomeIcon,
 	KeyRoundIcon,
 	LogOutIcon,
 	MenuIcon,
+	Settings2Icon,
 	UserRoundIcon,
 	UsersIcon,
 } from "lucide-react";
@@ -21,7 +21,7 @@ import {
 export type ManagementPage =
 	| "overview"
 	| "usage"
-	| "pricing"
+	| "settings"
 	| "api-keys"
 	| "accounts"
 	| "account";
@@ -29,7 +29,7 @@ export type ManagementPage =
 type ShellIconName =
 	| "home"
 	| "usage"
-	| "pricing"
+	| "settings"
 	| "key"
 	| "accounts"
 	| "account"
@@ -54,9 +54,9 @@ const PAGE_COPY: Record<ManagementPage, { title: string; description: string }> 
 		title: "用量分析",
 		description: "按时间、上游路由目标与下游调用身份查看完整 Token 消耗。",
 	},
-	pricing: {
-		title: "模型价格",
-		description: "配置模型 Token 单价，用于估算请求成本与用量支出。",
+	settings: {
+		title: "设置",
+		description: "管理用户端、通知和模型价格。",
 	},
 	"api-keys": {
 		title: "API Keys",
@@ -148,7 +148,7 @@ export default function ManagementShell({
 									<ShellIcon name="menu" />
 								</Button>
 								<div>
-									<p className="page-eyebrow">{pageEyebrow(activePage)}</p>
+									{activePage === "settings" ? null : <p className="page-eyebrow">{pageEyebrow(activePage)}</p>}
 									<h1 id="dashboard-title">{pageCopy.title}</h1>
 									<p className="dashboard-description">{pageCopy.description}</p>
 								</div>
@@ -198,7 +198,9 @@ function SidebarContent({
 						<NavGroup label="运行">
 							<NavItem activePage={activePage} basePath={basePath} icon="home" label="概览" onNavigate={navigate} page="overview" />
 							<NavItem activePage={activePage} basePath={basePath} icon="usage" label="用量分析" onNavigate={navigate} page="usage" />
-							<NavItem activePage={activePage} basePath={basePath} icon="pricing" label="模型价格" onNavigate={navigate} page="pricing" />
+						</NavGroup>
+						<NavGroup label="配置">
+							<NavItem activePage={activePage} basePath={basePath} icon="settings" label="设置" onNavigate={navigate} page="settings" />
 						</NavGroup>
 						<NavGroup label="调用身份">
 							<NavItem activePage={activePage} basePath={basePath} icon="key" label="API Keys" onNavigate={navigate} page="api-keys" />
@@ -276,7 +278,7 @@ export function ProductMark({ compact = false }: { compact?: boolean }) {
 function pageEyebrow(page: ManagementPage): string {
 	if (page === "overview") return "DASHBOARD";
 	if (page === "usage") return "OBSERVABILITY";
-	if (page === "pricing") return "COST SETTINGS";
+	if (page === "settings") return "PREFERENCES";
 	if (page === "account") return "CODEX ACCOUNTS";
 	return "IDENTITIES";
 }
@@ -291,8 +293,8 @@ function ShellIcon({ name }: { name: ShellIconName }) {
 			return <HomeIcon aria-hidden="true" />;
 		case "usage":
 			return <ChartNoAxesColumnIcon aria-hidden="true" />;
-		case "pricing":
-			return <CircleDollarSignIcon aria-hidden="true" />;
+		case "settings":
+			return <Settings2Icon aria-hidden="true" />;
 		case "key":
 			return <KeyRoundIcon aria-hidden="true" />;
 		case "accounts":

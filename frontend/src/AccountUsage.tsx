@@ -8,6 +8,7 @@ import {
 import {
 	EyeIcon,
 	EyeOffIcon,
+	Layers3Icon,
 	RefreshCwIcon,
 	TriangleAlertIcon,
 } from "lucide-react";
@@ -46,7 +47,6 @@ const COMPACT_FORMAT = new Intl.NumberFormat("zh-CN", {
 	maximumFractionDigits: 2,
 });
 const RANGE_OPTIONS: ReadonlyArray<{ value: UsageRange; label: string }> = [
-	{ value: "cycle", label: "当前周期" },
 	{ value: "24h", label: "24 小时" },
 	{ value: "7d", label: "7 天" },
 	{ value: "30d", label: "30 天" },
@@ -58,17 +58,24 @@ interface PublicAccountDashboard {
 		identityType: "api_key" | "auth_proxy";
 	};
 	usage: UsageDashboard;
-	quota: PublicQuotaSnapshot | null;
+	quota: PublicQuotaCollection | null;
 }
 
 interface PublicQuotaSnapshot {
-	sampledAt: number;
+	accountId: string;
+	accountName: string;
+	sampledAt: number | null;
 	planType: string | null;
 	windows: QuotaTimelineWindow[];
 }
 
+interface PublicQuotaCollection {
+	group: { id: string; name: string } | null;
+	accounts: PublicQuotaSnapshot[];
+}
+
 function AccountUsage() {
-	const [range, setRange] = useState<UsageRange>("cycle");
+	const [range, setRange] = useState<UsageRange>("24h");
 	const [snapshot, setSnapshot] = useState<PublicAccountDashboard | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -137,7 +144,8 @@ function AccountUsage() {
 
 	function lookup(credential: string): void {
 		setError(null);
-		void load("cycle", credential);
+		setRange("24h");
+		void load("24h", credential);
 	}
 
 	function changeRange(nextRange: UsageRange): void {
@@ -148,7 +156,7 @@ function AccountUsage() {
 
 	function clearAccount(): void {
 		credentialRef.current = null;
-		setRange("cycle");
+		setRange("24h");
 		setSnapshot(null);
 		setError(null);
 	}
@@ -183,7 +191,7 @@ function AccountUsage() {
 							{snapshot.account.identityType === "auth_proxy" ? "ACCOUNT ID" : "API KEY"}
 						</Badge>
 						<h1>用量信息</h1>
-						<p>查看额度周期、Token 活动与模型消耗分布。</p>
+						<p>{snapshot.quota ? "查看 Token 活动、模型消耗与路由账户额度。" : "查看 Token 活动与模型消耗分布。"}</p>
 					</div>
 				</header>
 
@@ -253,23 +261,55 @@ function AccountUsage() {
 						</section>
 					</div>
 
-					<section className="min-w-0" aria-label="账户额度时间条">
-						{snapshot.quota && snapshot.quota.windows.length > 0 ? (
-							<QuotaTimeline
-								className="min-w-0"
-								now={now}
-								planType={snapshot.quota.planType}
-								sampledAt={snapshot.quota.sampledAt}
-								windows={snapshot.quota.windows}
-							/>
-						) : (
-							<Empty className="min-h-30 border text-[.72rem]"><EmptyHeader><EmptyDescription>额度时间条尚未完成首次同步。</EmptyDescription></EmptyHeader></Empty>
-						)}
-					</section>
+					{snapshot.quota ? (
+						<PublicQuotaSection now={now} quota={snapshot.quota} />
+					) : null}
 				</div>
 			</div>
 			</main>
 		</ScrollArea>
+	);
+}
+
+function PublicQuotaSection({ now, quota }: { now: number; quota: PublicQuotaCollection }) {
+	const title = quota.group?.name ?? "路由账户额度";
+	return (
+		<section className="public-quota-section" aria-labelledby="public-quota-title">
+			<header className="public-quota-heading">
+				<div className="public-quota-heading-icon"><Layers3Icon /></div>
+				<h2 id="public-quota-title">{title}</h2>
+				<span className="public-quota-count">{quota.accounts.length} 个账户</span>
+			</header>
+
+			{quota.accounts.length ? (
+				<div className="public-quota-list">
+					{quota.accounts.map((account) => (
+						account.sampledAt !== null && account.windows.length ? (
+							<QuotaTimeline
+								accountName={account.accountName}
+								className="min-w-0"
+								key={account.accountId}
+								now={now}
+								planType={account.planType}
+								sampledAt={account.sampledAt}
+								showLegend={false}
+								windows={account.windows}
+							/>
+						) : (
+							<Card className="public-quota-empty" key={account.accountId}>
+								<div className="public-quota-account-label">
+									<span>{account.accountName.slice(0, 1).toUpperCase() || "C"}</span>
+									<strong>{account.accountName}</strong>
+								</div>
+								<Empty className="min-h-24 rounded-none border-x-0 border-b-0 text-[.72rem]"><EmptyHeader><EmptyDescription>额度时间轴尚未完成首次同步。</EmptyDescription></EmptyHeader></Empty>
+							</Card>
+						)
+					))}
+				</div>
+			) : (
+				<Empty className="min-h-30 border text-[.72rem]"><EmptyHeader><EmptyDescription>当前凭据尚未分配可展示的路由账户。</EmptyDescription></EmptyHeader></Empty>
+			)}
+		</section>
 	);
 }
 
@@ -303,7 +343,7 @@ function AccountLookupView({ error, loading, onSubmit }: AccountLookupViewProps)
 					<div className="auth-mobile-brand"><ProductMark compact /><strong>Codex Router</strong></div>
 					<p className="auth-eyebrow">账户用量</p>
 					<h1>查看用量信息</h1>
-					<p className="auth-description">输入 API Key 或 account id，查看对应账户的额度与 Token 消耗。</p>
+					<p className="auth-description">输入 API Key 或 account id，查看对应路由的 Token 消耗信息。</p>
 
 					{error ? (
 						<Alert className="mt-4" variant="destructive">

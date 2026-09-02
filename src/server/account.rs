@@ -1,16 +1,16 @@
 use axum::{body::Body, http::Request, response::Response};
+use futures_util::{StreamExt, stream};
 use serde::Serialize;
 
 use crate::{
     application::MonitoredQuotaWindow,
     auth::{
-        ApiKeyRepository, AuthProxyAccount, OAuthRepository, RouteConsumerKind,
-        constant_time_equal, matching_auth_proxy_account,
+        AccountRoutingState, ApiKeyRepository, AuthProxyAccount, CodexAccount, OAuthRepository,
+        RouteConsumerKind, RouteTargetKind, RoutingRepository, constant_time_equal,
+        matching_auth_proxy_account,
     },
     core::{ApiError, AppResult},
-    upstream::codex::{
-        CodexQuotaCategory, CodexQuotaWindow, CodexQuotaWindowKind, codex_subscription_from_usage,
-    },
+    upstream::codex::{CodexQuotaWindow, codex_subscription_from_usage},
 };
 
 use super::{
@@ -20,11 +20,12 @@ use super::{
     oauth::current_time_ms,
     response,
     state::AppState,
-    usage::{UsageBounds, UsageFilters, UsageIdentityFilter, UsageRange},
+    usage::{UsageFilters, UsageIdentityFilter, UsageRange},
     usage_store::CodexUsageStateRepository,
 };
 
 const MAX_PUBLIC_ACCOUNT_BODY_BYTES: usize = 8 * 1024;
+const PUBLIC_QUOTA_READ_CONCURRENCY: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicAccountKind {
@@ -63,6 +64,29 @@ struct PublicAccountSummary {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PublicQuotaSnapshot {
+    account_id: String,
+    account_name: String,
+    sampled_at: Option<i64>,
+    plan_type: Option<String>,
+    windows: Vec<PublicQuotaWindow>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicQuotaCollection {
+    group: Option<PublicQuotaGroup>,
+    accounts: Vec<PublicQuotaSnapshot>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicQuotaGroup {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug)]
+struct QuotaSnapshot {
     sampled_at: i64,
     plan_type: Option<String>,
     windows: Vec<PublicQuotaWindow>,
@@ -123,6 +147,7 @@ async fn public_account_input(request: Request<Body>) -> AppResult<(String, Usag
     let range = range
         .as_deref()
         .and_then(|value| UsageRange::parse(Some(value)))
+        .filter(|range| *range != UsageRange::Cycle)
         .ok_or_else(invalid_usage_range)?;
     Ok((credential, range))
 }
@@ -164,37 +189,23 @@ async fn account_dashboard(
     let now_ms = current_time_ms();
     let identity = UsageIdentityFilter::parse_downstream(account.kind.identity_type(), &account.id)
         .expect("stored public account identity is valid");
-    let selected = state
-        .account_router
-        .inspect(
-            state.config.as_ref(),
-            account.kind.route_consumer(),
-            &account.id,
-            now_ms,
-        )
-        .await
-        .ok()
-        .flatten();
-    let quota = match selected.as_ref() {
-        Some(selected) => {
-            let oauth = OAuthRepository::new(state.config.as_ref(), &selected.account.id);
-            quota_snapshot(&oauth, &selected.account.id, state, now_ms).await
+    let quota = if config.public_account.show_quota {
+        match quota_collection(account, state, now_ms).await {
+            Ok(quota) => Some(quota),
+            Err(error) => {
+                tracing::warn!(event = "public_account_quota_targets", status = "failed", error = %error);
+                None
+            }
         }
-        None => None,
+    } else {
+        None
     };
-    let bounds = (range == UsageRange::Cycle)
-        .then(|| {
-            quota
-                .as_ref()
-                .and_then(|quota| quota_cycle_bounds(quota, now_ms))
-        })
-        .flatten();
     let dashboard = state
         .usage
         .dashboard_with_options(
             range,
             UsageFilters::new(Some(identity), None),
-            bounds,
+            None,
             &config.usage_tracking.model_prices,
         )
         .await
@@ -215,12 +226,94 @@ async fn account_dashboard(
     )
 }
 
+async fn quota_collection(
+    public_account: &PublicAccount,
+    state: &AppState,
+    now_ms: i64,
+) -> AppResult<PublicQuotaCollection> {
+    let routing = RoutingRepository::new(state.config.as_ref()).read().await?;
+    let (group, accounts) = quota_targets(routing, public_account);
+
+    let accounts = stream::iter(accounts)
+        .map(|account: CodexAccount| async move {
+            let oauth = OAuthRepository::new(state.config.as_ref(), &account.id);
+            let snapshot = quota_snapshot(&oauth, &account.id, state, now_ms).await;
+            PublicQuotaSnapshot {
+                account_id: account.id,
+                account_name: account.name,
+                sampled_at: snapshot.as_ref().map(|snapshot| snapshot.sampled_at),
+                plan_type: snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.plan_type.clone()),
+                windows: snapshot
+                    .map(|snapshot| snapshot.windows)
+                    .unwrap_or_default(),
+            }
+        })
+        .buffered(PUBLIC_QUOTA_READ_CONCURRENCY)
+        .collect()
+        .await;
+
+    Ok(PublicQuotaCollection { group, accounts })
+}
+
+fn quota_targets(
+    routing: AccountRoutingState,
+    public_account: &PublicAccount,
+) -> (Option<PublicQuotaGroup>, Vec<CodexAccount>) {
+    let Some(assignment) = routing.routes.iter().find(|route| {
+        route.consumer_type == public_account.kind.route_consumer()
+            && route.consumer_id == public_account.id
+    }) else {
+        return (None, Vec::new());
+    };
+
+    match assignment.target_type {
+        RouteTargetKind::Account => {
+            let accounts: Vec<CodexAccount> = routing
+                .accounts
+                .into_iter()
+                .filter(|account| account.id == assignment.target_id)
+                .collect();
+            (None, accounts)
+        }
+        RouteTargetKind::Group => {
+            let Some(group) = routing
+                .groups
+                .iter()
+                .find(|group| group.id == assignment.target_id)
+                .cloned()
+            else {
+                return (None, Vec::new());
+            };
+            let accounts: Vec<CodexAccount> = group
+                .account_ids
+                .iter()
+                .filter_map(|id| {
+                    routing
+                        .accounts
+                        .iter()
+                        .find(|account| account.id == *id)
+                        .cloned()
+                })
+                .collect();
+            (
+                Some(PublicQuotaGroup {
+                    id: group.id,
+                    name: group.name,
+                }),
+                accounts,
+            )
+        }
+    }
+}
+
 async fn quota_snapshot(
     oauth: &OAuthRepository<'_>,
     account_id: &str,
     state: &AppState,
     now_ms: i64,
-) -> Option<PublicQuotaSnapshot> {
+) -> Option<QuotaSnapshot> {
     match live_quota_snapshot(oauth, state, now_ms).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -241,12 +334,12 @@ async fn live_quota_snapshot(
     oauth: &OAuthRepository<'_>,
     state: &AppState,
     now_ms: i64,
-) -> AppResult<Option<PublicQuotaSnapshot>> {
+) -> AppResult<Option<QuotaSnapshot>> {
     let client = CodexClient::new(oauth, &state.chatgpt);
     let usage = client.fetch_usage().await?;
     let subscription =
         codex_subscription_from_usage(&usage.payload, usage.metadata, now_ms as f64)?;
-    Ok(Some(PublicQuotaSnapshot {
+    Ok(Some(QuotaSnapshot {
         sampled_at: now_ms,
         plan_type: subscription.plan_type,
         windows: subscription
@@ -260,12 +353,12 @@ async fn live_quota_snapshot(
 async fn cached_quota_snapshot(
     state: &AppState,
     account_id: &str,
-) -> AppResult<Option<PublicQuotaSnapshot>> {
+) -> AppResult<Option<QuotaSnapshot>> {
     Ok(
         CodexUsageStateRepository::new(state.config.as_ref(), account_id)
             .read()
             .await?
-            .map(|snapshot| PublicQuotaSnapshot {
+            .map(|snapshot| QuotaSnapshot {
                 sampled_at: snapshot.sampled_at,
                 plan_type: snapshot.plan_type,
                 windows: snapshot
@@ -307,29 +400,6 @@ impl From<&MonitoredQuotaWindow> for PublicQuotaWindow {
     }
 }
 
-fn quota_cycle_bounds(snapshot: &PublicQuotaSnapshot, now_ms: i64) -> Option<UsageBounds> {
-    const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
-    let mut end_at = snapshot
-        .windows
-        .iter()
-        .find(|window| {
-            window.category == CodexQuotaCategory::Codex
-                && window.kind == CodexQuotaWindowKind::Weekly
-                && window.reset_at.is_some()
-        })?
-        .reset_at?;
-    let mut start_at = end_at.checked_sub(WEEK_MS)?;
-    while end_at <= now_ms {
-        start_at = start_at.checked_add(WEEK_MS)?;
-        end_at = end_at.checked_add(WEEK_MS)?;
-    }
-    while start_at > now_ms {
-        start_at = start_at.checked_sub(WEEK_MS)?;
-        end_at = end_at.checked_sub(WEEK_MS)?;
-    }
-    UsageBounds::cycle(start_at, end_at, now_ms)
-}
-
 fn f64_to_i64(value: f64) -> Option<i64> {
     (value.is_finite() && value >= i64::MIN as f64 && value <= i64::MAX as f64)
         .then(|| value.round() as i64)
@@ -359,4 +429,75 @@ fn usage_query_error() -> ApiError {
     ApiError::new(503, "Account usage is temporarily unavailable.")
         .with_kind("server_error")
         .with_code("usage_query_failed")
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::auth::{AccountGroup, RouteAssignment};
+
+    use super::*;
+
+    fn codex_account(id: &str, name: &str, enabled: bool) -> CodexAccount {
+        CodexAccount {
+            id: id.into(),
+            name: name.into(),
+            enabled,
+        }
+    }
+
+    #[test]
+    fn group_quota_targets_include_every_member_in_group_order() {
+        let routing = AccountRoutingState {
+            accounts: vec![
+                codex_account("account-a", "主账户", true),
+                codex_account("account-b", "备用账户", false),
+                codex_account("account-c", "组外账户", true),
+            ],
+            groups: vec![AccountGroup {
+                id: "group-1".into(),
+                name: "生产组".into(),
+                account_ids: vec!["account-b".into(), "account-a".into()],
+                strategy: "round-robin".into(),
+                session_affinity: false,
+                session_affinity_ttl: "24h".into(),
+            }],
+            routes: vec![RouteAssignment {
+                consumer_type: RouteConsumerKind::ApiKey,
+                consumer_id: "client-1".into(),
+                target_type: RouteTargetKind::Group,
+                target_id: "group-1".into(),
+            }],
+        };
+        let public_account = PublicAccount {
+            id: "client-1".into(),
+            kind: PublicAccountKind::ApiKey,
+        };
+
+        let (group, accounts) = quota_targets(routing, &public_account);
+
+        assert_eq!(
+            group,
+            Some(PublicQuotaGroup {
+                id: "group-1".into(),
+                name: "生产组".into(),
+            })
+        );
+        assert_eq!(
+            accounts
+                .iter()
+                .map(|account| account.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["备用账户", "主账户"]
+        );
+    }
+
+    #[tokio::test]
+    async fn public_account_ranges_do_not_accept_the_legacy_cycle_filter() {
+        let request = Request::builder()
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("credential=sk-test-value&range=cycle"))
+            .unwrap();
+
+        assert!(public_account_input(request).await.is_err());
+    }
 }

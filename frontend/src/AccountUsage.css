@@ -202,6 +202,94 @@
 	margin-block: auto;
 }
 
+.public-quota-section,
+.public-quota-list {
+	display: grid;
+	min-width: 0;
+}
+
+.public-quota-section {
+	gap: 0.75rem;
+	margin-top: 0.25rem;
+}
+
+.public-quota-list {
+	gap: 0.75rem;
+}
+
+.public-quota-heading {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.75rem;
+	padding: 0.2rem 0.15rem;
+}
+
+.public-quota-heading-icon {
+	display: grid;
+	width: 2.15rem;
+	height: 2.15rem;
+	place-items: center;
+	border: 1px solid var(--border);
+	border-radius: 0.65rem;
+	color: var(--text-secondary);
+	background: var(--surface);
+	box-shadow: var(--shadow-sm);
+}
+
+.public-quota-heading-icon svg {
+	width: 1rem;
+	height: 1rem;
+}
+
+.public-quota-heading h2 {
+	margin: 0;
+	overflow: hidden;
+	font-size: 0.82rem;
+	font-weight: 740;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.public-quota-count {
+	color: var(--text-tertiary);
+	font-size: 0.61rem;
+	white-space: nowrap;
+}
+
+.public-quota-empty {
+	gap: 0;
+	padding-block: 0;
+}
+
+.public-quota-account-label {
+	display: flex;
+	align-items: center;
+	gap: 0.65rem;
+	padding: 0.8rem 1rem;
+}
+
+.public-quota-account-label > span {
+	display: grid;
+	width: 1.75rem;
+	height: 1.75rem;
+	flex: 0 0 auto;
+	place-items: center;
+	border-radius: 0.5rem;
+	color: var(--primary-contrast);
+	background: var(--primary);
+	font-size: 0.65rem;
+	font-weight: 760;
+}
+
+.public-quota-account-label strong {
+	min-width: 0;
+	overflow: hidden;
+	font-size: 0.75rem;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 @media (max-width: 58rem) {
 	.public-account-header {
 		align-items: flex-start;
@@ -280,5 +368,14 @@
 
 	.public-account-metric {
 		border-left: 0;
+	}
+
+	.public-quota-heading {
+		grid-template-columns: auto minmax(0, 1fr);
+	}
+
+	.public-quota-count {
+		grid-column: 2;
+		justify-self: start;
 	}
 }

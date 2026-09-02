@@ -1,7 +1,7 @@
 # 配置
 
 Codex Router 从 `config.toml` 读取运行设置和持久状态。可复制 `config.example.toml` 作为起点；
-`server`、`admin`、`upstream`、`usage_tracking` 与 `notifications` 是运行设置，`state` 由管理 API
+`server`、`admin`、`upstream`、`usage_tracking`、`notifications` 与 `public_account` 是运行设置，`state` 由管理 API
 和后台任务维护。配置文件包含凭据，应使用严格的文件权限并避免提交到版本库。
 
 ## 静态设置
@@ -24,7 +24,14 @@ chatgpt_proxy = "socks5h://127.0.0.1:1080"
 `socks5h://user:password@127.0.0.1:1080`，特殊字符必须进行 URL percent-encoding。代理凭据会以
 明文保存在配置文件中。
 
-通知字段都是可选的。钉钉 Webhook 与签名 secret 必须同时配置；只提供其中一个会导致启动失败。
+通知字段都是可选的。管理端“设置”页可在运行时配置重置预测、额度重置和用量过高通知，选择全部
+或指定 Codex 账户，并分别启用 Bark、钉钉通道。账户型通知会包含账户昵称。钉钉 Webhook 与签名
+secret 必须同时配置；只提供其中一个会导致启动失败。`upstream.codex_resets_url` 也可在设置页更新，
+仅接受 HTTPS 地址。
+
+`public_account.show_quota` 默认开启。开启后，根目录用户端会根据下游凭据的路由目标展示额度；若
+目标是账户组，则展示组内全部 Codex 账户的昵称与额度时间轴。关闭后用户端不返回额度数据，但
+Token 用量查询仍然可用。
 
 ## Token 用量数据库
 

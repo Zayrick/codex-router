@@ -72,19 +72,36 @@ pub struct CodexUsageMonitorEvaluation {
 }
 
 impl CodexUsageMonitorEvaluation {
-    pub fn notification(&self) -> Option<PushNotification> {
-        if self.alerts.is_empty() {
-            return None;
-        }
+    pub fn notification(
+        &self,
+        account_name: &str,
+        quota_reset_enabled: bool,
+        usage_warning_enabled: bool,
+    ) -> Option<PushNotification> {
+        let account_name = account_name.trim();
+        let account_name = if account_name.is_empty() {
+            "未命名账户"
+        } else {
+            account_name
+        };
         let body = self
             .alerts
             .iter()
+            .filter(|alert| match alert.kind {
+                UsageAlertKind::QuotaReset => quota_reset_enabled,
+                UsageAlertKind::ConsumptionTooFast | UsageAlertKind::ConsumptionRecovered => {
+                    usage_warning_enabled
+                }
+            })
             .map(alert_line)
             .collect::<Vec<_>>()
             .join("\n");
+        if body.is_empty() {
+            return None;
+        }
         Some(PushNotification {
-            title: "Codex 额度提醒".into(),
-            body,
+            title: format!("Codex 额度提醒 · {account_name}"),
+            body: format!("账户：{account_name}\n{body}"),
             url: None,
         })
     }
@@ -379,8 +396,15 @@ mod tests {
         );
         assert_eq!(crossed.alerts[0].kind, UsageAlertKind::ConsumptionTooFast);
         assert_eq!(
-            crossed.notification().unwrap().body,
-            "剩余额度 6.0%，低于剩余时间 7.0%，当前周消耗进度偏快。"
+            crossed
+                .notification("主账户", true, true)
+                .unwrap()
+                .title,
+            "Codex 额度提醒 · 主账户"
+        );
+        assert_eq!(
+            crossed.notification("主账户", true, true).unwrap().body,
+            "账户：主账户\n剩余额度 6.0%，低于剩余时间 7.0%，当前周消耗进度偏快。"
         );
         let still_below = evaluate_codex_usage(
             Some(&crossed.state),
@@ -410,8 +434,8 @@ mod tests {
             vec![UsageAlertKind::ConsumptionRecovered]
         );
         assert_eq!(
-            recovered.notification().unwrap().body,
-            "剩余额度 46.0%，已高于剩余时间 45.0%，当前 5 小时消耗已恢复到平均水平。"
+            recovered.notification("主账户", true, true).unwrap().body,
+            "账户：主账户\n剩余额度 46.0%，已高于剩余时间 45.0%，当前 5 小时消耗已恢复到平均水平。"
         );
         let next = evaluate_codex_usage(
             Some(&recovered.state),
@@ -435,9 +459,10 @@ mod tests {
         assert_eq!(reset.alerts[0].kind, UsageAlertKind::QuotaReset);
         assert_eq!(reset.alerts[0].previous_remaining_percent, Some(40.0));
         assert_eq!(
-            reset.notification().unwrap().body,
-            "检测到周额度已重置，重置前剩余额度为 40.0%。"
+            reset.notification("主账户", true, true).unwrap().body,
+            "账户：主账户\n检测到周额度已重置，重置前剩余额度为 40.0%。"
         );
+        assert!(reset.notification("主账户", false, true).is_none());
     }
 
     #[test]

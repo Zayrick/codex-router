@@ -79,24 +79,6 @@ impl AccountRouter {
             .await
     }
 
-    pub async fn inspect(
-        &self,
-        store: &dyn StateStore,
-        consumer_type: RouteConsumerKind,
-        consumer_id: &str,
-        now_ms: i64,
-    ) -> AppResult<Option<ResolvedAccountRoute>> {
-        self.resolve_internal(
-            store,
-            consumer_type,
-            consumer_id,
-            &HeaderMap::new(),
-            now_ms,
-            false,
-        )
-        .await
-    }
-
     async fn resolve_internal(
         &self,
         store: &dyn StateStore,

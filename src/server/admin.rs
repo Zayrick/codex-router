@@ -23,7 +23,7 @@ use crate::{
 use super::{
     body,
     codex::CodexClient,
-    config::AppConfig,
+    config::{AdminSettings, AppConfig},
     oauth::{ReqwestOAuthHttpClient, SystemClock, current_time_ms},
     pricing::{ModelPrice, sync_model_prices},
     response,
@@ -192,6 +192,14 @@ async fn dispatch(
                     usage_query_error()
                 })?;
             response::json(&dashboard, 200)
+        }
+        AdminRoute::SettingsGet => response::json(&AdminSettings::from(config), 200),
+        AdminRoute::SettingsUpdate => {
+            let input =
+                serde_json::from_value::<AdminSettings>(Value::Object(admin_json(request).await?))
+                    .map_err(|_| invalid_admin_settings())?;
+            let settings = state.config.replace_admin_settings(input).await?;
+            response::json(&settings, 200)
         }
         AdminRoute::PricingGet => {
             let used_models = state.usage.used_models().await.map_err(|error| {
@@ -634,6 +642,12 @@ fn invalid_model_prices() -> ApiError {
     ApiError::new(400, "The model pricing configuration is invalid.")
         .with_kind("invalid_request_error")
         .with_code("invalid_model_prices")
+}
+
+fn invalid_admin_settings() -> ApiError {
+    ApiError::new(400, "设置配置无效，请检查地址、凭据与账户范围。")
+        .with_kind("invalid_request_error")
+        .with_code("invalid_admin_settings")
 }
 
 fn pricing_sync_error() -> ApiError {

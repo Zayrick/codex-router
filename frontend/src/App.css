@@ -905,6 +905,147 @@
 	color: var(--text-secondary);
 }
 
+/* Settings */
+.settings-page,
+.settings-form,
+.settings-notification-content,
+.settings-section {
+	display: grid;
+	min-width: 0;
+}
+
+.settings-page {
+	gap: 1.25rem;
+}
+
+.settings-form {
+	gap: 1rem;
+}
+
+.settings-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+}
+
+.settings-card-title,
+.settings-channel-title {
+	display: flex;
+	align-items: center;
+	gap: 0.55rem;
+}
+
+.settings-card-title svg {
+	width: 1rem;
+	height: 1rem;
+	color: var(--text-secondary);
+}
+
+.settings-switch-row {
+	min-width: 0;
+	padding: 0.85rem;
+	border: 1px solid var(--border);
+	border-radius: calc(var(--radius) * 0.9);
+	background: var(--surface-subtle);
+}
+
+.settings-switch-row [data-slot="field-title"] svg,
+.settings-switch-row [data-slot="field-label"] svg {
+	width: 0.92rem;
+	height: 0.92rem;
+	color: var(--text-tertiary);
+}
+
+.settings-notification-content {
+	gap: 1.2rem;
+	padding-top: 0.25rem;
+}
+
+.settings-section {
+	gap: 0.85rem;
+}
+
+.settings-section-heading h3 {
+	margin: 0;
+	font-size: 0.76rem;
+	font-weight: 740;
+}
+
+.settings-event-grid,
+.settings-channel-grid,
+.settings-account-grid {
+	display: grid;
+	min-width: 0;
+	gap: 0.75rem;
+}
+
+.settings-event-grid {
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-event-card {
+	position: relative;
+	min-height: 3.65rem;
+	align-items: center;
+	padding: 0.7rem;
+	border: 1px solid var(--border);
+	border-radius: calc(var(--radius) * 0.95);
+	background: var(--surface-subtle);
+}
+
+.settings-event-icon {
+	display: grid;
+	width: 1.85rem;
+	height: 1.85rem;
+	flex: 0 0 auto;
+	place-items: center;
+	border-radius: 0.52rem;
+	color: var(--text-secondary);
+	background: var(--surface);
+	box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.settings-event-icon svg {
+	width: 0.9rem;
+	height: 0.9rem;
+}
+
+.settings-account-grid {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-account-grid > [data-slot="field-label"] {
+	min-width: 0;
+}
+
+.settings-account-grid [data-slot="field"] {
+	min-height: 3rem;
+	align-items: center;
+}
+
+.settings-account-grid [data-slot="field-title"] {
+	display: block;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.settings-channel-grid {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-channel-card {
+	min-width: 0;
+	background: color-mix(in srgb, var(--surface-subtle) 62%, var(--surface));
+}
+
+.settings-channel-title svg {
+	width: 0.92rem;
+	height: 0.92rem;
+	color: var(--text-secondary);
+}
+
 @media (hover: hover) and (pointer: fine) {
 	.activity-cell:hover {
 		z-index: 2;
@@ -949,6 +1090,10 @@
 	.overview-metrics-column {
 		position: static;
 		grid-template-columns: repeat(4, minmax(0, 1fr));
+	}
+
+	.settings-event-grid {
+		grid-template-columns: minmax(0, 1fr);
 	}
 
 }
@@ -1000,6 +1145,15 @@
 	.pricing-header-actions {
 		width: 100%;
 		flex-wrap: wrap;
+	}
+
+	.settings-channel-grid,
+	.settings-account-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.settings-actions [data-slot="button"] {
+		width: 100%;
 	}
 	.status-toast {
 		right: 1rem;
