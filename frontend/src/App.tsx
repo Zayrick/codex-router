@@ -14,6 +14,7 @@ import {
 	PlusIcon,
 	RefreshCwIcon,
 	TriangleAlertIcon,
+	UploadIcon,
 	UsersIcon,
 	XIcon,
 } from "lucide-react";
@@ -85,6 +86,7 @@ import {
 } from "@/components/ui/table";
 import AccountGroups from "./AccountGroups";
 import CodexAccounts from "./CodexAccounts";
+import CredentialImportDialog from "./CredentialImportDialog";
 import DeleteConfirmationDialog from "./DeleteConfirmationDialog";
 import {
 	AdminApiClient,
@@ -100,6 +102,7 @@ import {
 	type CodexAccount,
 	type CodexAccountDeviceAuthorization,
 	type CodexAccountUpdate,
+	type CodexCredentialImport,
 	type ModelPrice,
 	type RouteAssignment,
 	type RouteConsumerType,
@@ -191,6 +194,7 @@ function App() {
 	const [deviceFlow, setDeviceFlow] = useState<CodexAccountDeviceAuthorization | null>(null);
 	const [deviceLoading, setDeviceLoading] = useState(false);
 	const [deviceError, setDeviceError] = useState<string | null>(null);
+	const [credentialImportOpen, setCredentialImportOpen] = useState(false);
 
 	const [accountGroupsSaving, setAccountGroupsSaving] = useState(false);
 	const [keyEditor, setKeyEditor] = useState<EditableKey>(null);
@@ -322,6 +326,7 @@ function App() {
 
 	function resetForLogin(): void {
 		cancelDeviceLogin();
+		setCredentialImportOpen(false);
 		usageRequestRef.current += 1;
 		setData(EMPTY_STATE);
 		setUsage(null);
@@ -535,6 +540,20 @@ function App() {
 			if (!handleSessionFailure(error)) showNotice(errorMessage(error, "删除账户失败。"), "error");
 		} finally {
 			if (mountedRef.current) setBusyAccounts((current) => withSetValue(current, account.id, false));
+		}
+	}
+
+	async function importCodexCredentials(value: CodexCredentialImport): Promise<void> {
+		if (!api) return;
+		try {
+			const account = await api.importCodexCredentials(value);
+			if (!mountedRef.current) return;
+			setData((current) => ({ ...current, codexAccounts: [...current.codexAccounts, account] }));
+			setCredentialImportOpen(false);
+			showNotice("凭据已导入，账户已添加。", "success");
+		} catch (error) {
+			if (!handleSessionFailure(error)) throw error;
+			setCredentialImportOpen(false);
 		}
 	}
 
@@ -765,14 +784,14 @@ function App() {
 			添加下游账户
 		</Button>
 	) : activePage === "account" ? (
-		<Button
-			disabled={deviceLoading || deviceFlow !== null}
-			onClick={() => void startDeviceLogin()}
-			type="button"
-		>
-			<PlusIcon data-icon="inline-start" />
-			登录新账户
-		</Button>
+		<div className="flex flex-wrap gap-2">
+			<Button disabled={deviceLoading || deviceFlow !== null} onClick={() => setCredentialImportOpen(true)} type="button" variant="outline">
+				<UploadIcon data-icon="inline-start" />导入凭据
+			</Button>
+			<Button disabled={deviceLoading || deviceFlow !== null} onClick={() => void startDeviceLogin()} type="button">
+				<PlusIcon data-icon="inline-start" />登录新账户
+			</Button>
+		</div>
 	) : undefined;
 
 	return (
@@ -829,6 +848,7 @@ function App() {
 			) : null}
 			{activePage === "account" ? (
 				<>
+					{credentialImportOpen ? <CredentialImportDialog onCancel={() => setCredentialImportOpen(false)} onImport={importCodexCredentials} /> : null}
 					<CodexAccounts
 						accounts={data.codexAccounts}
 						busyAccounts={busyAccounts}

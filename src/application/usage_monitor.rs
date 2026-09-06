@@ -396,10 +396,7 @@ mod tests {
         );
         assert_eq!(crossed.alerts[0].kind, UsageAlertKind::ConsumptionTooFast);
         assert_eq!(
-            crossed
-                .notification("主账户", true, true)
-                .unwrap()
-                .title,
+            crossed.notification("主账户", true, true).unwrap().title,
             "Codex 额度提醒 · 主账户"
         );
         assert_eq!(

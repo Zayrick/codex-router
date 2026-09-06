@@ -3,6 +3,7 @@
 mod admin_session;
 mod api_keys;
 mod auth_proxy;
+mod credential_import;
 mod credentials;
 mod crypto;
 mod device_flow;
@@ -24,6 +25,7 @@ pub use api_keys::{
     ApiKeyRepository, ClientApiKey, authenticate_token, client_token, validate_api_key_input,
 };
 pub use auth_proxy::{AuthProxyAccount, matching_auth_proxy_account};
+pub use credential_import::{CredentialImport, MAX_CREDENTIAL_IMPORT_BYTES};
 pub(crate) use credentials::CODEX_ACCOUNT_OAUTH_KEY_PREFIX;
 pub use credentials::{
     OAuthRepository, OAuthStatus, StoredOAuthCredentials, credentials_from_token_response,

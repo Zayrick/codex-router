@@ -68,7 +68,7 @@ const PAGE_COPY: Record<ManagementPage, { title: string; description: string }> 
 	},
 	account: {
 		title: "Codex 账户",
-		description: "维护 Codex OAuth 登录、订阅额度与账户组。",
+		description: "管理 Codex 登录与凭据导入、订阅额度和账户组。",
 	},
 };
 

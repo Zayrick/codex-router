@@ -11,10 +11,11 @@ use url::Url;
 use crate::{
     application::{AdminRoute, MatchedAdminRoute},
     auth::{
-        ApiKeyRepository, CodexAccount, DeviceAuthorizationService, DevicePollResult,
-        OAuthProvider, OAuthRepository, OAuthStatus, RouteConsumerKind, RoutingRepository,
-        admin_secret_matches, admin_session_cookie_header, clear_admin_session_cookie_header,
-        create_admin_session, has_valid_admin_session, oauth_status, valid_record_id,
+        ApiKeyRepository, CodexAccount, CredentialImport, DeviceAuthorizationService,
+        DevicePollResult, MAX_CREDENTIAL_IMPORT_BYTES, OAuthProvider, OAuthRepository, OAuthStatus,
+        RouteConsumerKind, RoutingRepository, admin_secret_matches, admin_session_cookie_header,
+        clear_admin_session_cookie_header, create_admin_session, has_valid_admin_session,
+        oauth_status, valid_record_id,
     },
     core::{ApiError, AppResult, JsonObject},
     upstream::codex::{codex_subscription_from_usage, codex_subscription_metadata},
@@ -33,6 +34,10 @@ use super::{
 
 const MAX_ADMIN_BODY_BYTES: usize = 16 * 1024;
 const CODEX_ACCOUNT_OAUTH_READ_CONCURRENCY: usize = 4;
+
+#[cfg(test)]
+#[path = "admin_import_tests.rs"]
+mod import_tests;
 
 pub async fn handle_admin(
     matched: MatchedAdminRoute,
@@ -260,6 +265,42 @@ async fn dispatch(
                 &json!({
                     "accountId": id,
                     "authorization": service.start().await?,
+                }),
+                201,
+            )
+        }
+        AdminRoute::CodexAccountImport => {
+            let (parts, body) = request.into_parts();
+            let bytes =
+                body::read_limited_body(&parts.headers, body, MAX_CREDENTIAL_IMPORT_BYTES).await?;
+            let input =
+                serde_json::from_slice::<Value>(&bytes).map_err(|_| invalid_admin_json())?;
+            let import = CredentialImport::parse(&input)?;
+            // Detect existing credentials before a refresh can rotate their token.
+            if state
+                .config
+                .snapshot()
+                .await
+                .state
+                .codex_account_oauth
+                .values()
+                .any(|stored| import.matches_credentials(stored))
+            {
+                return Err(duplicate_codex_account());
+            }
+            let clock = SystemClock;
+            let http = ReqwestOAuthHttpClient::new(&state.client);
+            let provider = OAuthProvider::new(&http, &clock);
+            let credentials = import.resolve(&provider, &clock).await?;
+            let oauth = Some(oauth_status(&credentials));
+            let subscription = Some(codex_subscription_metadata(credentials.id_token.as_deref()));
+            let account = state
+                .config
+                .import_codex_account(credentials, import.name.as_deref())
+                .await?;
+            response::json(
+                &json!({
+                    "account": CodexAccountState { account, oauth, subscription },
                 }),
                 201,
             )
@@ -621,7 +662,7 @@ fn invalid_codex_account_id() -> ApiError {
 }
 
 fn duplicate_codex_account() -> ApiError {
-    ApiError::new(409, "This Codex account is already logged in.")
+    ApiError::new(409, "该 Codex 账户已存在，请勿重复添加。")
         .with_kind("invalid_request_error")
         .with_code("codex_account_conflict")
 }

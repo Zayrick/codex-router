@@ -88,6 +88,37 @@ impl AccountRoutingState {
     pub fn is_empty(&self) -> bool {
         self.accounts.is_empty() && self.groups.is_empty() && self.routes.is_empty()
     }
+
+    pub(crate) fn add_account(
+        &mut self,
+        id: String,
+        preferred_name: Option<&str>,
+    ) -> AppResult<CodexAccount> {
+        if !valid_record_id(&id) {
+            return Err(invalid_codex_account());
+        }
+        if let Some(account) = self.accounts.iter().find(|account| account.id == id) {
+            return Ok(account.clone());
+        }
+        if self.accounts.len() >= MAX_CODEX_ACCOUNTS {
+            return Err(routing_conflict(
+                "The Codex account limit has been reached.",
+            ));
+        }
+        let base_name =
+            normalized_account_name(preferred_name).unwrap_or_else(|| "Codex 账户".into());
+        let name = unique_account_name(
+            &base_name,
+            self.accounts.iter().map(|entry| entry.name.as_str()),
+        );
+        let account = CodexAccount {
+            id,
+            name,
+            enabled: true,
+        };
+        self.accounts.push(account.clone());
+        Ok(account)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -135,29 +166,11 @@ impl<'a> RoutingRepository<'a> {
         id: String,
         preferred_name: Option<&str>,
     ) -> AppResult<AccountRoutingState> {
-        if !valid_record_id(&id) {
-            return Err(invalid_codex_account());
-        }
         let mut state = self.read().await?;
         if state.accounts.iter().any(|account| account.id == id) {
             return Ok(state);
         }
-        if state.accounts.len() >= MAX_CODEX_ACCOUNTS {
-            return Err(routing_conflict(
-                "The Codex account limit has been reached.",
-            ));
-        }
-        let base_name =
-            normalized_account_name(preferred_name).unwrap_or_else(|| "Codex 账户".into());
-        let name = unique_account_name(
-            &base_name,
-            state.accounts.iter().map(|entry| entry.name.as_str()),
-        );
-        state.accounts.push(CodexAccount {
-            id,
-            name,
-            enabled: true,
-        });
+        state.add_account(id, preferred_name)?;
         self.store(state).await
     }
 

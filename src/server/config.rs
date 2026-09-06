@@ -18,7 +18,8 @@ use crate::{
         ACCOUNT_ROUTING_KEY, AccountRoutingState, AuthProxyAccount, CODEX_ACCOUNT_OAUTH_KEY_PREFIX,
         CURRENT_ROUTING_VERSION, ClientApiKey, CodexAccount, RouteAssignment, RouteConsumerKind,
         RouteTargetKind, StateStore, StoredAccountRouting, StoredOAuthCredentials,
-        derived_record_id, normalized_account_name, unique_account_name, valid_record_id,
+        derived_record_id, new_record_id, normalized_account_name, unique_account_name,
+        valid_record_id,
     },
     core::{ApiError, AppResult},
     upstream::{bark::parse_bark_push_url, dingtalk::signed_dingtalk_webhook},
@@ -397,18 +398,45 @@ impl ConfigStore {
         Ok(settings)
     }
 
-    async fn update(
+    pub async fn import_codex_account(
         &self,
-        operation: impl FnOnce(&mut AppConfig) -> AppResult<()>,
-    ) -> AppResult<()> {
+        credentials: StoredOAuthCredentials,
+        name: Option<&str>,
+    ) -> AppResult<CodexAccount> {
+        self.update(move |config| {
+            if config.state.codex_account_oauth.values().any(|stored| {
+                stored.refresh_token == credentials.refresh_token
+                    || stored.account_id.is_some() && stored.account_id == credentials.account_id
+            }) {
+                return Err(ApiError::new(409, "该 Codex 账户已存在，请勿重复导入。")
+                    .with_kind("invalid_request_error")
+                    .with_code("codex_account_conflict"));
+            }
+            let account = config
+                .state
+                .account_routing
+                .add_account(new_record_id(), name.or(credentials.email.as_deref()))?;
+            config
+                .state
+                .codex_account_oauth
+                .insert(account.id.clone(), credentials);
+            Ok(account)
+        })
+        .await
+    }
+
+    async fn update<T>(
+        &self,
+        operation: impl FnOnce(&mut AppConfig) -> AppResult<T>,
+    ) -> AppResult<T> {
         let mut current = self.config.write().await;
         let mut next = current.clone();
-        operation(&mut next)?;
+        let result = operation(&mut next)?;
         persist(&self.path, &next)
             .await
             .map_err(|_| config_write_error())?;
         *current = next;
-        Ok(())
+        Ok(result)
     }
 }
 
@@ -995,8 +1023,7 @@ mod tests {
         settings.notifications.reset_watch_enabled = false;
         settings.notifications.all_accounts = false;
         settings.notifications.account_ids = vec![account_id.into(), account_id.into()];
-        settings.notifications.reset_watch_api_url =
-            "  https://status.example.com/resets  ".into();
+        settings.notifications.reset_watch_api_url = "  https://status.example.com/resets  ".into();
         settings.notifications.bark.enabled = true;
         settings.notifications.bark.push_url = " https://api.day.app/device-key ".into();
 

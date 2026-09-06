@@ -261,6 +261,7 @@ response，相同 response ID 只落库一次。模型优先取终止响应，�
 | `GET /codex-accounts/subscription?id=<id>` | 实时读取指定 Codex 账户订阅与额度 |
 | `POST /codex-accounts/oauth/device` | 为新 Codex 账户创建设备授权请求 |
 | `POST /codex-accounts/oauth/device/poll` | 轮询设备授权，并在成功后加入统一账户池 |
+| `POST /codex-accounts/import` | 通过 JSON 或手动凭据添加 Codex 账户，无需设备登录 |
 | `PUT /codex-accounts` | 更新账户名称或启用状态；禁用会释放直连路由 |
 | `DELETE /codex-accounts` | 删除账户、OAuth、组成员关系和直连路由 |
 | `GET /account-routing` | 读取账户组与调用身份路由 |
@@ -283,3 +284,39 @@ response，相同 response ID 只落库一次。模型优先取终止响应，�
 
 Codex 账户、API Key、下游账户和账户组使用 UUID 格式的稳定 `id`。禁用 Codex 账户会暂停其路由，
 删除账户会同时移除组成员关系和直连路由。
+
+### 凭据导入
+
+`POST /codex-accounts/import` 接受单个账户的 JSON，正文上限为 64 KiB。此接口使用相同的管理会话
+和同源校验。既可直接提交 Token 对象 / `auth.json`，也可使用 `{ "name": "显示名称", "credentials": {...} }`
+包装。示例：
+
+```json
+{
+  "name": "主账户",
+  "credentials": {
+    "tokens": {
+      "access_token": "<access token>",
+      "refresh_token": "<refresh token>",
+      "id_token": "<id token>",
+      "account_id": "<ChatGPT account ID>"
+    }
+  }
+}
+```
+
+- `refresh_token` 必填，用于补齐凭据和后台续期；仅提交 `{ "refresh_token": "<refresh token>" }` 也可导入。
+- `access_token`、`id_token`、`account_id`、`email` 可选。Account ID 和邮箱会从 JWT 中提取；无法识别
+  Account ID 时返回 `400`，需要显式填写 `account_id`。此 ID 是上游账户 ID，不是 Router 生成的记录 UUID。
+- `expires_at` 可选，支持 Unix 秒 / 毫秒时间戳（整数或数字字符串）和 RFC 3339 时间；也支持 `expires_in`
+  正数秒数。提供的到期时间不会延长 JWT 本身的有效期。Access Token 缺失、过期或有效期未知时会先刷新，
+  刷新失败不创建账户。
+- Token 字段既支持蛇形命名，也支持 `accessToken`、`refreshToken`、`idToken`、`accountId`、`expiresAt`
+  和 `expiresIn`。使用 `tokens` 包装时，Token 和到期时间字段应放在该对象内。
+- `name` 可选，留空时使用邮箱或自动生成名称。成功返回 `201 { "account": {...} }`，账户立即加入现有
+  账户池；响应只包含名称、ID、启用状态、OAuth 元数据和订阅元数据，不回传 Token。
+- 重复账户返回 `409 codex_account_conflict`；字段错误返回 `400 invalid_credential_import`，JSON 语法
+  错误返回 `400 invalid_json`。格式检查不代表 Token 已通过上游鉴权，实际有效性以刷新或上游请求结果为准。
+
+凭据与账户目录在一次配置写入中保存。此接口不支持仅含 `OPENAI_API_KEY` 的 API Key 登录文件；
+下游 API Key 仍通过“API Key”页面单独管理。

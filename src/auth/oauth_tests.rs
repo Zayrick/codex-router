@@ -4,6 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use url::form_urlencoded;
 
@@ -141,6 +142,179 @@ fn form(request: &OAuthHttpRequest) -> HashMap<String, String> {
     form_urlencoded::parse(request.body.as_bytes())
         .into_owned()
         .collect()
+}
+
+fn import_jwt(expires_at: i64, account_id: &str) -> String {
+    format!(
+        "e30.{}.signature",
+        URL_SAFE_NO_PAD.encode(
+            json!({
+                "exp": expires_at / 1_000,
+                "email": "import@example.com",
+                "https://api.openai.com/auth": { "chatgpt_account_id": account_id },
+            })
+            .to_string()
+        )
+    )
+}
+
+#[tokio::test]
+async fn credential_import_accepts_auth_json_flat_and_camel_case_without_login() {
+    let http = FakeHttp::default();
+    let clock = FakeClock::new(NOW_MS);
+    let provider = OAuthProvider::new(&http, &clock);
+    let access = import_jwt(NOW_MS + 3_600_000, "import-account");
+    let flat = json!({ "access_token": access, "refresh_token": "refresh-import" });
+    for value in [
+        flat.clone(),
+        json!({ "tokens": flat, "OPENAI_API_KEY": null }),
+        json!({ "name": "  主账户  ", "credentials": { "tokens": flat } }),
+        json!({ "accessToken": access, "refreshToken": "refresh-import" }),
+    ] {
+        let import = CredentialImport::parse(&value).unwrap();
+        let stored = import.resolve(&provider, &clock).await.unwrap();
+        assert_eq!(stored.access_token, access);
+        assert_eq!(stored.account_id.as_deref(), Some("import-account"));
+        assert_eq!(stored.email.as_deref(), Some("import@example.com"));
+        assert_eq!(stored.expires_at, NOW_MS + 3_600_000);
+        if value.get("name").is_some() {
+            assert_eq!(import.name.as_deref(), Some("主账户"));
+        }
+        assert!(import.matches_credentials(&stored));
+    }
+    assert!(http.requests().is_empty());
+}
+
+#[tokio::test]
+async fn credential_import_supports_explicit_expiry_formats_and_metadata() {
+    let http = FakeHttp::default();
+    let clock = FakeClock::new(NOW_MS);
+    let provider = OAuthProvider::new(&http, &clock);
+    for expiry in [
+        json!(1_800_003_600),
+        json!(1_800_003_600_000_i64),
+        json!("1800003600"),
+        json!("2027-01-15T09:00:00Z"),
+    ] {
+        let import = CredentialImport::parse(&json!({
+            "credentials": {
+                "name": "备份账户",
+                "accessToken": "  opaque-access  ",
+                "refreshToken": " refresh-import ",
+                "accountId": "explicit-account",
+                "email": "explicit@example.com",
+                "expiresAt": expiry,
+            }
+        }))
+        .unwrap();
+        assert_eq!(import.name.as_deref(), Some("备份账户"));
+        let stored = import.resolve(&provider, &clock).await.unwrap();
+        assert_eq!(stored.expires_at, NOW_MS + 3_600_000);
+        assert_eq!(stored.access_token, "opaque-access");
+        assert_eq!(stored.email.as_deref(), Some("explicit@example.com"));
+        assert_eq!(stored.account_id.as_deref(), Some("explicit-account"));
+    }
+    assert!(http.requests().is_empty());
+}
+
+#[tokio::test]
+async fn credential_import_refreshes_missing_expired_and_unknown_expiry_tokens() {
+    for access in [
+        Value::Null,
+        json!("opaque-access"),
+        json!(import_jwt(NOW_MS - 1_000, "import-account")),
+    ] {
+        let http = FakeHttp::default();
+        let clock = FakeClock::new(NOW_MS);
+        let provider = OAuthProvider::new(&http, &clock);
+        let fresh_access = import_jwt(NOW_MS + 3_600_000, "import-account");
+        http.push(response(
+            200,
+            json!({ "access_token": fresh_access, "refresh_token": "rotated-refresh" }),
+        ));
+        let import = CredentialImport::parse(&json!({
+            "access_token": access,
+            "refresh_token": "refresh-import",
+        }))
+        .unwrap();
+        let stored = import.resolve(&provider, &clock).await.unwrap();
+        assert_eq!(stored.access_token, fresh_access);
+        assert_eq!(stored.refresh_token, "rotated-refresh");
+        assert_eq!(stored.account_id.as_deref(), Some("import-account"));
+        let requests = http.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(form(&requests[0])["grant_type"], "refresh_token");
+        assert_eq!(form(&requests[0])["refresh_token"], "refresh-import");
+    }
+}
+
+#[tokio::test]
+async fn credential_import_cannot_extend_expired_jwt_and_preserves_refresh_token() {
+    let http = FakeHttp::default();
+    let clock = FakeClock::new(NOW_MS);
+    let provider = OAuthProvider::new(&http, &clock);
+    http.push(response(
+        200,
+        json!({ "access_token": "fresh-access", "expires_in": 3600 }),
+    ));
+    let import = CredentialImport::parse(&json!({
+        "access_token": import_jwt(NOW_MS - 1_000, "import-account"),
+        "refresh_token": "refresh-import",
+        "expires_at": NOW_MS + 86_400_000,
+    }))
+    .unwrap();
+    let stored = import.resolve(&provider, &clock).await.unwrap();
+    assert_eq!(stored.access_token, "fresh-access");
+    assert_eq!(stored.refresh_token, "refresh-import");
+    assert_eq!(stored.account_id.as_deref(), Some("import-account"));
+    assert_eq!(stored.email.as_deref(), Some("import@example.com"));
+    assert_eq!(stored.expires_at, NOW_MS + 3_600_000);
+}
+
+#[test]
+fn credential_import_rejects_invalid_fields_without_echoing_secrets() {
+    for input in [
+        json!([]),
+        json!({ "tokens": null }),
+        json!({ "credentials": [] }),
+        json!({ "OPENAI_API_KEY": "private-secret" }),
+        json!({ "refresh_token": " " }),
+        json!({ "refresh_token": 123 }),
+        json!({ "refresh_token": "private-secret\ninvalid" }),
+        json!({ "refresh_token": "private-secret", "expires_at": "not-a-date" }),
+        json!({ "refresh_token": "private-secret", "expires_in": -1 }),
+        json!({ "refresh_token": "private-secret", "expires_at": 0 }),
+        json!({ "refresh_token": "private-secret", "expires_at": i64::MAX }),
+        json!({ "refresh_token": "private-secret", "account_id": "bad\naccount" }),
+        json!({ "refresh_token": "private-secret", "name": "a".repeat(101) }),
+    ] {
+        let error = CredentialImport::parse(&input)
+            .err()
+            .expect("must reject invalid input");
+        assert_eq!(error.status, 400);
+        assert!(!error.to_string().contains("private-secret"));
+    }
+}
+
+#[tokio::test]
+async fn credential_import_reports_missing_identity_and_safe_refresh_failures() {
+    let http = FakeHttp::default();
+    let clock = FakeClock::new(NOW_MS);
+    let provider = OAuthProvider::new(&http, &clock);
+    let import = CredentialImport::parse(&json!({
+        "access_token": "access-import", "refresh_token": "refresh-import", "expires_in": 3600,
+    }))
+    .unwrap();
+    let error = import.resolve(&provider, &clock).await.unwrap_err();
+    assert_eq!(error.status, 400);
+    assert!(error.message.contains("account_id"));
+    assert!(http.requests().is_empty());
+
+    let import = CredentialImport::parse(&json!({ "refresh_token": "private-refresh" })).unwrap();
+    http.push(response(401, json!({ "error": "private-upstream-error" })));
+    let error = import.resolve(&provider, &clock).await.unwrap_err();
+    assert!(!error.message.contains("private"));
+    assert!(http.is_empty());
 }
 
 #[tokio::test]

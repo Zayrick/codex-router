@@ -54,6 +54,11 @@ export interface CodexAccountUpdate {
 	enabled: boolean;
 }
 
+export interface CodexCredentialImport {
+	name?: string;
+	credentials: Record<string, unknown>;
+}
+
 export interface ClientApiKeyInput {
 	name: string;
 	key: string;
@@ -336,6 +341,14 @@ export class AdminApiClient {
 			jsonRequest("PUT", { id, ...value }),
 		);
 		return result.codexAccounts;
+	}
+
+	async importCodexCredentials(value: CodexCredentialImport): Promise<CodexAccount> {
+		const result = await this.requestJson<{ account: CodexAccount }>(
+			"/codex-accounts/import",
+			jsonRequest("POST", value),
+		);
+		return result.account;
 	}
 
 	async deleteCodexAccount(id: string): Promise<CodexAccount[]> {

@@ -11,7 +11,7 @@ TOML 文件中，下游 Token 用量保存在 SQLite 中，React 管理界面随
 - Gemini Models、generateContent、streamGenerateContent 与 countTokens；
 - `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket 转发；
 - Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
-- 统一 Codex 账户池、设备授权、账户组、下游 API Key 与下游账户管理 API；
+- 统一 Codex 账户池、设备授权、JSON / 手动凭据导入、账户组、下游 API Key 与下游账户管理 API；
 - React 管理页面与公开账户用量查询页，账户组可展示组内全部额度时间轴；
 - 按 API Key、下游账户、Codex 账户/组、模型和 HTTP/WebSocket 统计实际 Token 用量；
 - 后台 OAuth 刷新、用量采集，以及可按事件和账户配置的 reset watch、Bark 与钉钉通知；
@@ -55,7 +55,7 @@ cargo run --release -- --config config.toml
 - `admin.path`：隐藏管理 API 的 URL 段；
 - `admin.secret`：管理登录密钥；
 - `usage_tracking.database_path`：Token 用量 SQLite 文件，默认位于配置文件旁的 `usage.sqlite3`；
-- 登录至少一个 Codex 账户，按需创建账户组，并在创建或编辑调用身份时选择账户或账户组。
+- 登录或导入至少一个 Codex 账户，按需创建账户组，并在创建或编辑调用身份时选择账户或账户组。
 
 ChatGPT 请求发往 `https://chatgpt.com`。默认直接连接；如需通过 SOCKS5 出站，在 `[upstream]`
 中配置 `chatgpt_proxy = "socks5h://127.0.0.1:1080"`。HTTP、SSE 和 WebSocket 会使用同一代理；完整
@@ -72,7 +72,7 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
 
 ## 统一账户调度
 
-设备登录会向 Codex 账户池添加账户。API Key 和下游账户可路由到单个账户或账户组；未分配的
+设备登录和凭据导入会向 Codex 账户池添加账户。API Key 和下游账户可路由到单个账户或账户组；未分配的
 API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
 
 账户组支持三种策略：
@@ -83,6 +83,14 @@ API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
 
 前两种策略支持 session affinity，TTL 接受 `30m`、`1h`、`7d` 等时长或 `unlimited`。禁用账户会
 暂停调度并释放直连路由；上游返回 `429` 时，调度器会隔离该账户，直到额度巡检确认恢复。
+
+## 凭据导入
+
+管理页面的“Codex 账户”中点击“导入凭据”，可上传 / 粘贴单个账户的 `auth.json`，或切换到
+“手动填写”。至少需要 `refresh_token`；`access_token`、`id_token`、`account_id`、邮箱和到期时间
+可选。系统会从 Token 提取账户信息；只提供 Refresh Token，或 Access Token 缺失、过期、有效期
+未知时，会先向现有 OAuth 上游刷新。无法识别 Account ID 时需要补填。导入成功后无需再进行设备
+登录，后台会按现有机制自动续期。具体 JSON 格式见 [凭据导入 API](docs/api.md#凭据导入)。
 
 ## 配置与持久状态
 

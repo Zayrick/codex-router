@@ -139,13 +139,21 @@ pub fn credentials_from_token_response(
         .map(str::to_owned)
         .or_else(|| previous.and_then(|value| value.id_token.clone()));
     let claims = id_token.as_deref().and_then(decode_jwt);
+    let access_claims = decode_jwt(access_token);
     let account_id = nonempty_string(object.get("account_id"))
         .map(str::to_owned)
         .or_else(|| account_id_from_claims(claims.as_ref()).map(str::to_owned))
+        .or_else(|| account_id_from_claims(access_claims.as_ref()).map(str::to_owned))
         .or_else(|| previous.and_then(|value| value.account_id.clone()));
     let email = claims
         .as_ref()
         .and_then(|claims| nonempty_string(claims.get("email")))
+        .or_else(|| {
+            access_claims
+                .as_ref()
+                .and_then(|claims| nonempty_string(claims.get("email")))
+        })
+        .or_else(|| nonempty_string(object.get("email")))
         .map(str::to_owned)
         .or_else(|| previous.and_then(|value| value.email.clone()));
     let expires_at = object
@@ -200,7 +208,7 @@ fn decode_jwt(token: &str) -> Option<serde_json::Map<String, Value>> {
         .cloned()
 }
 
-fn jwt_expiry(token: &str) -> Option<i64> {
+pub(super) fn jwt_expiry(token: &str) -> Option<i64> {
     let exp = decode_jwt(token)?.get("exp")?.as_f64()?;
     (exp.is_finite() && exp > 0.0).then_some((exp * 1_000.0) as i64)
 }
@@ -212,6 +220,10 @@ fn account_id_from_claims(claims: Option<&serde_json::Map<String, Value>>) -> Op
         .get("chatgpt_account_id")?
         .as_str()
         .filter(|value| !value.is_empty())
+}
+
+pub(super) fn jwt_account_id(token: &str) -> Option<String> {
+    account_id_from_claims(decode_jwt(token).as_ref()).map(str::to_owned)
 }
 
 fn nonempty_string(value: Option<&Value>) -> Option<&str> {
