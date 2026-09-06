@@ -110,6 +110,9 @@ API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
 
 ## 部署注意
 
+从 GitHub Actions 下载二进制后，可按 [Ubuntu 部署与更新](docs/deployment-ubuntu.md) 安装、
+创建 systemd 服务、设置开机启动，以及更新和回滚版本。
+
 - `upstream.chatgpt_proxy` 如包含认证信息，应与 OAuth 和 API Key 一样作为密钥保护；SOCKS5
   连接上的 ChatGPT 应用流量仍使用端到端 TLS；
 - `server.public_origin` 必须是客户端看到的精确 origin，并用于管理 API 同源校验；
