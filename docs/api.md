@@ -70,10 +70,11 @@ Query、流式正文和端到端 header 转发到固定的 `https://chatgpt.com`
 WebSocket 响应。配置 `upstream.chatgpt_proxy` 时这些连接通过 SOCKS5 建立。该路径族不执行下游
 API Key 鉴权或协议转换。
 
-`/backend-api` 请求中的 `ChatGPT-Account-ID` 精确匹配一条已启用下游账户记录时，服务查询该
-调用身份的账户路由。分配到单个账户或账户组时，会使用调度得到的有效 Codex OAuth 替换来访
-`Authorization` 和 `ChatGPT-Account-ID`；尚未分配、记录已停用或未匹配时按原认证信息透明转发。
-已配置路由但目标没有可用账户时返回本地错误。
+仅路径以 `/backend-api/codex/` 开头，且请求中的 `ChatGPT-Account-ID` 精确匹配一条已启用下游
+账户记录时，服务查询该调用身份的账户路由。分配到单个账户或账户组时，会使用调度得到的有效
+Codex OAuth 替换原请求中已有的 `Authorization` 和 `ChatGPT-Account-ID`；尚未分配、记录已停用
+或未匹配时按原认证信息透明转发。已配置路由但目标没有可用账户时返回本地错误。
+其他 `/backend-api` 路径（包括不带尾部斜杠的 `/backend-api/codex`）保留原始凭据，不查询账户路由。
 
 账户组的 `strategy` 支持以下值：
 
@@ -195,8 +196,8 @@ URL 或自定义子协议。
 - 只有已确认的公开 API 响应添加 CORS header；管理响应不添加 CORS；
 - 公开协议 API 和管理响应使用 `Cache-Control: no-store`；透明转发保留上游响应
   header；
-- 公开协议 API 过滤客户端凭据、Cookie 和账户 ID；透明转发仅在 `/backend-api` 路径族按许可
-  配置处理认证 header，其他路径保持原始凭据；
+- 公开协议 API 过滤客户端凭据、Cookie 和账户 ID；透明转发仅对以 `/backend-api/codex/` 开头的
+  路径按许可配置处理认证 header，其他路径保持原始凭据；
 - 透明转发得到的最终响应在 `Content-Type` 为 `text/html` 或 `application/xhtml+xml` 时保留状态与
   无关 header，但移除正文长度、编码和正文；本地状态页与管理页不适用这条规则。其他媒体类型
   保持原始正文。

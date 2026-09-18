@@ -11,7 +11,7 @@ use crate::{
     core::{ApiError, AppResult},
     upstream::{
         codex::{CodexCredentials, resolve_chatgpt_url},
-        relay::{ACCOUNT_ID_HEADER, is_backend_api_path, relay_request_headers},
+        relay::{ACCOUNT_ID_HEADER, relay_request_headers},
     },
 };
 
@@ -48,7 +48,7 @@ async fn dispatch_relay(
     upgrade: Option<WebSocketUpgrade>,
     state: &AppState,
 ) -> AppResult<Response> {
-    let replacement = if is_backend_api_path(client_url.path()) {
+    let replacement = if client_url.path().starts_with("/backend-api/codex/") {
         let incoming_account_id = request
             .headers()
             .get(ACCOUNT_ID_HEADER)
