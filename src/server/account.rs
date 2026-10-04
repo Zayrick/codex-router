@@ -207,6 +207,7 @@ async fn account_dashboard(
             UsageFilters::new(Some(identity), None),
             None,
             &config.usage_tracking.model_prices,
+            config.usage_tracking.fast_cost_multiplier(),
         )
         .await
         .map_err(|error| {

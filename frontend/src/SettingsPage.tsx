@@ -2,6 +2,7 @@ import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
 	BellRingIcon,
 	CheckCircle2Icon,
+	CoinsIcon,
 	EyeIcon,
 	EyeOffIcon,
 	GaugeIcon,
@@ -12,6 +13,7 @@ import {
 	SmartphoneIcon,
 	TriangleAlertIcon,
 	UsersIcon,
+	ZapIcon,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -37,6 +39,7 @@ import {
 	InputGroupAddon,
 	InputGroupButton,
 	InputGroupInput,
+	InputGroupText,
 } from "@/components/ui/input-group";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
@@ -74,6 +77,9 @@ export default function SettingsPage({
 }: SettingsPageProps) {
 	const [draft, setDraft] = useState<AdminSettings | null>(settings ? cloneSettings(settings) : null);
 	const [secretVisible, setSecretVisible] = useState(false);
+	const [fastMultiplierText, setFastMultiplierText] = useState(
+		settings ? String(settings.usage.fastCostMultiplier) : "",
+	);
 
 	const validationError = useMemo(() => draft ? validateSettings(draft) : null, [draft]);
 	const changed = Boolean(draft && settings && JSON.stringify(draft) !== JSON.stringify(settings));
@@ -135,6 +141,37 @@ export default function SettingsPage({
 							disabled={saving}
 							onCheckedChange={(showQuota) => setDraft({ ...draft, publicAccount: { showQuota } })}
 						/>
+					</Field>
+				</CardContent>
+			</Card>
+
+			<Card>
+				<CardHeader>
+					<CardTitle className="settings-card-title"><CoinsIcon />计费</CardTitle>
+				</CardHeader>
+				<CardContent>
+					<Field className="settings-switch-row" orientation="horizontal">
+						<FieldContent>
+							<FieldLabel htmlFor="fast-cost-multiplier"><ZapIcon />Fast 计费倍率</FieldLabel>
+							<FieldDescription>Fast 模式请求按模型价格乘以该倍率计算成本，对历史用量同样生效。</FieldDescription>
+						</FieldContent>
+						<InputGroup className="w-28 shrink-0">
+							<InputGroupInput
+								disabled={saving}
+								id="fast-cost-multiplier"
+								inputMode="decimal"
+								max={MAX_FAST_COST_MULTIPLIER}
+								min={0}
+								onChange={(event) => {
+									setFastMultiplierText(event.target.value);
+									setDraft({ ...draft, usage: { fastCostMultiplier: parseMultiplier(event.target.value) } });
+								}}
+								step={0.1}
+								type="number"
+								value={fastMultiplierText}
+							/>
+							<InputGroupAddon align="inline-end"><InputGroupText>×</InputGroupText></InputGroupAddon>
+						</InputGroup>
 					</Field>
 				</CardContent>
 			</Card>
@@ -324,7 +361,17 @@ function NotificationEvent({
 	);
 }
 
+const MAX_FAST_COST_MULTIPLIER = 100;
+
+function parseMultiplier(value: string): number {
+	return value.trim() ? Number(value) : Number.NaN;
+}
+
 function validateSettings(settings: AdminSettings): string | null {
+	const multiplier = settings.usage.fastCostMultiplier;
+	if (!Number.isFinite(multiplier) || multiplier <= 0 || multiplier > MAX_FAST_COST_MULTIPLIER) {
+		return `Fast 计费倍率必须大于 0 且不超过 ${MAX_FAST_COST_MULTIPLIER}。`;
+	}
 	if (!isHttpsUrl(settings.notifications.resetWatchApiUrl)) {
 		return "重置预测 API 地址必须是有效的 HTTPS 链接。";
 	}
@@ -379,6 +426,7 @@ function isHttpsUrl(value: string): boolean {
 function cloneSettings(settings: AdminSettings): AdminSettings {
 	return {
 		publicAccount: { ...settings.publicAccount },
+		usage: { ...settings.usage },
 		notifications: {
 			...settings.notifications,
 			accountIds: [...settings.notifications.accountIds],

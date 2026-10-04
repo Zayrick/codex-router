@@ -118,6 +118,10 @@ export interface AdminSettings {
 	publicAccount: {
 		showQuota: boolean;
 	};
+	usage: {
+		/** Cost multiplier for Fast (priority tier) requests. */
+		fastCostMultiplier: number;
+	};
 	notifications: {
 		resetWatchEnabled: boolean;
 		quotaResetEnabled: boolean;

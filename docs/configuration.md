@@ -40,7 +40,12 @@ Token 用量查询仍然可用。
 ```toml
 [usage_tracking]
 database_path = "usage.sqlite3"
+fast_cost_multiplier = 2.0
 ```
+
+`fast_cost_multiplier` 是 Fast 模式（上游请求 `service_tier = "priority"`）的计费倍率，省略时为 2，
+可在管理页“设置”中修改，取值范围为大于 0 且不超过 100。它在模型价格基础上叠加，仅影响用量面板的
+成本展示，修改后对历史事件同样生效。
 
 相对路径以配置文件所在目录为基准；绝对路径原样使用。服务启动时会自动创建父目录和数据库，启用
 WAL 模式，并在 Unix 上将数据库、`-wal` 和 `-shm` 文件权限设置为 `0600`。修改路径后需要重启。

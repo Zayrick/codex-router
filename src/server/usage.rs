@@ -67,6 +67,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_response_id
 /// Recorded when the request was observed but did not set the field explicitly.
 const DEFAULT_REQUEST_SETTING: &str = "default";
 const PRIORITY_SERVICE_TIER: &str = "priority";
+/// Groups cost queries by whether the request used Fast mode.
+const FAST_SQL: &str = "(service_tier = 'priority')";
+pub const DEFAULT_FAST_COST_MULTIPLIER: f64 = 2.0;
 
 const ROUTING_INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_usage_events_codex_account
@@ -387,7 +390,8 @@ impl UsageStore {
         range: UsageRange,
         filters: UsageFilters,
     ) -> Result<UsageDashboard> {
-        self.dashboard_with_options(range, filters, None, &[]).await
+        self.dashboard_with_options(range, filters, None, &[], DEFAULT_FAST_COST_MULTIPLIER)
+            .await
     }
 
     pub async fn dashboard_with_options(
@@ -396,12 +400,13 @@ impl UsageStore {
         filters: UsageFilters,
         bounds: Option<UsageBounds>,
         prices: &[ModelPrice],
+        fast_cost_multiplier: f64,
     ) -> Result<UsageDashboard> {
         let connection = self.connection.clone();
-        let prices = prices.to_vec();
+        let costs = CostIndex::new(prices, fast_cost_multiplier);
         tokio::task::spawn_blocking(move || {
             let connection = connection.lock().expect("usage database lock poisoned");
-            query_dashboard(&connection, range, &filters, bounds, &prices)
+            query_dashboard(&connection, range, &filters, bounds, &costs)
         })
         .await
         .context("usage database query task failed")?
@@ -882,7 +887,8 @@ fn parse_usage(root: &Map<String, Value>, fallback_model: &str) -> Option<Parsed
         response_id: string(response, "id").unwrap_or_default().trim().into(),
         response_service_tier: string(response, "service_tier")
             .or_else(|| string(root, "service_tier"))
-            .map(normalize_setting)
+            .filter(|tier| !tier.trim().is_empty())
+            .map(normalize_service_tier)
             .unwrap_or_default(),
         input_tokens,
         cached_input_tokens,
@@ -1074,7 +1080,7 @@ fn query_dashboard(
     range: UsageRange,
     filters: &UsageFilters,
     bounds: Option<UsageBounds>,
-    prices: &[ModelPrice],
+    costs: &CostIndex,
 ) -> Result<UsageDashboard> {
     let now = current_time_ms();
     let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
@@ -1099,13 +1105,13 @@ fn query_dashboard(
             .unwrap_or(now);
         (start_at, now)
     };
-    let prices = price_index(prices);
     let mut totals = query_totals(connection, start_at, end_at, filters)?;
-    totals.cost_usd = query_total_cost(connection, start_at, end_at, filters, &prices)?;
-    let series = query_series(connection, range, start_at, end_at, filters, &prices)?;
+    let model_costs = query_model_costs(connection, start_at, end_at, filters, costs)?;
+    totals.cost_usd = model_costs.values().sum();
+    let series = query_series(connection, range, start_at, end_at, filters, costs)?;
     let mut models = query_models(connection, start_at, end_at, filters)?;
     for row in &mut models {
-        row.totals.cost_usd = cost_for_model(&row.model, &row.totals, &prices);
+        row.totals.cost_usd = model_costs.get(&row.model).copied().unwrap_or_default();
     }
     let mut identities = query_identities(connection, start_at, end_at, filters)?;
     apply_identity_costs(
@@ -1113,7 +1119,7 @@ fn query_dashboard(
         start_at,
         end_at,
         filters,
-        &prices,
+        costs,
         &mut identities,
     )?;
     let reasoning_efforts = query_dimension(
@@ -1122,7 +1128,7 @@ fn query_dashboard(
         start_at,
         end_at,
         filters,
-        &prices,
+        costs,
     )?;
     let service_tiers = query_dimension(
         connection,
@@ -1130,13 +1136,13 @@ fn query_dashboard(
         start_at,
         end_at,
         filters,
-        &prices,
+        costs,
     )?;
     let mut recent_events = query_recent_events(connection, start_at, end_at, filters)?;
     for event in &mut recent_events {
-        event.cost_usd = event_cost(event, &prices);
+        event.cost_usd = event_cost(event, costs);
     }
-    let unpriced_models = query_unpriced_models(connection, start_at, end_at, filters, &prices)?;
+    let unpriced_models = query_unpriced_models(connection, start_at, end_at, filters, costs)?;
     Ok(UsageDashboard {
         range: range.label().into(),
         start_at,
@@ -1322,15 +1328,15 @@ fn query_dimension(
     start_at: i64,
     end_at: i64,
     filters: &UsageFilters,
-    prices: &BTreeMap<String, ModelPrice>,
+    costs: &CostIndex,
 ) -> Result<Vec<UsageDimensionRow>> {
     let column = dimension.column();
     let usage_filters = usage_filters_sql(3, 4, 5, 6);
     let sql = format!(
-        "SELECT {column}, model, {TOTAL_COLUMNS} FROM usage_events \
+        "SELECT {column}, model, {FAST_SQL}, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
          AND {usage_filters} \
-         GROUP BY {column}, model"
+         GROUP BY {column}, model, 3"
     );
     let mut statement = connection.prepare(&sql)?;
     let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
@@ -1347,16 +1353,17 @@ fn query_dimension(
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                totals_from_row_at(row, 2)?,
+                row.get::<_, bool>(2)?,
+                totals_from_row_at(row, 3)?,
             ))
         },
     )?;
     let mut grouped = BTreeMap::<String, UsageTotals>::new();
     for row in rows {
-        let (value, model, totals) = row?;
+        let (value, model, fast, totals) = row?;
         let target = grouped.entry(value).or_default();
         add_totals(target, &totals);
-        target.cost_usd += cost_for_model(&model, &totals, prices);
+        target.cost_usd += costs.cost(&model, fast, &totals);
     }
     let mut rows = grouped
         .into_iter()
@@ -1378,7 +1385,7 @@ fn query_series(
     start_at: i64,
     end_at: i64,
     filters: &UsageFilters,
-    prices: &BTreeMap<String, ModelPrice>,
+    costs: &CostIndex,
 ) -> Result<Vec<UsageSeriesPoint>> {
     let bucket_ms = range.bucket_ms();
     let fixed_activity_grid = range != UsageRange::All;
@@ -1401,13 +1408,13 @@ fn query_series(
     let usage_filters = usage_filters_sql(6, 7, 8, 9);
     let sql = format!(
         r#"
-        SELECT (((recorded_at_ms - ?1) * ?2) / ?3), model, {TOTAL_COLUMNS},
+        SELECT (((recorded_at_ms - ?1) * ?2) / ?3), model, {FAST_SQL}, {TOTAL_COLUMNS},
                COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END), 0)
         FROM usage_events
         WHERE recorded_at_ms >= ?4 AND recorded_at_ms < ?5
           AND {usage_filters}
-        GROUP BY 1, model ORDER BY 1
+        GROUP BY 1, model, 3 ORDER BY 1
         "#,
     );
     let mut statement = connection.prepare(&sql)?;
@@ -1428,16 +1435,17 @@ fn query_series(
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                totals_from_row_at(row, 2)?,
-                row.get::<_, i64>(9)?,
+                row.get::<_, bool>(2)?,
+                totals_from_row_at(row, 3)?,
                 row.get::<_, i64>(10)?,
+                row.get::<_, i64>(11)?,
             ))
         },
     )?;
     let mut populated = BTreeMap::<i64, SeriesAccumulator>::new();
     for row in rows {
-        let (index, model, totals, successful_requests, failed_requests) = row?;
-        let cost = cost_for_model(&model, &totals, prices);
+        let (index, model, fast, totals, successful_requests, failed_requests) = row?;
+        let cost = costs.cost(&model, fast, &totals);
         let point = populated.entry(index).or_default();
         add_totals(&mut point.totals, &totals);
         point.totals.cost_usd += cost;
@@ -1497,32 +1505,75 @@ fn add_totals(target: &mut UsageTotals, source: &UsageTotals) {
     target.total_tokens += source.total_tokens;
 }
 
-fn cost_for_model(model: &str, totals: &UsageTotals, prices: &BTreeMap<String, ModelPrice>) -> f64 {
-    let Some(price) = prices.get(&model.trim().to_ascii_lowercase()) else {
-        return 0.0;
-    };
-    calculate_cost(
-        totals.input_tokens,
-        totals.output_tokens,
-        totals.cached_input_tokens,
-        totals.cache_creation_input_tokens,
-        price,
-    )
+/// Model prices plus the surcharge applied to Fast (priority tier) requests.
+struct CostIndex {
+    prices: BTreeMap<String, ModelPrice>,
+    fast_multiplier: f64,
 }
 
-fn query_total_cost(
+impl CostIndex {
+    fn new(prices: &[ModelPrice], fast_multiplier: f64) -> Self {
+        Self {
+            prices: price_index(prices),
+            fast_multiplier,
+        }
+    }
+
+    fn is_priced(&self, model: &str) -> bool {
+        self.prices.contains_key(&model.trim().to_ascii_lowercase())
+    }
+
+    fn cost(&self, model: &str, fast: bool, totals: &UsageTotals) -> f64 {
+        self.token_cost(
+            model,
+            fast,
+            totals.input_tokens,
+            totals.output_tokens,
+            totals.cached_input_tokens,
+            totals.cache_creation_input_tokens,
+        )
+    }
+
+    fn token_cost(
+        &self,
+        model: &str,
+        fast: bool,
+        input_tokens: i64,
+        output_tokens: i64,
+        cached_input_tokens: i64,
+        cache_creation_input_tokens: i64,
+    ) -> f64 {
+        let Some(price) = self.prices.get(&model.trim().to_ascii_lowercase()) else {
+            return 0.0;
+        };
+        let cost = calculate_cost(
+            input_tokens,
+            output_tokens,
+            cached_input_tokens,
+            cache_creation_input_tokens,
+            price,
+        );
+        if fast {
+            cost * self.fast_multiplier
+        } else {
+            cost
+        }
+    }
+}
+
+fn query_model_costs(
     connection: &Connection,
     start_at: i64,
     end_at: i64,
     filters: &UsageFilters,
-    prices: &BTreeMap<String, ModelPrice>,
-) -> Result<f64> {
+    costs: &CostIndex,
+) -> Result<BTreeMap<String, f64>> {
     let usage_filters = usage_filters_sql(3, 4, 5, 6);
     let sql = format!(
-        "SELECT model, {TOTAL_COLUMNS} FROM usage_events \
+        "SELECT model, {FAST_SQL}, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
          AND {usage_filters} \
-         GROUP BY model"
+         GROUP BY model, 2"
     );
     let mut statement = connection.prepare(&sql)?;
     let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
@@ -1535,14 +1586,21 @@ fn query_total_cost(
             upstream_type,
             upstream_id
         ],
-        |row| Ok((row.get::<_, String>(0)?, totals_from_row_at(row, 1)?)),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, bool>(1)?,
+                totals_from_row_at(row, 2)?,
+            ))
+        },
     )?;
-    let mut cost = 0.0;
+    let mut model_costs = BTreeMap::new();
     for row in rows {
-        let (model, totals) = row?;
-        cost += cost_for_model(&model, &totals, prices);
+        let (model, fast, totals) = row?;
+        let cost = costs.cost(&model, fast, &totals);
+        *model_costs.entry(model).or_default() += cost;
     }
-    Ok(cost)
+    Ok(model_costs)
 }
 
 fn apply_identity_costs(
@@ -1550,15 +1608,15 @@ fn apply_identity_costs(
     start_at: i64,
     end_at: i64,
     filters: &UsageFilters,
-    prices: &BTreeMap<String, ModelPrice>,
+    costs: &CostIndex,
     identities: &mut [UsageIdentityRow],
 ) -> Result<()> {
     let usage_filters = usage_filters_sql(3, 4, 5, 6);
     let sql = format!(
-        "SELECT identity_type, identity_id, model, {TOTAL_COLUMNS} FROM usage_events \
+        "SELECT identity_type, identity_id, model, {FAST_SQL}, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
          AND {usage_filters} \
-         GROUP BY identity_type, identity_id, model"
+         GROUP BY identity_type, identity_id, model, 4"
     );
     let mut statement = connection.prepare(&sql)?;
     let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
@@ -1576,17 +1634,18 @@ fn apply_identity_costs(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                totals_from_row_at(row, 3)?,
+                row.get::<_, bool>(3)?,
+                totals_from_row_at(row, 4)?,
             ))
         },
     )?;
-    let mut costs = BTreeMap::<(String, String), f64>::new();
+    let mut identity_costs = BTreeMap::<(String, String), f64>::new();
     for row in rows {
-        let (kind, id, model, totals) = row?;
-        *costs.entry((kind, id)).or_default() += cost_for_model(&model, &totals, prices);
+        let (kind, id, model, fast, totals) = row?;
+        *identity_costs.entry((kind, id)).or_default() += costs.cost(&model, fast, &totals);
     }
     for row in identities {
-        row.totals.cost_usd = costs
+        row.totals.cost_usd = identity_costs
             .get(&(row.identity_type.clone(), row.identity_id.clone()))
             .copied()
             .unwrap_or_default();
@@ -1599,7 +1658,7 @@ fn query_unpriced_models(
     start_at: i64,
     end_at: i64,
     filters: &UsageFilters,
-    prices: &BTreeMap<String, ModelPrice>,
+    costs: &CostIndex,
 ) -> Result<Vec<String>> {
     let sql = format!(
         "SELECT DISTINCT model FROM usage_events \
@@ -1623,20 +1682,18 @@ fn query_unpriced_models(
     Ok(rows
         .collect::<rusqlite::Result<Vec<_>>>()?
         .into_iter()
-        .filter(|model| !prices.contains_key(&model.trim().to_ascii_lowercase()))
+        .filter(|model| !costs.is_priced(model))
         .collect())
 }
 
-fn event_cost(event: &UsageEventRow, prices: &BTreeMap<String, ModelPrice>) -> f64 {
-    let Some(price) = prices.get(&event.model.trim().to_ascii_lowercase()) else {
-        return 0.0;
-    };
-    calculate_cost(
+fn event_cost(event: &UsageEventRow, costs: &CostIndex) -> f64 {
+    costs.token_cost(
+        &event.model,
+        event.service_tier == PRIORITY_SERVICE_TIER,
         event.input_tokens,
         event.output_tokens,
         event.cached_input_tokens,
         event.cache_creation_input_tokens,
-        price,
     )
 }
 
@@ -1849,9 +1906,11 @@ mod tests {
         let (store, path) = temporary_store();
         let end_at = current_time_ms();
         let start_at = end_at - WEEK_MS;
-        for (recorded_at_ms, response_id) in
-            [(start_at, "resp_cycle_start"), (end_at, "resp_next_cycle")]
-        {
+        for (recorded_at_ms, response_id, service_tier) in [
+            (start_at, "resp_cycle_start", "default"),
+            (start_at + 1, "resp_cycle_fast", "priority"),
+            (end_at, "resp_next_cycle", "default"),
+        ] {
             store
                 .insert(UsageEvent {
                     recorded_at_ms,
@@ -1868,7 +1927,7 @@ mod tests {
                     status: "completed".into(),
                     response_id: response_id.into(),
                     reasoning_effort: String::new(),
-                    service_tier: String::new(),
+                    service_tier: service_tier.into(),
                     response_service_tier: String::new(),
                     input_tokens: 1_000_000,
                     cached_input_tokens: 400_000,
@@ -1895,6 +1954,7 @@ mod tests {
                 UsageFilters::default(),
                 Some(bounds),
                 &[price],
+                3.0,
             )
             .await
             .unwrap();
@@ -1902,10 +1962,26 @@ mod tests {
         assert_eq!(dashboard.start_at, start_at);
         assert_eq!(dashboard.end_at, end_at);
         assert_eq!(dashboard.series.len(), 7 * 24);
-        assert_eq!(dashboard.totals.requests, 1);
-        assert_eq!(dashboard.recent_events[0].recorded_at, start_at);
-        assert!((dashboard.totals.cost_usd - 4.7).abs() < 0.000_001);
-        assert!((dashboard.models[0].totals.cost_usd - 4.7).abs() < 0.000_001);
+        assert_eq!(dashboard.totals.requests, 2);
+        assert_eq!(dashboard.recent_events[1].recorded_at, start_at);
+        // 4.7 for the standard request plus 3x for the Fast one.
+        assert!((dashboard.totals.cost_usd - 18.8).abs() < 0.000_001);
+        assert!((dashboard.models[0].totals.cost_usd - 18.8).abs() < 0.000_001);
+        assert!((dashboard.recent_events[0].cost_usd - 14.1).abs() < 0.000_001);
+        assert!((dashboard.recent_events[1].cost_usd - 4.7).abs() < 0.000_001);
+        let fast_tier = dashboard
+            .service_tiers
+            .iter()
+            .find(|row| row.value == "priority")
+            .unwrap();
+        assert!((fast_tier.totals.cost_usd - 14.1).abs() < 0.000_001);
+        let series_cost = dashboard
+            .series
+            .iter()
+            .map(|point| point.cost_usd)
+            .sum::<f64>();
+        assert!((series_cost - 18.8).abs() < 0.000_001);
+        assert!((dashboard.identities[0].totals.cost_usd - 18.8).abs() < 0.000_001);
         assert!(dashboard.unpriced_models.is_empty());
 
         assert!(UsageBounds::cycle(start_at, end_at - 1, end_at).is_none());
@@ -2138,7 +2214,7 @@ mod tests {
         );
         tracker.observe_request_text(r#"{"type":"response.create","model":"gpt-5.5"}"#);
         tracker.observe_response_text(
-            r#"{"type":"response.completed","response":{"id":"resp_standard","service_tier":"default","usage":{"input_tokens":20,"output_tokens":7,"total_tokens":27}}}"#,
+            r#"{"type":"response.completed","response":{"id":"resp_standard","service_tier":"auto","usage":{"input_tokens":20,"output_tokens":7,"total_tokens":27}}}"#,
         );
 
         let dashboard = wait_for_requests(&store, 3).await;
@@ -2162,6 +2238,13 @@ mod tests {
         assert_eq!(fast.reasoning_effort, "high");
         assert_eq!(fast.service_tier, "priority");
         assert_eq!(fast.response_service_tier, "priority");
+        let standard = dashboard
+            .recent_events
+            .iter()
+            .find(|event| event.total_tokens == 27)
+            .unwrap();
+        assert_eq!(standard.service_tier, "default");
+        assert_eq!(standard.response_service_tier, "default");
 
         drop(tracker);
         drop(store);

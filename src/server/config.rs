@@ -27,7 +27,10 @@ use crate::{
 
 use super::chatgpt_proxy::ChatgptProxy;
 use super::pricing::{ModelPrice, normalized_model_prices, validate_model_prices};
+use super::usage::DEFAULT_FAST_COST_MULTIPLIER;
 use super::usage_store::CODEX_ACCOUNT_USAGE_KEY_PREFIX;
+
+const MAX_FAST_COST_MULTIPLIER: f64 = 100.0;
 
 const API_KEYS_KEY: &str = "API_KEYS";
 
@@ -53,6 +56,16 @@ pub struct UsageTrackingConfig {
     pub database_path: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_prices: Vec<ModelPrice>,
+    /// Cost multiplier for Fast (priority tier) requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_cost_multiplier: Option<f64>,
+}
+
+impl UsageTrackingConfig {
+    pub fn fast_cost_multiplier(&self) -> f64 {
+        self.fast_cost_multiplier
+            .unwrap_or(DEFAULT_FAST_COST_MULTIPLIER)
+    }
 }
 
 impl Default for UsageTrackingConfig {
@@ -60,6 +73,7 @@ impl Default for UsageTrackingConfig {
         Self {
             database_path: default_usage_database_path(),
             model_prices: Vec::new(),
+            fast_cost_multiplier: None,
         }
     }
 }
@@ -176,7 +190,14 @@ impl Default for PublicAccountConfig {
 #[serde(rename_all = "camelCase")]
 pub struct AdminSettings {
     pub public_account: PublicAccountSettings,
+    pub usage: UsageSettings,
     pub notifications: AdminNotificationSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSettings {
+    pub fast_cost_multiplier: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +253,9 @@ impl From<&AppConfig> for AdminSettings {
         Self {
             public_account: PublicAccountSettings {
                 show_quota: config.public_account.show_quota,
+            },
+            usage: UsageSettings {
+                fast_cost_multiplier: config.usage_tracking.fast_cost_multiplier(),
             },
             notifications: AdminNotificationSettings {
                 reset_watch_enabled: config.notifications.reset_watch_is_enabled(),
@@ -375,6 +399,7 @@ impl ConfigStore {
         self.update(move |config| {
             validate_admin_settings(&stored, config)?;
             config.public_account.show_quota = stored.public_account.show_quota;
+            config.usage_tracking.fast_cost_multiplier = Some(stored.usage.fast_cost_multiplier);
             config.upstream.codex_resets_url = stored.notifications.reset_watch_api_url.clone();
             config.notifications.reset_watch_enabled =
                 Some(stored.notifications.reset_watch_enabled);
@@ -464,6 +489,10 @@ fn normalized_admin_settings(mut settings: AdminSettings) -> AdminSettings {
 }
 
 fn validate_admin_settings(settings: &AdminSettings, config: &AppConfig) -> AppResult<()> {
+    if !valid_fast_cost_multiplier(settings.usage.fast_cost_multiplier) {
+        return Err(invalid_admin_settings());
+    }
+
     let reset_url = Url::parse(&settings.notifications.reset_watch_api_url)
         .map_err(|_| invalid_admin_settings())?;
     if reset_url.scheme() != "https" || reset_url.host_str().is_none() {
@@ -769,6 +798,10 @@ fn add_legacy_route(
     });
 }
 
+fn valid_fast_cost_multiplier(value: f64) -> bool {
+    value.is_finite() && value > 0.0 && value <= MAX_FAST_COST_MULTIPLIER
+}
+
 fn validate_config(config: &AppConfig) -> Result<()> {
     config
         .server
@@ -789,6 +822,13 @@ fn validate_config(config: &AppConfig) -> Result<()> {
     }
     validate_model_prices(&config.usage_tracking.model_prices)
         .context("usage_tracking.model_prices is invalid")?;
+    if !config
+        .usage_tracking
+        .fast_cost_multiplier
+        .is_none_or(valid_fast_cost_multiplier)
+    {
+        bail!("usage_tracking.fast_cost_multiplier must be greater than 0 and at most 100");
+    }
     if !valid_admin_path(&config.admin.path) {
         bail!("admin.path must be 1-128 URL-safe characters");
     }

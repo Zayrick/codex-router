@@ -190,7 +190,13 @@ async fn dispatch(
             };
             let dashboard = state
                 .usage
-                .dashboard_with_options(range, filters, bounds, &config.usage_tracking.model_prices)
+                .dashboard_with_options(
+                    range,
+                    filters,
+                    bounds,
+                    &config.usage_tracking.model_prices,
+                    config.usage_tracking.fast_cost_multiplier(),
+                )
                 .await
                 .map_err(|error| {
                     tracing::warn!(event = "usage_dashboard", status = "failed", error = %error);

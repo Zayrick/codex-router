@@ -10,27 +10,17 @@ export function formatCost(value: number): string {
 	return normalized > 0 && normalized < 0.01 ? `$${normalized.toFixed(4)}` : COST_FORMAT.format(normalized);
 }
 
-const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
-	"": "未记录",
-	default: "默认",
-	none: "关闭",
-	minimal: "极低",
-	low: "低",
-	medium: "中",
-	high: "高",
-	xhigh: "超高",
-	max: "最高",
-};
-
 const SERVICE_TIER_LABELS: Readonly<Record<string, string>> = {
 	"": "未记录",
+	auto: "标准",
 	default: "标准",
 	priority: "Fast",
 	flex: "Flex",
 };
 
+/** Effort values are shown as sent upstream; only missing history gets a label. */
 export function reasoningEffortLabel(value: string): string {
-	return REASONING_EFFORT_LABELS[value] ?? value;
+	return value || "未记录";
 }
 
 export function serviceTierLabel(value: string): string {

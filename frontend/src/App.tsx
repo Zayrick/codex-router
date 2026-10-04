@@ -1596,7 +1596,8 @@ function usageIdentityLabel(value: "api_key" | "auth_proxy"): string {
 function requestSpeedLabel(event: UsageEvent): string {
 	const requested = serviceTierLabel(event.serviceTier);
 	const served = event.responseServiceTier;
-	return served && served !== event.serviceTier ? `${requested} · 实际 ${serviceTierLabel(served)}` : requested;
+	const actual = served ? serviceTierLabel(served) : requested;
+	return actual !== requested ? `${requested} · 实际 ${actual}` : requested;
 }
 
 function statusLabel(value: "completed" | "incomplete" | "failed"): string {
