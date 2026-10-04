@@ -109,6 +109,7 @@ import {
 	type SubscriptionInfo,
 	type UsageBounds,
 	type UsageDashboard,
+	type UsageEvent,
 	type UsageIdentityFilter,
 	type UsageIdentityType,
 	type UsageRange,
@@ -124,7 +125,7 @@ import {
 	UsageBreakdownDonuts,
 	UsageLineCharts,
 } from "./UsageVisuals";
-import { formatCost } from "./usage-format";
+import { formatCost, reasoningEffortLabel, serviceTierLabel } from "./usage-format";
 import "./App.css";
 import "./UnifiedRouting.css";
 
@@ -1120,14 +1121,15 @@ function UsagePanel({
 					<Card className="min-w-0 p-3" size="sm">
 						<div className="usage-section-heading"><strong>最近请求</strong></div>
 						<ScrollArea className="rounded-[.72rem] border" scrollbars="horizontal">
-							<Table className="usage-events-table min-w-[50rem] table-auto [&_th]:px-[.7rem] [&_th]:py-[.62rem] [&_td]:px-[.7rem] [&_td]:py-[.62rem] [&_th]:text-[.68rem] [&_td]:text-[.68rem]">
-								<TableHeader><TableRow><TableHead>时间</TableHead><TableHead>调用身份</TableHead><TableHead>路由目标</TableHead><TableHead>模型</TableHead><TableHead>Token</TableHead><TableHead>成本</TableHead></TableRow></TableHeader>
+							<Table className="usage-events-table min-w-[56rem] table-auto [&_th]:px-[.7rem] [&_th]:py-[.62rem] [&_td]:px-[.7rem] [&_td]:py-[.62rem] [&_th]:text-[.68rem] [&_td]:text-[.68rem]">
+								<TableHeader><TableRow><TableHead>时间</TableHead><TableHead>调用身份</TableHead><TableHead>路由目标</TableHead><TableHead>模型</TableHead><TableHead>思考 / 速度</TableHead><TableHead>Token</TableHead><TableHead>成本</TableHead></TableRow></TableHeader>
 								<TableBody>{usage.recentEvents.map((event) => (
 									<TableRow key={event.id}>
 										<TableCell><time dateTime={new Date(event.recordedAt).toISOString()}>{formatCompactDate(event.recordedAt)}</time></TableCell>
 										<TableCell><strong>{event.identityName}</strong><small>{usageIdentityLabel(event.identityType)}</small></TableCell>
 										<TableCell><strong>{event.accountGroupName || event.codexAccountName || "—"}</strong>{event.accountGroupName || event.codexAccountName ? <small>{event.accountGroupName ? event.codexAccountName : "Codex 账户"}</small> : null}</TableCell>
 										<TableCell><code>{event.model}</code></TableCell>
+										<TableCell><strong>{reasoningEffortLabel(event.reasoningEffort)}</strong><small>{requestSpeedLabel(event)}</small></TableCell>
 										<TableCell><strong>{formatTokens(event.totalTokens)}</strong><small>{statusLabel(event.status)}</small></TableCell>
 										<TableCell><strong>{formatCost(event.costUsd)}</strong></TableCell>
 									</TableRow>
@@ -1589,6 +1591,12 @@ function isUsageIdentityType(value: string): value is UsageIdentityType {
 
 function usageIdentityLabel(value: "api_key" | "auth_proxy"): string {
 	return value === "api_key" ? "API Key" : "下游账户";
+}
+
+function requestSpeedLabel(event: UsageEvent): string {
+	const requested = serviceTierLabel(event.serviceTier);
+	const served = event.responseServiceTier;
+	return served && served !== event.serviceTier ? `${requested} · 实际 ${serviceTierLabel(served)}` : requested;
 }
 
 function statusLabel(value: "completed" | "incomplete" | "failed"): string {

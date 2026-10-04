@@ -29,7 +29,11 @@ use crate::{
 };
 
 use super::{
-    body, chatgpt_proxy::ChatgptTransport, oauth::current_time_ms, usage::UsageTracker, websocket,
+    body,
+    chatgpt_proxy::ChatgptTransport,
+    oauth::current_time_ms,
+    usage::{UsageRequest, UsageTracker},
+    websocket,
 };
 
 const MAX_LIVE_BOOTSTRAP_BODY_BYTES: usize = 16 * 1024 * 1024;
@@ -104,12 +108,14 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         &self,
         body: &JsonObject,
         source_headers: &HeaderMap,
+        tracker: &UsageTracker,
     ) -> AppResult<reqwest::Response> {
         let credentials = self.credentials().await?;
         let source = header_bag(source_headers);
         let target = responses_url();
         let headers = codex_headers(&credentials, "text/event-stream", Some(&source), true);
         let adapted = apply_converted_response_egress_policy(body);
+        tracker.observe_request_object(adapted.as_ref());
         let body = serde_json::to_vec(adapted.as_ref()).map_err(|_| json_serialization_error())?;
         self.send(
             &target,
@@ -141,8 +147,8 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             source,
         )
         .await?;
-        if let (Some(tracker), Some(model)) = (tracker, prepared.requested_model.as_deref()) {
-            tracker.set_requested_model(model);
+        if let (Some(tracker), Some(request)) = (tracker, prepared.usage_request) {
+            tracker.record_request(request);
         }
         let headers = proxy_request_headers(&prepared.headers, &credentials, target.path(), false);
         self.send(&target, parts.method, headers, prepared.body, false)
@@ -224,7 +230,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
 struct PreparedProxyBody {
     headers: HeaderBag,
     body: Option<reqwest::Body>,
-    requested_model: Option<String>,
+    usage_request: Option<UsageRequest>,
 }
 
 async fn prepare_proxy_body(
@@ -261,26 +267,20 @@ async fn adapt_json_body<'a>(
     let content_encoding = headers.get("content-encoding").map(str::to_owned);
     let encoded = body::read_limited_body(source_headers, body, body::MAX_JSON_BODY_BYTES).await?;
     let parsed = parse_json_body_with_source(encoded, content_encoding.as_deref())?;
-    let requested_model = parsed
-        .body
-        .get("model")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
-        .map(str::to_owned);
     let adapted = adapt(&parsed.body);
+    let usage_request = Some(UsageRequest::from_body(adapted.as_ref()));
     if matches!(adapted, Cow::Borrowed(_)) {
         return Ok(PreparedProxyBody {
             headers,
             body: Some(reqwest::Body::from(parsed.encoded_body)),
-            requested_model,
+            usage_request,
         });
     }
     let bytes = serde_json::to_vec(adapted.as_ref()).map_err(|_| json_serialization_error())?;
     Ok(PreparedProxyBody {
         headers: json_headers(&headers),
         body: Some(reqwest::Body::from(bytes)),
-        requested_model,
+        usage_request,
     })
 }
 
@@ -346,7 +346,7 @@ async fn adapt_live_bootstrap(
     Ok(PreparedProxyBody {
         headers: json_headers(&headers),
         body: Some(reqwest::Body::from(bytes)),
-        requested_model: None,
+        usage_request: None,
     })
 }
 
@@ -356,7 +356,7 @@ fn passthrough_body(body: Body, method: &Method, headers: HeaderBag) -> Prepared
     PreparedProxyBody {
         headers,
         body,
-        requested_model: None,
+        usage_request: None,
     }
 }
 

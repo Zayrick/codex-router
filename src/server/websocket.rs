@@ -133,14 +133,14 @@ fn client_message(
 ) -> UpstreamMessage {
     match message {
         AxumMessage::Text(text) => {
-            if let Some(tracker) = tracker {
-                tracker.observe_request_text(&text);
-            }
             let text = if adapt_responses {
                 adapt_responses_websocket_message(&text)
             } else {
                 text.to_string()
             };
+            if let Some(tracker) = tracker {
+                tracker.observe_request_text(&text);
+            }
             UpstreamMessage::Text(text.into())
         }
         AxumMessage::Binary(bytes) => UpstreamMessage::Binary(bytes),

@@ -171,7 +171,14 @@ async fn forward_relay(
         outgoing = outgoing.header(name, value);
     }
     if parts.method != Method::GET && parts.method != Method::HEAD {
-        outgoing = outgoing.body(reqwest::Body::wrap_stream(body.into_data_stream()));
+        let body = body.into_data_stream();
+        outgoing = outgoing.body(match tracker.as_ref() {
+            Some(tracker) => {
+                let content_encoding = headers.get("content-encoding").map(str::to_owned);
+                reqwest::Body::wrap_stream(tracker.observe_request_stream(body, content_encoding))
+            }
+            None => reqwest::Body::wrap_stream(body),
+        });
     }
     let upstream = outgoing.send().await.map_err(relay_fetch_error)?;
     if let Some(account_id) = routed_account_id.as_deref() {

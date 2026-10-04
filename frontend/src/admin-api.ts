@@ -181,6 +181,11 @@ export interface UsageModelRow extends UsageTotals {
 	model: string;
 }
 
+/** `value` is empty for events recorded before the setting was tracked. */
+export interface UsageDimensionRow extends UsageTotals {
+	value: string;
+}
+
 export interface UsageIdentityRow extends UsageTotals {
 	identityType: "api_key" | "auth_proxy";
 	identityId: string;
@@ -201,6 +206,9 @@ export interface UsageEvent extends Omit<UsageTotals, "requests"> {
 	transport: "http" | "websocket";
 	endpoint: string;
 	status: "completed" | "incomplete" | "failed";
+	reasoningEffort: string;
+	serviceTier: string;
+	responseServiceTier: string;
 }
 
 export interface UsageDashboard {
@@ -211,6 +219,8 @@ export interface UsageDashboard {
 	series: UsageSeriesPoint[];
 	models: UsageModelRow[];
 	identities: UsageIdentityRow[];
+	reasoningEfforts: UsageDimensionRow[];
+	serviceTiers: UsageDimensionRow[];
 	recentEvents: UsageEvent[];
 	unpricedModels: string[];
 }

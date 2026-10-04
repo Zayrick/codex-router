@@ -25,11 +25,12 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type {
 	UsageDashboard,
+	UsageDimensionRow,
 	UsageIdentityRow,
 	UsageModelRow,
 	UsageSeriesPoint,
 } from "./admin-api";
-import { formatCost } from "./usage-format";
+import { formatCost, reasoningEffortLabel, serviceTierLabel } from "./usage-format";
 
 const INTEGER_FORMAT = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
 const COMPACT_FORMAT = new Intl.NumberFormat("zh-CN", {
@@ -364,6 +365,14 @@ export function UsageBreakdownDonuts({ usage }: { usage: UsageDashboard }) {
 		<div className="usage-donut-grid">
 			<DonutBreakdownCard rows={modelRows(usage.models)} title="模型用量" />
 			<DonutBreakdownCard rows={identityRows(usage.identities)} title="身份用量" />
+			<DonutBreakdownCard
+				rows={dimensionRows(usage.reasoningEfforts, reasoningEffortLabel)}
+				title="思考强度"
+			/>
+			<DonutBreakdownCard
+				rows={dimensionRows(usage.serviceTiers, serviceTierLabel)}
+				title="速度模式"
+			/>
 		</div>
 	);
 }
@@ -516,6 +525,18 @@ function identityRows(rows: UsageIdentityRow[]): DonutRow[] {
 	return rows.map((row) => ({
 		id: `${row.identityType}:${row.identityId}`,
 		label: row.identityName,
+		tokens: row.totalTokens,
+		cost: row.costUsd,
+	}));
+}
+
+function dimensionRows(
+	rows: UsageDimensionRow[],
+	label: (value: string) => string,
+): DonutRow[] {
+	return rows.map((row) => ({
+		id: row.value,
+		label: label(row.value),
 		tokens: row.totalTokens,
 		cost: row.costUsd,
 	}));

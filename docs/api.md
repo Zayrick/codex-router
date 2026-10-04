@@ -243,7 +243,8 @@ response，相同 response ID 只落库一次。模型优先取终止响应，�
 - `totals`：请求数以及输入、缓存命中、缓存创建、输出、推理和总 Token；
 - `series`：按小时或天填充的趋势时间桶；
 - `models`、`identities`：按模型及 API Key/代理账户聚合；
-- `recentEvents`：最多 50 条事件，包含模型、身份、端点、HTTP/WebSocket、状态与 Token 明细。
+- `reasoningEfforts`、`serviceTiers`：按思考强度（`reasoning.effort`）及服务等级聚合，`value` 取自实际发往上游的请求体；未显式设置时为 `default`，`priority` 即 Codex 的 Fast 模式，空字符串表示该事件记录于此功能上线之前；
+- `recentEvents`：最多 50 条事件，包含模型、身份、端点、HTTP/WebSocket、状态、思考强度、请求与响应服务等级（`reasoningEffort`、`serviceTier`、`responseServiceTier`）及 Token 明细。
 
 缓存与推理 Token 分别是输入与输出 Token 的子集。该接口不返回 Key/OAuth，也不会记录或返回
 请求正文与模型输出；未收到 usage 的请求不会生成统计。

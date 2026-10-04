@@ -6,12 +6,15 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
+use futures_util::{Stream, StreamExt, stream};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
     auth::{AuthProxyAccount, ClientApiKey},
+    http::parse_json_body,
     protocol::openai,
 };
 
@@ -41,6 +44,9 @@ CREATE TABLE IF NOT EXISTS usage_events (
     endpoint TEXT NOT NULL,
     status TEXT NOT NULL,
     response_id TEXT NOT NULL DEFAULT '',
+    reasoning_effort TEXT NOT NULL DEFAULT '',
+    service_tier TEXT NOT NULL DEFAULT '',
+    response_service_tier TEXT NOT NULL DEFAULT '',
     input_tokens INTEGER NOT NULL DEFAULT 0,
     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
     cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -57,6 +63,10 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_model
 CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_response_id
     ON usage_events(response_id) WHERE response_id <> '';
 "#;
+
+/// Recorded when the request was observed but did not set the field explicitly.
+const DEFAULT_REQUEST_SETTING: &str = "default";
+const PRIORITY_SERVICE_TIER: &str = "priority";
 
 const ROUTING_INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_usage_events_codex_account
@@ -241,6 +251,9 @@ struct UsageEvent {
     endpoint: String,
     status: String,
     response_id: String,
+    reasoning_effort: String,
+    service_tier: String,
+    response_service_tier: String,
     input_tokens: i64,
     cached_input_tokens: i64,
     cache_creation_input_tokens: i64,
@@ -254,6 +267,7 @@ struct ParsedUsage {
     model: String,
     status: String,
     response_id: String,
+    response_service_tier: String,
     input_tokens: i64,
     cached_input_tokens: i64,
     cache_creation_input_tokens: i64,
@@ -296,7 +310,7 @@ impl UsageStore {
         connection
             .execute_batch(SCHEMA)
             .context("failed to initialize usage database schema")?;
-        ensure_usage_routing_columns(&connection)?;
+        ensure_usage_text_columns(&connection)?;
         connection
             .execute_batch(ROUTING_INDEXES)
             .context("failed to initialize usage routing indexes")?;
@@ -330,9 +344,10 @@ impl UsageStore {
                     recorded_at_ms, identity_type, identity_id, identity_name,
                     codex_account_id, codex_account_name, account_group_id, account_group_name,
                     model, transport, endpoint, status, response_id,
+                    reasoning_effort, service_tier, response_service_tier,
                     input_tokens, cached_input_tokens, cache_creation_input_tokens,
                     output_tokens, reasoning_output_tokens, total_tokens
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
                 "#,
                 params![
                     event.recorded_at_ms,
@@ -348,6 +363,9 @@ impl UsageStore {
                     event.endpoint,
                     event.status,
                     event.response_id,
+                    event.reasoning_effort,
+                    event.service_tier,
+                    event.response_service_tier,
                     event.input_tokens,
                     event.cached_input_tokens,
                     event.cache_creation_input_tokens,
@@ -404,7 +422,7 @@ impl UsageStore {
     }
 }
 
-fn ensure_usage_routing_columns(connection: &Connection) -> Result<()> {
+fn ensure_usage_text_columns(connection: &Connection) -> Result<()> {
     let mut statement = connection.prepare("PRAGMA table_info(usage_events)")?;
     let columns: std::collections::HashSet<String> = statement
         .query_map([], |row| row.get(1))?
@@ -415,6 +433,9 @@ fn ensure_usage_routing_columns(connection: &Connection) -> Result<()> {
         "codex_account_name",
         "account_group_id",
         "account_group_name",
+        "reasoning_effort",
+        "service_tier",
+        "response_service_tier",
     ] {
         if !columns.contains(name) {
             connection.execute(
@@ -469,7 +490,50 @@ struct UsageTrackerInner {
     identity: UsageIdentity,
     endpoint: String,
     transport: &'static str,
-    requested_model: Mutex<String>,
+    request: Mutex<RequestSettings>,
+}
+
+/// Request-side attributes copied onto every usage event recorded by a tracker.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RequestSettings {
+    model: String,
+    reasoning_effort: String,
+    service_tier: String,
+}
+
+/// Request-side usage attributes extracted from an upstream Responses body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageRequest {
+    model: Option<String>,
+    reasoning_effort: String,
+    service_tier: String,
+}
+
+impl UsageRequest {
+    /// Reads the final body sent upstream, so egress policies are already applied.
+    pub fn from_body(object: &Map<String, Value>) -> Self {
+        let model = request_field(object, "model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_owned);
+        let reasoning_effort = request_field(object, "reasoning")
+            .and_then(Value::as_object)
+            .and_then(|reasoning| string(reasoning, "effort"))
+            .or_else(|| request_field(object, "reasoning_effort").and_then(Value::as_str))
+            .map(normalize_setting)
+            .filter(|effort| !effort.is_empty())
+            .unwrap_or_else(|| DEFAULT_REQUEST_SETTING.into());
+        let service_tier = request_field(object, "service_tier")
+            .and_then(Value::as_str)
+            .map(normalize_service_tier)
+            .unwrap_or_else(|| DEFAULT_REQUEST_SETTING.into());
+        Self {
+            model,
+            reasoning_effort,
+            service_tier,
+        }
+    }
 }
 
 impl UsageTracker {
@@ -497,7 +561,7 @@ impl UsageTracker {
                 identity,
                 endpoint: endpoint.into(),
                 transport,
-                requested_model: Mutex::new(String::new()),
+                request: Mutex::new(RequestSettings::default()),
             }),
         }
     }
@@ -514,10 +578,28 @@ impl UsageTracker {
         if kind.is_some_and(|kind| !matches!(kind, "response.create" | "response.append")) {
             return;
         }
-        let Some(model) = request_model(object) else {
+        let request = UsageRequest::from_body(object);
+        if kind == Some("response.append") {
+            // Appends extend the previous response.create and inherit its settings.
+            if let Some(model) = request.model {
+                self.set_requested_model(&model);
+            }
             return;
-        };
-        self.set_requested_model(model);
+        }
+        self.record_request(request);
+    }
+
+    pub fn record_request(&self, request: UsageRequest) {
+        let mut current = self
+            .inner
+            .request
+            .lock()
+            .expect("usage request lock poisoned");
+        if let Some(model) = request.model {
+            current.model = model;
+        }
+        current.reasoning_effort = request.reasoning_effort;
+        current.service_tier = request.service_tier;
     }
 
     pub fn observe_request_text(&self, text: &str) {
@@ -531,11 +613,11 @@ impl UsageTracker {
         if model.is_empty() {
             return;
         }
-        *self
-            .inner
-            .requested_model
+        self.inner
+            .request
             .lock()
-            .expect("usage request lock poisoned") = model.to_owned();
+            .expect("usage request lock poisoned")
+            .model = model.to_owned();
     }
 
     pub fn observe_response_value(&self, value: &Value) {
@@ -546,13 +628,13 @@ impl UsageTracker {
     }
 
     pub fn observe_response_object(&self, object: &Map<String, Value>) {
-        let fallback_model = self
+        let request = self
             .inner
-            .requested_model
+            .request
             .lock()
             .expect("usage request lock poisoned")
             .clone();
-        let Some(parsed) = parse_usage(object, &fallback_model) else {
+        let Some(parsed) = parse_usage(object, &request.model) else {
             return;
         };
         self.inner.store.record_background(UsageEvent {
@@ -569,6 +651,9 @@ impl UsageTracker {
             endpoint: self.inner.endpoint.clone(),
             status: parsed.status,
             response_id: parsed.response_id,
+            reasoning_effort: request.reasoning_effort,
+            service_tier: request.service_tier,
+            response_service_tier: parsed.response_service_tier,
             input_tokens: parsed.input_tokens,
             cached_input_tokens: parsed.cached_input_tokens,
             cache_creation_input_tokens: parsed.cache_creation_input_tokens,
@@ -584,8 +669,69 @@ impl UsageTracker {
         }
     }
 
+    /// Passes a streamed request body through unchanged while reading its usage settings.
+    pub fn observe_request_stream<S, E>(
+        &self,
+        body: S,
+        content_encoding: Option<String>,
+    ) -> impl Stream<Item = Result<Bytes, E>> + use<S, E>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Unpin,
+    {
+        let observer = RequestBodyObserver {
+            tracker: self.clone(),
+            content_encoding,
+            buffer: Vec::new(),
+        };
+        stream::unfold(
+            (body, Some(observer)),
+            |(mut body, mut observer)| async move {
+                match body.next().await {
+                    Some(Ok(chunk)) => {
+                        if let Some(active) = observer.as_mut()
+                            && !active.push(&chunk)
+                        {
+                            observer = None;
+                        }
+                        Some((Ok(chunk), (body, observer)))
+                    }
+                    Some(Err(error)) => Some((Err(error), (body, None))),
+                    None => {
+                        if let Some(active) = observer.take() {
+                            active.finish();
+                        }
+                        None
+                    }
+                }
+            },
+        )
+    }
+
     pub fn wire_observer(&self, content_type: Option<&str>) -> UsageWireObserver {
         UsageWireObserver::new(self.clone(), content_type)
+    }
+}
+
+struct RequestBodyObserver {
+    tracker: UsageTracker,
+    content_encoding: Option<String>,
+    buffer: Vec<u8>,
+}
+
+impl RequestBodyObserver {
+    /// Returns false once the body is too large to track.
+    fn push(&mut self, bytes: &[u8]) -> bool {
+        if bytes.len() > MAX_TRACKED_JSON_BYTES.saturating_sub(self.buffer.len()) {
+            return false;
+        }
+        self.buffer.extend_from_slice(bytes);
+        true
+    }
+
+    fn finish(self) {
+        if let Ok(body) = parse_json_body(&self.buffer, self.content_encoding.as_deref()) {
+            self.tracker.observe_request_object(&body);
+        }
     }
 }
 
@@ -666,13 +812,27 @@ impl UsageWireObserver {
     }
 }
 
-fn request_model(object: &Map<String, Value>) -> Option<&str> {
-    string(object, "model").or_else(|| {
+/// Looks up a request field at the top level or inside a websocket `response` envelope.
+fn request_field<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
+    object.get(key).or_else(|| {
         object
             .get("response")
             .and_then(Value::as_object)
-            .and_then(|response| string(response, "model"))
+            .and_then(|response| response.get(key))
     })
+}
+
+fn normalize_setting(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+/// Codex sends Fast mode as `priority`; `fast` is accepted as its alias.
+fn normalize_service_tier(value: &str) -> String {
+    match normalize_setting(value).as_str() {
+        "" | "auto" => DEFAULT_REQUEST_SETTING.into(),
+        "fast" => PRIORITY_SERVICE_TIER.into(),
+        tier => tier.into(),
+    }
 }
 
 fn parse_usage(root: &Map<String, Value>, fallback_model: &str) -> Option<ParsedUsage> {
@@ -720,6 +880,10 @@ fn parse_usage(root: &Map<String, Value>, fallback_model: &str) -> Option<Parsed
         model: if model.is_empty() { "unknown" } else { model }.into(),
         status: terminal.into(),
         response_id: string(response, "id").unwrap_or_default().trim().into(),
+        response_service_tier: string(response, "service_tier")
+            .or_else(|| string(root, "service_tier"))
+            .map(normalize_setting)
+            .unwrap_or_default(),
         input_tokens,
         cached_input_tokens,
         cache_creation_input_tokens,
@@ -815,6 +979,8 @@ pub struct UsageDashboard {
     pub series: Vec<UsageSeriesPoint>,
     pub models: Vec<UsageBreakdownRow>,
     pub identities: Vec<UsageIdentityRow>,
+    pub reasoning_efforts: Vec<UsageDimensionRow>,
+    pub service_tiers: Vec<UsageDimensionRow>,
     pub recent_events: Vec<UsageEventRow>,
     pub unpriced_models: Vec<String>,
 }
@@ -856,6 +1022,15 @@ pub struct UsageBreakdownRow {
     pub totals: UsageTotals,
 }
 
+/// Usage grouped by a request setting; an empty value marks events recorded before it was tracked.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageDimensionRow {
+    pub value: String,
+    #[serde(flatten)]
+    pub totals: UsageTotals,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageIdentityRow {
@@ -882,6 +1057,9 @@ pub struct UsageEventRow {
     pub transport: String,
     pub endpoint: String,
     pub status: String,
+    pub reasoning_effort: String,
+    pub service_tier: String,
+    pub response_service_tier: String,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
     pub cache_creation_input_tokens: i64,
@@ -938,6 +1116,22 @@ fn query_dashboard(
         &prices,
         &mut identities,
     )?;
+    let reasoning_efforts = query_dimension(
+        connection,
+        UsageDimension::ReasoningEffort,
+        start_at,
+        end_at,
+        filters,
+        &prices,
+    )?;
+    let service_tiers = query_dimension(
+        connection,
+        UsageDimension::ServiceTier,
+        start_at,
+        end_at,
+        filters,
+        &prices,
+    )?;
     let mut recent_events = query_recent_events(connection, start_at, end_at, filters)?;
     for event in &mut recent_events {
         event.cost_usd = event_cost(event, &prices);
@@ -951,6 +1145,8 @@ fn query_dashboard(
         series,
         models,
         identities,
+        reasoning_efforts,
+        service_tiers,
         recent_events,
         unpriced_models,
     })
@@ -1103,6 +1299,77 @@ fn query_identities(
         },
     )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UsageDimension {
+    ReasoningEffort,
+    ServiceTier,
+}
+
+impl UsageDimension {
+    const fn column(self) -> &'static str {
+        match self {
+            Self::ReasoningEffort => "reasoning_effort",
+            Self::ServiceTier => "service_tier",
+        }
+    }
+}
+
+fn query_dimension(
+    connection: &Connection,
+    dimension: UsageDimension,
+    start_at: i64,
+    end_at: i64,
+    filters: &UsageFilters,
+    prices: &BTreeMap<String, ModelPrice>,
+) -> Result<Vec<UsageDimensionRow>> {
+    let column = dimension.column();
+    let usage_filters = usage_filters_sql(3, 4, 5, 6);
+    let sql = format!(
+        "SELECT {column}, model, {TOTAL_COLUMNS} FROM usage_events \
+         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
+         AND {usage_filters} \
+         GROUP BY {column}, model"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
+    let rows = statement.query_map(
+        params![
+            start_at,
+            end_at,
+            downstream_type,
+            downstream_id,
+            upstream_type,
+            upstream_id
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                totals_from_row_at(row, 2)?,
+            ))
+        },
+    )?;
+    let mut grouped = BTreeMap::<String, UsageTotals>::new();
+    for row in rows {
+        let (value, model, totals) = row?;
+        let target = grouped.entry(value).or_default();
+        add_totals(target, &totals);
+        target.cost_usd += cost_for_model(&model, &totals, prices);
+    }
+    let mut rows = grouped
+        .into_iter()
+        .map(|(value, totals)| UsageDimensionRow { value, totals })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        right
+            .totals
+            .requests
+            .cmp(&left.totals.requests)
+            .then_with(|| left.value.cmp(&right.value))
+    });
+    Ok(rows)
 }
 
 fn query_series(
@@ -1383,7 +1650,8 @@ fn query_recent_events(
         r#"
         SELECT id, recorded_at_ms, identity_type, identity_id, identity_name,
                codex_account_id, codex_account_name, account_group_id, account_group_name,
-               model, transport, endpoint, status, input_tokens, cached_input_tokens,
+               model, transport, endpoint, status, reasoning_effort, service_tier,
+               response_service_tier, input_tokens, cached_input_tokens,
                cache_creation_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
         FROM usage_events
         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2
@@ -1419,12 +1687,15 @@ fn query_recent_events(
                 transport: row.get(10)?,
                 endpoint: row.get(11)?,
                 status: row.get(12)?,
-                input_tokens: row.get(13)?,
-                cached_input_tokens: row.get(14)?,
-                cache_creation_input_tokens: row.get(15)?,
-                output_tokens: row.get(16)?,
-                reasoning_output_tokens: row.get(17)?,
-                total_tokens: row.get(18)?,
+                reasoning_effort: row.get(13)?,
+                service_tier: row.get(14)?,
+                response_service_tier: row.get(15)?,
+                input_tokens: row.get(16)?,
+                cached_input_tokens: row.get(17)?,
+                cache_creation_input_tokens: row.get(18)?,
+                output_tokens: row.get(19)?,
+                reasoning_output_tokens: row.get(20)?,
+                total_tokens: row.get(21)?,
                 cost_usd: 0.0,
             })
         },
@@ -1547,6 +1818,9 @@ mod tests {
             endpoint: "/v1/responses".into(),
             status: "completed".into(),
             response_id: "resp_unique".into(),
+            reasoning_effort: String::new(),
+            service_tier: String::new(),
+            response_service_tier: String::new(),
             input_tokens: 10,
             cached_input_tokens: 4,
             cache_creation_input_tokens: 0,
@@ -1593,6 +1867,9 @@ mod tests {
                     endpoint: "/v1/responses".into(),
                     status: "completed".into(),
                     response_id: response_id.into(),
+                    reasoning_effort: String::new(),
+                    service_tier: String::new(),
+                    response_service_tier: String::new(),
                     input_tokens: 1_000_000,
                     cached_input_tokens: 400_000,
                     cache_creation_input_tokens: 100_000,
@@ -1677,6 +1954,9 @@ mod tests {
                 endpoint: "/v1/responses".into(),
                 status: "completed".into(),
                 response_id: "resp_filter_key".into(),
+                reasoning_effort: String::new(),
+                service_tier: String::new(),
+                response_service_tier: String::new(),
                 input_tokens: 10,
                 cached_input_tokens: 2,
                 cache_creation_input_tokens: 0,
@@ -1698,6 +1978,9 @@ mod tests {
                 endpoint: "/v1/responses".into(),
                 status: "completed".into(),
                 response_id: "resp_filter_account".into(),
+                reasoning_effort: String::new(),
+                service_tier: String::new(),
+                response_service_tier: String::new(),
                 input_tokens: 60,
                 cached_input_tokens: 20,
                 cache_creation_input_tokens: 4,
@@ -1808,6 +2091,113 @@ mod tests {
                 .iter()
                 .all(|event| event.transport == "websocket")
         );
+
+        drop(tracker);
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[test]
+    fn extracts_reasoning_effort_and_service_tier_from_request_bodies() {
+        let request = UsageRequest::from_body(
+            json!({"model":"gpt-5.5","reasoning":{"effort":" XHigh "},"service_tier":"priority"})
+                .as_object()
+                .unwrap(),
+        );
+        assert_eq!(request.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(request.reasoning_effort, "xhigh");
+        assert_eq!(request.service_tier, "priority");
+
+        let nested = UsageRequest::from_body(
+            json!({"type":"response.create","response":{"reasoning":{"effort":"low"},"service_tier":"fast"}})
+                .as_object()
+                .unwrap(),
+        );
+        assert_eq!(nested.reasoning_effort, "low");
+        assert_eq!(nested.service_tier, "priority");
+
+        let defaults = UsageRequest::from_body(json!({"model":"gpt-5.5"}).as_object().unwrap());
+        assert_eq!(defaults.reasoning_effort, "default");
+        assert_eq!(defaults.service_tier, "default");
+    }
+
+    #[tokio::test]
+    async fn records_request_settings_and_groups_them_in_the_dashboard() {
+        let (store, path) = temporary_store();
+        let tracker = UsageTracker::websocket(store.clone(), identity(), "/v1/responses");
+
+        tracker.observe_request_text(
+            r#"{"type":"response.create","model":"gpt-5.5","reasoning":{"effort":"high"},"service_tier":"priority"}"#,
+        );
+        tracker.observe_response_text(
+            r#"{"type":"response.completed","response":{"id":"resp_fast","service_tier":"priority","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}"#,
+        );
+        tracker.observe_request_text(r#"{"type":"response.append","input":[]}"#);
+        tracker.observe_response_text(
+            r#"{"type":"response.completed","response":{"id":"resp_append","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#,
+        );
+        tracker.observe_request_text(r#"{"type":"response.create","model":"gpt-5.5"}"#);
+        tracker.observe_response_text(
+            r#"{"type":"response.completed","response":{"id":"resp_standard","service_tier":"default","usage":{"input_tokens":20,"output_tokens":7,"total_tokens":27}}}"#,
+        );
+
+        let dashboard = wait_for_requests(&store, 3).await;
+        let efforts = dashboard
+            .reasoning_efforts
+            .iter()
+            .map(|row| (row.value.as_str(), row.totals.requests))
+            .collect::<Vec<_>>();
+        assert_eq!(efforts, vec![("high", 2), ("default", 1)]);
+        let tiers = dashboard
+            .service_tiers
+            .iter()
+            .map(|row| (row.value.as_str(), row.totals.total_tokens))
+            .collect::<Vec<_>>();
+        assert_eq!(tiers, vec![("priority", 17), ("default", 27)]);
+        let fast = dashboard
+            .recent_events
+            .iter()
+            .find(|event| event.total_tokens == 15)
+            .unwrap();
+        assert_eq!(fast.reasoning_effort, "high");
+        assert_eq!(fast.service_tier, "priority");
+        assert_eq!(fast.response_service_tier, "priority");
+
+        drop(tracker);
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn request_stream_observer_reads_compressed_bodies_without_changing_them() {
+        use ruzstd::encoding::{CompressionLevel, compress_to_vec};
+
+        let (store, path) = temporary_store();
+        let tracker = UsageTracker::http(store.clone(), identity(), "/backend-api/codex/responses");
+        let encoded = compress_to_vec(
+            &br#"{"model":"gpt-5.5","reasoning":{"effort":"medium"},"service_tier":"priority"}"#[..],
+            CompressionLevel::Fastest,
+        );
+        let chunks = encoded
+            .chunks(5)
+            .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)))
+            .collect::<Vec<_>>();
+        let forwarded = tracker
+            .observe_request_stream(stream::iter(chunks), Some("zstd".into()))
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+            .await
+            .concat();
+        assert_eq!(forwarded, encoded);
+
+        tracker.observe_response_text(
+            r#"{"type":"response.completed","response":{"id":"resp_relay","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}"#,
+        );
+        let dashboard = wait_for_requests(&store, 1).await;
+        let event = &dashboard.recent_events[0];
+        assert_eq!(event.model, "gpt-5.5");
+        assert_eq!(event.reasoning_effort, "medium");
+        assert_eq!(event.service_tier, "priority");
 
         drop(tracker);
         drop(store);
