@@ -1,7 +1,7 @@
 # Ubuntu 部署与更新
 
 适用于 Ubuntu 22.04 或更高版本的 x86_64（amd64）服务器。GitHub Actions 的
-`Build Linux amd64` 工作流生成 `codex-router-linux-amd64.tar.gz`，包含二进制、配置模板和校验文件。
+`Build and Deploy` 工作流生成 `codex-router-linux-amd64.tar.gz`，包含二进制、配置模板和校验文件。
 前端已嵌入二进制，服务器无需安装 Rust、Node.js 或 pnpm。ARM 服务器不能使用此包。
 
 ## 1. 上传并解压
@@ -142,3 +142,58 @@ sudo systemctl status codex-router --no-pager
 
 如果新版已迁移配置或数据库，单独回滚二进制可能不够，需要停服并恢复更新前配套的数据备份；
 恢复会丢失备份之后的状态和用量记录。
+
+## 7. GitHub Actions 自动部署
+
+完成第 1～3 步首次安装后，可让 `Build and Deploy` 工作流在每次推送 `master` 时自动构建并更新服务器。
+也可在 Actions 页面手动运行，取消勾选 `deploy` 则只构建不部署。
+
+### 7.1 服务器一次性配置
+
+上传仓库中的 `deploy/codex-router-update.sh` 并安装为固定路径的更新脚本：
+
+```sh
+sudo install -m 0755 -o root -g root codex-router-update.sh /usr/local/sbin/codex-router-update
+```
+
+创建部署用户，并只允许它免密执行该脚本：
+
+```sh
+sudo useradd --create-home --shell /bin/bash deploy
+echo 'deploy ALL=(root) NOPASSWD: /usr/local/sbin/codex-router-update' | \
+  sudo tee /etc/sudoers.d/codex-router-deploy
+sudo chmod 0440 /etc/sudoers.d/codex-router-deploy
+sudo visudo -c
+```
+
+在本机生成专用于部署的密钥（不设密码），将公钥加入服务器：
+
+```sh
+ssh-keygen -t ed25519 -N '' -C github-deploy -f ~/.ssh/codex_router_deploy
+ssh-copy-id -i ~/.ssh/codex_router_deploy.pub deploy@服务器IP
+ssh -i ~/.ssh/codex_router_deploy deploy@服务器IP 'sudo -n -l'
+```
+
+最后一条命令应列出 `/usr/local/sbin/codex-router-update`。
+
+### 7.2 GitHub 配置
+
+在仓库 Settings → Environments 新建名为 `production` 的环境，在其中添加以下 Environment secrets：
+
+| 名称 | 必填 | 内容 |
+| --- | --- | --- |
+| `SSH_HOST` | 是 | 服务器 IP 或域名，如 `203.0.113.10`，不带 `ssh://` 或用户名 |
+| `SSH_USER` | 是 | `deploy` |
+| `SSH_PRIVATE_KEY` | 是 | `~/.ssh/codex_router_deploy` 私钥文件的完整内容，含首尾 `-----BEGIN/END ...-----` 行 |
+| `SSH_PORT` | 否 | SSH 端口，默认 `22` |
+| `SSH_KNOWN_HOSTS` | 建议 | 本机执行 `ssh-keyscan -p 22 服务器IP` 的完整输出，用于校验服务器身份 |
+
+未设置 `SSH_KNOWN_HOSTS` 时，工作流会在运行时扫描并信任服务器公钥，同时给出警告。
+
+### 7.3 更新过程
+
+更新脚本按第 5 步流程执行：校验压缩包、备份二进制、停服、将数据目录备份到
+`/var/backups/codex-router.*`（仅保留最近 5 份）、替换并启动。如果新版启动后数秒内退出，
+脚本会自动回滚二进制并让工作流失败；数据回滚仍需按第 6 步手动处理。
+
+更新脚本本身变化时，需要重新执行 7.1 中的 `install` 命令。
