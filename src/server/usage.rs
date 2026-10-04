@@ -67,6 +67,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_response_id
 /// Recorded when the request was observed but did not set the field explicitly.
 const DEFAULT_REQUEST_SETTING: &str = "default";
 const PRIORITY_SERVICE_TIER: &str = "priority";
+/// Requests without an explicit tier let the upstream choose.
+const AUTO_SERVICE_TIER: &str = "auto";
+/// Bumped when stored usage values need a one-time rewrite.
+const USAGE_SCHEMA_VERSION: i64 = 1;
 /// Groups cost queries by whether the request used Fast mode.
 const FAST_SQL: &str = "(service_tier = 'priority')";
 pub const DEFAULT_FAST_COST_MULTIPLIER: f64 = 2.0;
@@ -314,6 +318,7 @@ impl UsageStore {
             .execute_batch(SCHEMA)
             .context("failed to initialize usage database schema")?;
         ensure_usage_text_columns(&connection)?;
+        migrate_usage_values(&connection)?;
         connection
             .execute_batch(ROUTING_INDEXES)
             .context("failed to initialize usage routing indexes")?;
@@ -452,6 +457,24 @@ fn ensure_usage_text_columns(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_usage_values(connection: &Connection) -> Result<()> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version >= USAGE_SCHEMA_VERSION {
+        return Ok(());
+    }
+    // Early builds stored an omitted request tier as `default`; the upstream treats it as `auto`.
+    connection
+        .execute(
+            "UPDATE usage_events SET service_tier = 'auto' WHERE service_tier = 'default'",
+            [],
+        )
+        .context("failed to migrate usage service tiers")?;
+    connection
+        .pragma_update(None, "user_version", USAGE_SCHEMA_VERSION)
+        .context("failed to record usage database version")?;
+    Ok(())
+}
+
 #[cfg(unix)]
 fn restrict_database_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -532,7 +555,7 @@ impl UsageRequest {
         let service_tier = request_field(object, "service_tier")
             .and_then(Value::as_str)
             .map(normalize_service_tier)
-            .unwrap_or_else(|| DEFAULT_REQUEST_SETTING.into());
+            .unwrap_or_else(|| AUTO_SERVICE_TIER.into());
         Self {
             model,
             reasoning_effort,
@@ -834,7 +857,7 @@ fn normalize_setting(value: &str) -> String {
 /// Codex sends Fast mode as `priority`; `fast` is accepted as its alias.
 fn normalize_service_tier(value: &str) -> String {
     match normalize_setting(value).as_str() {
-        "" | "auto" => DEFAULT_REQUEST_SETTING.into(),
+        "" => AUTO_SERVICE_TIER.into(),
         "fast" => PRIORITY_SERVICE_TIER.into(),
         tier => tier.into(),
     }
@@ -2194,7 +2217,7 @@ mod tests {
 
         let defaults = UsageRequest::from_body(json!({"model":"gpt-5.5"}).as_object().unwrap());
         assert_eq!(defaults.reasoning_effort, "default");
-        assert_eq!(defaults.service_tier, "default");
+        assert_eq!(defaults.service_tier, "auto");
     }
 
     #[tokio::test]
@@ -2229,7 +2252,7 @@ mod tests {
             .iter()
             .map(|row| (row.value.as_str(), row.totals.total_tokens))
             .collect::<Vec<_>>();
-        assert_eq!(tiers, vec![("priority", 17), ("default", 27)]);
+        assert_eq!(tiers, vec![("priority", 17), ("auto", 27)]);
         let fast = dashboard
             .recent_events
             .iter()
@@ -2243,10 +2266,46 @@ mod tests {
             .iter()
             .find(|event| event.total_tokens == 27)
             .unwrap();
-        assert_eq!(standard.service_tier, "default");
-        assert_eq!(standard.response_service_tier, "default");
+        assert_eq!(standard.service_tier, "auto");
+        assert_eq!(standard.response_service_tier, "auto");
 
         drop(tracker);
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[test]
+    fn migrates_omitted_request_tiers_from_default_to_auto() {
+        let path = std::env::temp_dir().join(format!(
+            "codex-router-usage-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch(SCHEMA).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO usage_events (recorded_at_ms, identity_type, identity_id, \
+                     identity_name, model, transport, endpoint, status, service_tier) \
+                     VALUES (1, 'api_key', 'k', 'n', 'm', 'http', '/', 'completed', 'default'), \
+                            (2, 'api_key', 'k', 'n', 'm', 'http', '/', 'completed', 'priority')",
+                    [],
+                )
+                .unwrap();
+        }
+        let store = UsageStore::open(path.clone()).unwrap();
+        let tiers = {
+            let connection = store.connection.lock().unwrap();
+            let mut statement = connection
+                .prepare("SELECT service_tier FROM usage_events ORDER BY recorded_at_ms")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(tiers, vec!["auto", "priority"]);
         drop(store);
         remove_temporary_store(&path);
     }

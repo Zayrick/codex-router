@@ -12,7 +12,7 @@ export function formatCost(value: number): string {
 
 const SERVICE_TIER_LABELS: Readonly<Record<string, string>> = {
 	"": "未记录",
-	auto: "标准",
+	auto: "自动",
 	default: "标准",
 	priority: "Fast",
 	flex: "Flex",
