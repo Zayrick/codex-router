@@ -118,8 +118,19 @@ API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
 
 ## 部署注意
 
-从 GitHub Actions 下载二进制后，可按 [Ubuntu 部署与更新](docs/deployment-ubuntu.md) 安装、
-创建 systemd 服务、设置开机启动，以及更新和回滚版本。
+在 GitHub Actions 页面手动运行对应工作流，下载 amd64（x86_64）构建产物：
+
+| 运行环境 | 工作流 | 产物 |
+| --- | --- | --- |
+| Ubuntu 22.04 或更高版本 | `Build and Deploy` | `codex-router-linux-amd64.tar.gz` |
+| Alpine Linux（musl） | `Build Alpine` | `codex-router-alpine-amd64.tar.gz` |
+
+`Build and Deploy` 的 `deploy` 开关控制 Ubuntu 服务器部署。`Build Alpine` 生成静态链接二进制，
+在 Alpine 3.22 容器中运行版本检查，并上传产物供下载。Alpine 运行环境需安装 `ca-certificates`
+用于 HTTPS 证书校验。
+
+Ubuntu 可按 [Ubuntu 部署与更新](docs/deployment-ubuntu.md) 安装、创建 systemd 服务、
+设置开机启动，以及更新和回滚版本。
 
 - `upstream.chatgpt_proxy` 如包含认证信息，应与 OAuth 和 API Key 一样作为密钥保护；SOCKS5
   连接上的 ChatGPT 应用流量仍使用端到端 TLS；

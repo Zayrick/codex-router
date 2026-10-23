@@ -143,10 +143,10 @@ sudo systemctl status codex-router --no-pager
 如果新版已迁移配置或数据库，单独回滚二进制可能不够，需要停服并恢复更新前配套的数据备份；
 恢复会丢失备份之后的状态和用量记录。
 
-## 7. GitHub Actions 自动部署
+## 7. GitHub Actions 部署
 
-完成第 1～3 步首次安装后，可让 `Build and Deploy` 工作流在每次推送 `master` 时自动构建并更新服务器。
-也可在 Actions 页面手动运行，取消勾选 `deploy` 则只构建不部署。
+完成第 1～3 步首次安装后，可在 Actions 页面手动运行 `Build and Deploy` 工作流。
+`deploy` 默认勾选，构建成功后更新服务器；取消勾选时仅生成构建产物。
 
 ### 7.1 服务器一次性配置
 
