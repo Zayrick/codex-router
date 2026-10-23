@@ -125,8 +125,8 @@ API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
 | Ubuntu 22.04 或更高版本 | `Build and Deploy` | `codex-router-linux-amd64.tar.gz` |
 | Alpine Linux（musl） | `Build Alpine` | `codex-router-alpine-amd64.tar.gz` |
 
-`Build and Deploy` 的 `deploy` 开关控制 Ubuntu 服务器部署。`Build Alpine` 生成静态链接二进制，
-在 Alpine 3.22 容器中运行版本检查，并上传产物供下载。Alpine 运行环境需安装 `ca-certificates`
+`Build and Deploy` 的 `deploy` 开关控制 Ubuntu 服务器部署。`Build Alpine` 在 Alpine 3.22 容器中
+直接编译静态链接二进制并运行版本检查，然后上传产物供下载。Alpine 运行环境需安装 `ca-certificates`
 用于 HTTPS 证书校验。
 
 Ubuntu 可按 [Ubuntu 部署与更新](docs/deployment-ubuntu.md) 安装、创建 systemd 服务、

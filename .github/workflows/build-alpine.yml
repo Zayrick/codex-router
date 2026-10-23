@@ -8,80 +8,54 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  TARGET: x86_64-unknown-linux-musl
-  CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-  CC_x86_64_unknown_linux_musl: musl-gcc
 
 jobs:
   build:
     name: Build Alpine amd64 binary
     runs-on: ubuntu-22.04
+    container: rust:1.97.1-alpine3.22
     timeout-minutes: 45
 
     steps:
+      # tar and zstd are required by actions/cache; BusyBox tar is not compatible.
+      - name: Install build dependencies
+        run: |
+          apk add --no-cache nodejs npm tar zstd
+          npm install --global pnpm@11.18.0
+
       - name: Check out repository
         uses: actions/checkout@v6
-
-      - name: Set up Node.js and pnpm
-        uses: pnpm/setup@v2
-        with:
-          version: 11.18.0
-          runtime: node@22.12.0
-          cache: true
-          cache-dependency-path: frontend/pnpm-lock.yaml
-          package-json-file: frontend/package.json
-          install: false
-
-      - name: Install musl build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools cmake
-
-      - name: Install Rust toolchain
-        shell: bash
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal --target "$TARGET"
-          rustup default 1.97.1
 
       - name: Cache Cargo dependencies and build output
         uses: actions/cache@v5
         with:
           path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
+            /usr/local/cargo/registry/index
+            /usr/local/cargo/registry/cache
+            /usr/local/cargo/git/db
             target
           key: alpine-amd64-rust-1.97.1-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             alpine-amd64-rust-1.97.1-
 
       - name: Build release binary
-        run: cargo build --locked --release --target "$TARGET"
+        run: cargo build --locked --release
 
-      - name: Verify static linkage
-        shell: bash
+      - name: Verify binary
         run: |
-          binary="target/$TARGET/release/codex-router"
-          file "$binary"
+          binary="target/release/codex-router"
           elf_info=$(readelf --wide --program-headers --dynamic "$binary")
           printf '%s\n' "$elf_info"
-          if grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)' <<< "$elf_info"; then
+          if printf '%s\n' "$elf_info" | grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)'; then
             echo "::error::Alpine binary has a dynamic interpreter or shared-library dependency."
             exit 1
           fi
-
-      - name: Verify binary in Alpine
-        shell: bash
-        run: |
-          docker run --rm \
-            -v "$PWD/target/$TARGET/release:/app:ro" \
-            alpine:3.22 /app/codex-router --version
+          "$binary" --version
 
       - name: Package artifact
-        shell: bash
         run: |
           package_dir="dist/codex-router-alpine-amd64"
-          install -D -m 0755 "target/$TARGET/release/codex-router" "$package_dir/codex-router"
+          install -D -m 0755 target/release/codex-router "$package_dir/codex-router"
           install -D -m 0644 config.example.toml "$package_dir/config.example.toml"
           (
             cd "$package_dir"
