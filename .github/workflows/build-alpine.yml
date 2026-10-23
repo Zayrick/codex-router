@@ -58,10 +58,21 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release --target "$TARGET"
 
-      - name: Verify static binary in Alpine
+      - name: Verify static linkage
         shell: bash
         run: |
-          file "target/$TARGET/release/codex-router" | grep -E 'statically linked|static-pie linked'
+          binary="target/$TARGET/release/codex-router"
+          file "$binary"
+          elf_info=$(readelf --wide --program-headers --dynamic "$binary")
+          printf '%s\n' "$elf_info"
+          if grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)' <<< "$elf_info"; then
+            echo "::error::Alpine binary has a dynamic interpreter or shared-library dependency."
+            exit 1
+          fi
+
+      - name: Verify binary in Alpine
+        shell: bash
+        run: |
           docker run --rm \
             -v "$PWD/target/$TARGET/release:/app:ro" \
             alpine:3.22 /app/codex-router --version
