@@ -1,30 +1,28 @@
-use axum::{body::Body, http::Request, response::Response};
+use axum::response::Response;
 use futures_util::{StreamExt, stream};
 use serde::Serialize;
 
 use crate::{
     application::MonitoredQuotaWindow,
     auth::{
-        AccountRoutingState, ApiKeyRepository, AuthProxyAccount, CodexAccount, OAuthRepository,
-        RouteConsumerKind, RouteTargetKind, RoutingRepository, constant_time_equal,
-        matching_auth_proxy_account,
+        AccountRoutingState, CodexAccount, OAuthRepository, RouteConsumerKind, RouteTargetKind,
+        RoutingRepository,
     },
     core::{ApiError, AppResult},
     upstream::codex::{CodexQuotaWindow, codex_subscription_from_usage},
 };
 
 use super::{
-    body,
     codex::CodexClient,
     config::AppConfig,
     oauth::current_time_ms,
     response,
+    session_store::Principal,
     state::AppState,
     usage::{UsageFilters, UsageIdentityFilter, UsageRange},
     usage_store::CodexUsageStateRepository,
 };
 
-const MAX_PUBLIC_ACCOUNT_BODY_BYTES: usize = 8 * 1024;
 const PUBLIC_QUOTA_READ_CONCURRENCY: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,79 +103,29 @@ struct PublicQuotaWindow {
     reset_at: Option<i64>,
 }
 
-pub async fn handle_public_account(
-    request: Request<Body>,
-    config: &AppConfig,
-    state: &AppState,
-) -> Response {
-    match public_account_dashboard(request, config, state).await {
-        Ok(output) => output,
-        Err(error) => response::api_error(&error),
-    }
-}
-
-async fn public_account_dashboard(
-    request: Request<Body>,
+/// Usage dashboard of the API key or downstream account behind a user session.
+/// The queried identity always comes from the session, never from the request.
+pub async fn signed_in_account_dashboard(
+    principal: &Principal,
+    range: Option<&str>,
     config: &AppConfig,
     state: &AppState,
 ) -> AppResult<Response> {
-    let (credential, range) = public_account_input(request).await?;
-    let account = resolve_account(&credential, state)
-        .await?
-        .ok_or_else(invalid_account_credential)?;
-    account_dashboard(&account, range, config, state).await
-}
-
-async fn public_account_input(request: Request<Body>) -> AppResult<(String, UsageRange)> {
-    let (parts, body) = request.into_parts();
-    let bytes =
-        body::read_limited_body(&parts.headers, body, MAX_PUBLIC_ACCOUNT_BODY_BYTES).await?;
-    let mut credential = None;
-    let mut range = None;
-    for (name, value) in url::form_urlencoded::parse(&bytes) {
-        match name.as_ref() {
-            "credential" if credential.is_none() => credential = Some(value.into_owned()),
-            "range" if range.is_none() => range = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-    let credential = credential
-        .filter(|value| (1..=512).contains(&value.len()))
-        .ok_or_else(invalid_account_credential_input)?;
-    let range = range
-        .as_deref()
-        .and_then(|value| UsageRange::parse(Some(value)))
+    let account = match principal {
+        Principal::ApiKey(id) => PublicAccount {
+            id: id.clone(),
+            kind: PublicAccountKind::ApiKey,
+        },
+        Principal::AuthProxy(id) => PublicAccount {
+            id: id.clone(),
+            kind: PublicAccountKind::AuthProxy,
+        },
+        Principal::Admin => return Err(user_session_required()),
+    };
+    let range = UsageRange::parse(range)
         .filter(|range| *range != UsageRange::Cycle)
         .ok_or_else(invalid_usage_range)?;
-    Ok((credential, range))
-}
-
-async fn resolve_account(credential: &str, state: &AppState) -> AppResult<Option<PublicAccount>> {
-    let repository = ApiKeyRepository::new(state.config.as_ref());
-    let keys = repository.read().await?;
-    let mut matched_key = None;
-    for key in keys {
-        let matches = key.enabled && constant_time_equal(credential, &key.key);
-        if matches && matched_key.is_none() {
-            matched_key = Some(PublicAccount {
-                id: key.id,
-                kind: PublicAccountKind::ApiKey,
-            });
-        }
-    }
-    if matched_key.is_some() {
-        return Ok(matched_key);
-    }
-
-    let accounts = repository.read_auth_proxy_accounts().await?;
-    Ok(
-        matching_auth_proxy_account(Some(credential), &accounts).map(
-            |account: &AuthProxyAccount| PublicAccount {
-                id: account.id.clone(),
-                kind: PublicAccountKind::AuthProxy,
-            },
-        ),
-    )
+    account_dashboard(&account, range, config, state).await
 }
 
 async fn account_dashboard(
@@ -413,17 +361,13 @@ fn invalid_usage_range() -> ApiError {
         .with_param("range")
 }
 
-fn invalid_account_credential_input() -> ApiError {
-    ApiError::new(400, "An API key or account ID is required.")
-        .with_kind("invalid_request_error")
-        .with_code("invalid_account_credential_input")
-        .with_param("credential")
-}
-
-fn invalid_account_credential() -> ApiError {
-    ApiError::new(404, "The account does not exist or is disabled.")
-        .with_kind("authentication_error")
-        .with_code("invalid_account_credential")
+fn user_session_required() -> ApiError {
+    ApiError::new(
+        403,
+        "This view is only available to API key or account sessions.",
+    )
+    .with_kind("permission_error")
+    .with_code("user_session_required")
 }
 
 fn usage_query_error() -> ApiError {
@@ -490,15 +434,5 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["备用账户", "主账户"]
         );
-    }
-
-    #[tokio::test]
-    async fn public_account_ranges_do_not_accept_the_legacy_cycle_filter() {
-        let request = Request::builder()
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("credential=sk-test-value&range=cycle"))
-            .unwrap();
-
-        assert!(public_account_input(request).await.is_err());
     }
 }

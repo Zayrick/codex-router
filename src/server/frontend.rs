@@ -1,114 +1,161 @@
+//! Serves the web console from a deployed frontend directory.
+//!
+//! The Rust binary no longer embeds the React build. `frontend.dir` points at a
+//! Vite output directory; `index.html` is read on every page request so a fresh
+//! CSP nonce can be injected (and so frontend releases do not need a restart),
+//! while fingerprinted files under `assets/` are served directly from disk.
+
+use std::{convert::Infallible, path::Path};
+
 use axum::{
     body::Body,
-    http::{Method, StatusCode, header},
+    http::{HeaderValue, Method, Request, StatusCode, Uri, header},
     response::Response,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use tokio::io::AsyncReadExt;
+use tower::ServiceExt;
+use tower_http::services::ServeDir;
+
+use crate::core::ApiError;
 
 use super::response;
 
-const DEV_SERVER_ORIGIN: &str = "http://127.0.0.1:5173";
-const DEV_SERVER_WEBSOCKET_ORIGIN: &str = "ws://127.0.0.1:5173";
+/// URL prefix of the fingerprinted Vite assets (`base: "/admin/"`).
+pub const ASSET_PREFIX: &str = "/admin/assets/";
 
-#[cfg(not(debug_assertions))]
-use crate::core::ApiError;
-#[cfg(not(debug_assertions))]
-use bytes::Bytes;
-#[cfg(not(debug_assertions))]
-use rust_embed::RustEmbed;
-#[cfg(not(debug_assertions))]
-use std::borrow::Cow;
-
-#[cfg(not(debug_assertions))]
 const CSP_NONCE_PLACEHOLDER: &str = "__CODEX_ROUTER_CSP_NONCE__";
+const MAX_INDEX_BYTES: u64 = 1024 * 1024;
 
-#[cfg(not(debug_assertions))]
-#[derive(RustEmbed)]
-#[folder = "$CODEX_ROUTER_FRONTEND_DIST/"]
-struct FrontendAssets;
+#[cfg(debug_assertions)]
+const DEV_SERVER_ORIGIN: &str = "http://127.0.0.1:5173";
+#[cfg(debug_assertions)]
+const DEV_SERVER_WEBSOCKET_ORIGIN: &str = "ws://127.0.0.1:5173";
+/// Set by the `cargo run` development supervisor on the backend child process.
+#[cfg(debug_assertions)]
+const DEV_CHILD_ENV: &str = "CODEX_ROUTER_DEV_CHILD";
 
-/// Serves the shared admin/account application shell with a per-request CSP nonce.
-pub fn application_page() -> Response {
+/// Serves the single console application shell with a per-request CSP nonce.
+pub async fn application_page(method: &Method, frontend_dir: &Path) -> Response {
     let nonce = URL_SAFE_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes());
 
     #[cfg(debug_assertions)]
-    let html = development_page(&nonce);
-
-    #[cfg(not(debug_assertions))]
-    let html = match embedded_index(&nonce) {
-        Ok(html) => html,
-        Err(error) => return response::api_error(&error),
-    };
-
-    page_response(html, &nonce)
-}
-
-/// Returns an embedded, fingerprinted Vite asset with immutable cache policy.
-pub fn asset_response(method: &Method, path: &str) -> Option<Response> {
-    if !path.starts_with("/assets/") {
-        return None;
+    if std::env::var_os(DEV_CHILD_ENV).is_some() {
+        return page_response(method, development_page(&nonce), dev_csp(&nonce));
     }
 
-    #[cfg(debug_assertions)]
-    {
-        let _ = method;
-        Some(response::empty(404))
-    }
-
-    #[cfg(not(debug_assertions))]
-    {
-        let relative = path
-            .strip_prefix('/')
-            .expect("asset paths start with a slash");
-        let asset = match FrontendAssets::get(relative) {
-            Some(asset) => asset,
-            None => return Some(response::empty(404)),
-        };
-        if !matches!(*method, Method::GET | Method::HEAD) {
-            return Some(response::empty(404));
+    match read_index(frontend_dir, &nonce).await {
+        Ok(html) => page_response(method, html, production_csp(&nonce)),
+        Err(error) => {
+            tracing::error!(
+                event = "frontend_index",
+                status = "unavailable",
+                dir = %frontend_dir.display(),
+                error = %error.message,
+            );
+            response::api_error(&error)
         }
-
-        let content_type = mime_guess::from_path(relative)
-            .first_raw()
-            .unwrap_or("application/octet-stream");
-        let content_length = asset.data.len();
-        let body = if method == Method::HEAD {
-            Body::empty()
-        } else {
-            let bytes = match asset.data {
-                Cow::Borrowed(bytes) => Bytes::from_static(bytes),
-                Cow::Owned(bytes) => Bytes::from(bytes),
-            };
-            Body::from(bytes)
-        };
-        Some(
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, content_type)
-                .header(header::CONTENT_LENGTH, content_length)
-                .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
-                .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-                .header("cross-origin-resource-policy", "same-origin")
-                .body(body)
-                .unwrap_or_else(|_| response::empty(500)),
-        )
     }
 }
 
-fn page_response(html: String, nonce: &str) -> Response {
-    let content_security_policy = if cfg!(debug_assertions) {
-        format!(
-            "default-src 'none'; script-src 'nonce-{nonce}' {DEV_SERVER_ORIGIN}; style-src 'nonce-{nonce}' {DEV_SERVER_ORIGIN}; connect-src 'self' {DEV_SERVER_ORIGIN} {DEV_SERVER_WEBSOCKET_ORIGIN}; img-src 'self' data:; font-src 'self' {DEV_SERVER_ORIGIN}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
-        )
-    } else {
-        format!(
-            "default-src 'none'; script-src 'self' 'nonce-{nonce}'; style-src 'self' 'nonce-{nonce}'; connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
-        )
+/// Serves a file below `<frontend.dir>/assets` for a request under [`ASSET_PREFIX`].
+pub async fn asset_response(request: Request<Body>, frontend_dir: &Path) -> Response {
+    if !matches!(*request.method(), Method::GET | Method::HEAD) {
+        return uncacheable(response::empty(405));
+    }
+    let Some(relative) = request.uri().path().strip_prefix(ASSET_PREFIX) else {
+        return uncacheable(response::empty(404));
     };
+    if relative.is_empty() || relative.ends_with('/') {
+        return uncacheable(response::empty(404));
+    }
+    let Ok(uri) = Uri::builder()
+        .path_and_query(format!("/{relative}"))
+        .build()
+    else {
+        return uncacheable(response::empty(404));
+    };
+    let (mut parts, body) = request.into_parts();
+    parts.uri = uri;
+    let request = Request::from_parts(parts, body);
 
+    let service = ServeDir::new(frontend_dir.join("assets"))
+        .append_index_html_on_directories(false)
+        .precompressed_br()
+        .precompressed_gzip();
+    let Ok::<_, Infallible>(output) = service.oneshot(request).await;
+    let (mut parts, body) = output.into_parts();
+    let headers = &mut parts.headers;
+    if parts.status.is_success() || parts.status == StatusCode::NOT_MODIFIED {
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    } else {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        "cross-origin-resource-policy",
+        HeaderValue::from_static("same-origin"),
+    );
+    Response::from_parts(parts, Body::new(body))
+}
+
+fn uncacheable(mut output: Response) -> Response {
+    output
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    output
+}
+
+async fn read_index(frontend_dir: &Path, nonce: &str) -> Result<String, ApiError> {
+    let path = frontend_dir.join("index.html");
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|_| application_unavailable())?;
+    let mut bytes = Vec::new();
+    file.take(MAX_INDEX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| application_unavailable())?;
+    if bytes.len() as u64 > MAX_INDEX_BYTES {
+        return Err(application_unavailable());
+    }
+    let template = String::from_utf8(bytes).map_err(|_| application_unavailable())?;
+    if !template.contains(CSP_NONCE_PLACEHOLDER) {
+        return Err(application_unavailable());
+    }
+    Ok(template.replace(CSP_NONCE_PLACEHOLDER, nonce))
+}
+
+fn production_csp(nonce: &str) -> String {
+    format!(
+        "default-src 'none'; script-src 'self' 'nonce-{nonce}'; style-src 'self' 'nonce-{nonce}'; connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    )
+}
+
+#[cfg(debug_assertions)]
+fn dev_csp(nonce: &str) -> String {
+    format!(
+        "default-src 'none'; script-src 'nonce-{nonce}' {DEV_SERVER_ORIGIN}; style-src 'nonce-{nonce}' {DEV_SERVER_ORIGIN}; connect-src 'self' {DEV_SERVER_ORIGIN} {DEV_SERVER_WEBSOCKET_ORIGIN}; img-src 'self' data:; font-src 'self' {DEV_SERVER_ORIGIN}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    )
+}
+
+fn page_response(method: &Method, html: String, content_security_policy: String) -> Response {
+    let length = html.len();
+    let body = if *method == Method::HEAD {
+        Body::empty()
+    } else {
+        Body::from(html)
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CONTENT_LENGTH, length)
         .header(header::CACHE_CONTROL, "no-store")
         .header(header::CONTENT_SECURITY_POLICY, content_security_policy)
         .header("cross-origin-opener-policy", "same-origin")
@@ -120,7 +167,7 @@ fn page_response(html: String, nonce: &str) -> Response {
         .header(header::REFERRER_POLICY, "same-origin")
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header("x-frame-options", "DENY")
-        .body(Body::from(html))
+        .body(body)
         .unwrap_or_else(|_| response::empty(500))
 }
 
@@ -153,24 +200,23 @@ fn development_page(nonce: &str) -> String {
     )
 }
 
-#[cfg(not(debug_assertions))]
-fn embedded_index(nonce: &str) -> Result<String, ApiError> {
-    let asset = FrontendAssets::get("index.html").ok_or_else(application_unavailable)?;
-    let template =
-        std::str::from_utf8(asset.data.as_ref()).map_err(|_| application_unavailable())?;
-    Ok(template.replace(CSP_NONCE_PLACEHOLDER, nonce))
-}
-
-#[cfg(not(debug_assertions))]
 fn application_unavailable() -> ApiError {
-    ApiError::new(500, "The web application is unavailable.")
+    ApiError::new(503, "The web console is not installed.")
         .with_kind("configuration_error")
         .with_code("application_unavailable")
 }
 
 #[cfg(test)]
 mod tests {
+    use axum::body::to_bytes;
+
     use super::*;
+
+    fn temp_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("codex-router-web-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        dir
+    }
 
     #[test]
     fn development_shell_contains_vite_and_fresh_nonce_hooks() {
@@ -181,11 +227,80 @@ mod tests {
         assert!(html.contains("/src/main.tsx"));
     }
 
-    #[test]
-    fn development_asset_paths_never_fall_through_to_the_relay() {
-        let response = asset_response(&Method::GET, "/assets/missing.js")
-            .expect("asset path must be handled locally");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert!(asset_response(&Method::GET, "/not-an-asset.js").is_none());
+    #[tokio::test]
+    async fn serves_index_with_a_fresh_nonce_and_matching_csp() {
+        let dir = temp_dir();
+        std::fs::write(
+            dir.join("index.html"),
+            format!("<script nonce=\"{CSP_NONCE_PLACEHOLDER}\"></script>"),
+        )
+        .unwrap();
+        let output = application_page(&Method::GET, &dir).await;
+        assert_eq!(output.status(), StatusCode::OK);
+        let csp = output.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = to_bytes(output.into_body(), 1024).await.unwrap();
+        let body = std::str::from_utf8(&body).unwrap();
+        assert!(!body.contains(CSP_NONCE_PLACEHOLDER));
+        let nonce = body.split('"').nth(1).unwrap();
+        assert!(csp.contains(&format!("'nonce-{nonce}'")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn missing_or_invalid_index_is_a_local_503() {
+        let dir = temp_dir();
+        let missing = application_page(&Method::GET, &dir).await;
+        assert_eq!(missing.status(), StatusCode::SERVICE_UNAVAILABLE);
+        std::fs::write(dir.join("index.html"), "<p>no placeholder</p>").unwrap();
+        let invalid = application_page(&Method::GET, &dir).await;
+        assert_eq!(invalid.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn serves_assets_without_escaping_the_asset_directory() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("assets/app-abc.js"), "console.log(1)").unwrap();
+        std::fs::write(dir.join("index.html"), "secret").unwrap();
+        let request = |uri: &str| Request::get(uri).body(Body::empty()).unwrap();
+
+        let found = asset_response(request("/admin/assets/app-abc.js"), &dir).await;
+        assert_eq!(found.status(), StatusCode::OK);
+        assert!(
+            found.headers()[header::CACHE_CONTROL]
+                .to_str()
+                .unwrap()
+                .contains("immutable")
+        );
+        assert!(
+            found.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .contains("javascript")
+        );
+
+        for uri in [
+            "/admin/assets/missing.js",
+            "/admin/assets/../index.html",
+            "/admin/assets/%2e%2e/index.html",
+            "/admin/assets/",
+        ] {
+            let output = asset_response(request(uri), &dir).await;
+            assert_eq!(output.status(), StatusCode::NOT_FOUND, "{uri}");
+            assert_eq!(output.headers()[header::CACHE_CONTROL], "no-store");
+        }
+
+        let post = asset_response(
+            Request::post("/admin/assets/app-abc.js")
+                .body(Body::empty())
+                .unwrap(),
+            &dir,
+        )
+        .await;
+        assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

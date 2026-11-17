@@ -115,11 +115,9 @@ fn match_api_path(pathname: &str) -> Option<ApiRoute> {
     }
 }
 
+/// Management API routes below `/admin/api/`; all require an admin session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminRoute {
-    Page,
-    Login,
-    Logout,
     State,
     CodexAccountSubscription,
     Usage,
@@ -144,28 +142,76 @@ pub enum AdminRoute {
     AuthProxyDelete,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchedAdminRoute {
-    pub base_path: String,
-    pub route: AdminRoute,
+/// Every request below `/admin` is answered locally; it never reaches the relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleRoute {
+    /// `GET|HEAD /admin`: the single-page application shell.
+    Page,
+    /// `GET|HEAD /admin/`: canonicalized to `/admin`.
+    PageRedirect,
+    /// `/admin/assets/*`: built frontend files.
+    Asset,
+    /// `GET /admin/api/session`: the current session, if any.
+    SessionGet,
+    /// `POST /admin/api/session`: sign in with any supported credential.
+    SessionCreate,
+    /// `DELETE /admin/api/session`: sign out.
+    SessionDelete,
+    /// `GET /admin/api/account`: usage of the signed-in API key or account.
+    Account,
+    Admin(AdminRoute),
+    /// Unknown path or unsupported method inside the console namespace.
+    NotFound,
 }
 
-pub fn match_admin_route(
-    method: &str,
-    pathname: &str,
-    configured_path: &str,
-) -> Option<MatchedAdminRoute> {
-    let base_path = admin_base_path(configured_path)?;
-    if pathname == base_path {
-        return (method == "GET").then_some(MatchedAdminRoute {
-            base_path,
-            route: AdminRoute::Page,
+pub const CONSOLE_BASE_PATH: &str = "/admin";
+const CONSOLE_API_PREFIX: &str = "/admin/api/";
+
+pub fn is_console_path(pathname: &str) -> bool {
+    pathname == CONSOLE_BASE_PATH
+        || pathname
+            .strip_prefix(CONSOLE_BASE_PATH)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Matches a console request. Returns `None` only outside the `/admin` namespace.
+pub fn match_console_route(method: &str, pathname: &str) -> Option<ConsoleRoute> {
+    if !is_console_path(pathname) {
+        return None;
+    }
+    let page_method = matches!(method, "GET" | "HEAD");
+    if pathname == CONSOLE_BASE_PATH {
+        return Some(if page_method {
+            ConsoleRoute::Page
+        } else {
+            ConsoleRoute::NotFound
         });
     }
-    let relative = pathname.strip_prefix(&format!("{base_path}/"))?;
+    if pathname == "/admin/" {
+        return Some(if page_method {
+            ConsoleRoute::PageRedirect
+        } else {
+            ConsoleRoute::NotFound
+        });
+    }
+    if pathname.starts_with("/admin/assets/") {
+        return Some(ConsoleRoute::Asset);
+    }
+    let Some(relative) = pathname.strip_prefix(CONSOLE_API_PREFIX) else {
+        return Some(ConsoleRoute::NotFound);
+    };
     let route = match (method, relative) {
-        ("POST", "login") => AdminRoute::Login,
-        ("POST", "logout") => AdminRoute::Logout,
+        ("GET", "session") => ConsoleRoute::SessionGet,
+        ("POST", "session") => ConsoleRoute::SessionCreate,
+        ("DELETE", "session") => ConsoleRoute::SessionDelete,
+        ("GET", "account") => ConsoleRoute::Account,
+        _ => match_admin_api(method, relative).map_or(ConsoleRoute::NotFound, ConsoleRoute::Admin),
+    };
+    Some(route)
+}
+
+fn match_admin_api(method: &str, relative: &str) -> Option<AdminRoute> {
+    Some(match (method, relative) {
         ("GET", "state") => AdminRoute::State,
         ("GET", "codex-accounts/subscription") => AdminRoute::CodexAccountSubscription,
         ("GET", "usage") => AdminRoute::Usage,
@@ -189,23 +235,20 @@ pub fn match_admin_route(
         ("PUT", "auth-proxy") => AdminRoute::AuthProxyUpdate,
         ("DELETE", "auth-proxy") => AdminRoute::AuthProxyDelete,
         _ => return None,
-    };
-    Some(MatchedAdminRoute { base_path, route })
+    })
 }
 
-pub fn is_admin_path_family(pathname: &str, configured_path: &str) -> bool {
-    let Some(base_path) = admin_base_path(configured_path) else {
-        return false;
-    };
+/// The deprecated `/<admin.path>/admin` page path, when `admin.path` is still configured.
+pub fn legacy_admin_base_path(configured_path: Option<&str>) -> Option<String> {
+    let configured_path = configured_path?.trim();
+    valid_route_id(configured_path).then(|| format!("/{configured_path}/admin"))
+}
+
+pub fn is_legacy_admin_path_family(pathname: &str, base_path: &str) -> bool {
     pathname == base_path
         || pathname
-            .strip_prefix(&base_path)
+            .strip_prefix(base_path)
             .is_some_and(|rest| rest.starts_with('/'))
-}
-
-fn admin_base_path(configured_path: &str) -> Option<String> {
-    let configured_path = configured_path.trim();
-    valid_route_id(configured_path).then(|| format!("/{configured_path}/admin"))
 }
 
 fn valid_route_id(value: &str) -> bool {
@@ -245,70 +288,72 @@ mod tests {
     }
 
     #[test]
-    fn admin_path_is_secret_and_strictly_bounded() {
+    fn console_namespace_is_strictly_local() {
+        use ConsoleRoute::*;
+        assert_eq!(match_console_route("GET", "/admin"), Some(Page));
+        assert_eq!(match_console_route("HEAD", "/admin"), Some(Page));
+        assert_eq!(match_console_route("POST", "/admin"), Some(NotFound));
+        assert_eq!(match_console_route("GET", "/admin/"), Some(PageRedirect));
         assert_eq!(
-            match_admin_route("GET", "/secret/admin/state", "secret"),
-            Some(MatchedAdminRoute {
-                base_path: "/secret/admin".into(),
-                route: AdminRoute::State,
-            })
+            match_console_route("GET", "/admin/assets/a.js"),
+            Some(Asset)
         );
         assert_eq!(
-            match_admin_route("GET", "/secret/admin/usage", "secret"),
-            Some(MatchedAdminRoute {
-                base_path: "/secret/admin".into(),
-                route: AdminRoute::Usage,
-            })
+            match_console_route("GET", "/admin/api/session"),
+            Some(SessionGet)
         );
         assert_eq!(
-            match_admin_route("PUT", "/secret/admin/settings", "secret"),
-            Some(MatchedAdminRoute {
-                base_path: "/secret/admin".into(),
-                route: AdminRoute::SettingsUpdate,
-            })
-        );
-        assert_eq!(match_admin_route("GET", "/secret/admin", "bad/path"), None);
-        assert_eq!(
-            match_admin_route("PUT", "/secret/admin/auth-proxy", "secret"),
-            Some(MatchedAdminRoute {
-                base_path: "/secret/admin".into(),
-                route: AdminRoute::AuthProxyUpdate,
-            })
+            match_console_route("POST", "/admin/api/session"),
+            Some(SessionCreate)
         );
         assert_eq!(
-            match_admin_route("DELETE", "/secret/admin/auth-proxy", "secret"),
-            Some(MatchedAdminRoute {
-                base_path: "/secret/admin".into(),
-                route: AdminRoute::AuthProxyDelete,
-            })
+            match_console_route("DELETE", "/admin/api/session"),
+            Some(SessionDelete)
         );
         assert_eq!(
-            match_admin_route(
-                "POST",
-                "/secret/admin/codex-accounts/oauth/device",
-                "secret"
-            ),
-            Some(MatchedAdminRoute {
-                base_path: "/secret/admin".into(),
-                route: AdminRoute::CodexAccountOAuthStart,
-            })
+            match_console_route("GET", "/admin/api/account"),
+            Some(Account)
         );
         assert_eq!(
-            match_admin_route("GET", "/secret/admin/account-routing", "secret"),
-            Some(MatchedAdminRoute {
-                base_path: "/secret/admin".into(),
-                route: AdminRoute::AccountRoutingGet,
-            })
+            match_console_route("PUT", "/admin/api/settings"),
+            Some(Admin(AdminRoute::SettingsUpdate))
         );
         assert_eq!(
-            match_admin_route("GET", "/secret/admin/auth-proxy/oauth", "secret"),
-            None
+            match_console_route("POST", "/admin/api/codex-accounts/oauth/device"),
+            Some(Admin(AdminRoute::CodexAccountOAuthStart))
         );
+        for (method, path) in [
+            ("GET", "/admin/api/unknown"),
+            ("GET", "/admin/api/session/"),
+            ("PATCH", "/admin/api/settings"),
+            ("GET", "/admin/other"),
+            ("GET", "/admin/api"),
+        ] {
+            assert_eq!(
+                match_console_route(method, path),
+                Some(NotFound),
+                "{method} {path}"
+            );
+        }
+        assert_eq!(match_console_route("GET", "/administrator"), None);
+        assert_eq!(match_console_route("GET", "/v1/models"), None);
+    }
+
+    #[test]
+    fn legacy_admin_path_is_bounded() {
         assert_eq!(
-            match_admin_route("POST", "/secret/admin/auth-proxy/oauth/device/", "secret"),
-            None
+            legacy_admin_base_path(Some("secret")).as_deref(),
+            Some("/secret/admin")
         );
-        assert!(is_admin_path_family("/secret/admin/unknown", "secret"));
-        assert!(!is_admin_path_family("/secret/administrator", "secret"));
+        assert_eq!(legacy_admin_base_path(Some("bad/path")), None);
+        assert_eq!(legacy_admin_base_path(None), None);
+        assert!(is_legacy_admin_path_family(
+            "/secret/admin/state",
+            "/secret/admin"
+        ));
+        assert!(!is_legacy_admin_path_family(
+            "/secret/administrator",
+            "/secret/admin"
+        ));
     }
 }

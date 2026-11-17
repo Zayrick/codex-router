@@ -51,6 +51,10 @@ pub fn spawn(state: AppState, interval_seconds: u64) -> tokio::task::JoinHandle<
 pub async fn run_once(state: &AppState) {
     let config = state.config.snapshot().await;
     let now_ms = current_time_ms();
+    state.login_throttle.purge(now_ms);
+    if let Err(error) = state.sessions.purge_expired(now_ms).await {
+        tracing::warn!(event = "scheduled_session_purge", status = "failed", error = %error);
+    }
     if config.notifications.reset_watch_is_enabled()
         && let Err(error) = monitor_reset_watch(state, &config, now_ms).await
     {

@@ -92,8 +92,8 @@ Codex OAuth 替换原请求中已有的 `Authorization` 和 `ChatGPT-Account-ID`
 `server.maintenance_interval_seconds` 控制，默认 300 秒。
 
 未注册的其他 HTTP 路径同样透明转发到 ChatGPT 上游，并保留 `Authorization`、
-`ChatGPT-Account-ID`、Cookie 和其他端到端 header。健康检查、状态页、隐藏管理路径和已注册
-协议 API 按各自的本地路由处理。
+`ChatGPT-Account-ID`、Cookie（控制台会话 Cookie 除外）和其他端到端 header。健康检查、
+`/admin` 控制台和已注册协议 API 按各自的本地路由处理。
 
 当 `/v1/models` 包含 `client_version` 查询参数时，服务保留 Codex CLI 模型目录格式，而
 不转换为 OpenAI model list。
@@ -226,19 +226,79 @@ URL 或自定义子协议。
 服务不解析未注册路径和 `/backend-api/*` 的协议正文，也不保证上游对相应 action 的
 稳定性、可用性、鉴权方式或响应格式。UDP RTP/RTCP 等非 HTTP 能力不在转发范围内。
 
-## 11. 公开账户用量页
+## 11. Web 控制台与登录会话
 
-`GET /` 返回不带管理侧栏的 React 账户查询页。页面使用与管理登录页一致的表单，用户输入一个已
-启用的 API Key 或 account id 后，结果直接显示在当前页面。
+管理员和下游用户使用同一个入口 `/admin`。`/admin` 前缀下的所有请求都在本地处理，绝不会转发到
+ChatGPT；未知路径或方法返回空 `404`。
 
-页面通过 `POST /account/data` 读取聚合数据，请求正文使用
-`application/x-www-form-urlencoded`，包含 `credential` 与 `range`。`range` 支持 `cycle`、`24h`、
+| 路径 | 行为 |
+| --- | --- |
+| `GET/HEAD /admin` | 返回 React 控制台，每次请求注入新的 CSP nonce，`Cache-Control: no-store` |
+| `GET/HEAD /admin/` | `308` 跳转到 `/admin` |
+| `GET/HEAD /admin/assets/*` | 从 `frontend.dir/assets` 读取带指纹的静态资源，`immutable` 缓存 |
+| `GET /admin/api/session` | 返回当前会话；未登录时为 `{"session": null}` |
+| `POST /admin/api/session` | 登录，JSON 正文 `{"credential": "..."}` |
+| `DELETE /admin/api/session` | 退出登录：撤销服务端会话并清除 Cookie，返回 `204` |
+| `GET /admin/api/account?range=24h` | 用户会话查看自己的用量 |
+| `/admin/api/<管理端点>` | 仅管理员会话，见第 13 节 |
+| `GET/HEAD /` | `302` 跳转到 `/admin` |
+
+`frontend.dir` 缺少 `index.html` 或文件不含 nonce 占位符时，`/admin` 返回本地 `503`。
+
+### 登录识别
+
+登录接口依次比较 `admin.secret`、已启用的 API Key 和已启用下游账户的 `account_id`（去除首尾
+空白），命中管理员即获得管理员会话，命中后两者获得只读用户会话。同一字符串同时配置为多种身份
+（含已停用记录）时拒绝登录并记录错误日志；创建或修改 API Key、下游账户时也会拒绝与
+`admin.secret` 相同的值。失败统一返回 `401 invalid_credentials`，不透露命中了哪类记录。
+
+`server.public_origin` 为非回环地址的 HTTP 时，管理员登录返回 `403 insecure_admin_origin`，除非
+配置 `session.allow_insecure_http = true`；用户登录不受此限制。
+
+同一客户端 10 分钟内失败 10 次后，登录接口返回 `429` 并带 `Retry-After`，期间正确凭据同样被拒绝。
+客户端地址取 TCP 对端；只有对端属于 `server.trusted_proxies` 时，才从右向左读取
+`X-Forwarded-For` 并跳过受信任代理。IPv6 按 `/64` 计数。
+
+### 会话
+
+会话保存在 `session.database_path` 指定的 SQLite 中。Cookie 只包含 32 字节随机 token，数据库只
+保存其 SHA-256。会话不保存登录凭据，而是保存凭据的 HMAC 绑定值（密钥为自动生成的
+`state.session_binding_key`），每个请求都会重新确认身份仍存在、已启用且凭据未变。
+
+| 身份 | 空闲过期 | 绝对过期 |
+| --- | --- | --- |
+| 管理员 | 24 小时 | 7 天 |
+| API Key / 下游账户 | 30 天 | 90 天 |
+
+已登录请求距上次续期超过 5 分钟时，服务端顺延空闲期限（不超过绝对期限）并重新下发 Cookie；
+token 不轮换。每个身份最多保留 20 个会话，超出时删除最旧的会话。以下情况会使会话失效：
+
+- 退出登录；
+- 修改 `admin.secret`、API Key 值或下游账户 `account_id`；
+- 停用或删除 API Key、下游账户（重新启用后旧会话不会恢复，需要重新登录）；
+- 更换 `state.session_binding_key`（全部会话失效）。
+
+`public_origin` 为 HTTPS 时 Cookie 为 `__Host-codex-session`（`Path=/; Secure; HttpOnly;
+SameSite=Lax`）；HTTP 时为 `codex-session`（`Path=/admin; HttpOnly; SameSite=Lax`）。转发到上游的
+请求会移除这两个 Cookie 及旧版管理 Cookie。
+
+所有 `/admin/api` 写请求（含登录、退出）必须带有与 `server.public_origin` 完全一致的 `Origin`，
+登录还要求 `Content-Type: application/json`；控制台不响应 CORS。`/admin/api` 响应均为
+`Cache-Control: no-store`。
+
+### 用户用量
+
+`GET /admin/api/account?range=24h` 的查询身份只取自会话，不接受客户端指定。`range` 支持 `24h`、
 `7d`、`30d` 和 `all`。返回身份类型、请求次数、Token、成本、时间序列、模型占比与额度时间条，
-但不会回显 account id、API Key、OAuth、邮箱、Cookie 或管理会话。
+但不会回显 account id、API Key、OAuth、邮箱或 Cookie。管理员会话调用返回 `403`。
 
-额度根据该调用身份当前映射的单个账户或账户组可用成员读取。公开查询不会推进组的轮询游标；
-无法读取额度时仍返回 Token 用量，`quota` 为 `null`。无效、已停用或未分配的 API Key 返回本地
-通用的 `404` JSON 错误；未分配下游账户仍可查询既有 Token 记录，但没有账户额度。
+额度根据该调用身份当前映射的单个账户或账户组可用成员读取，不会推进组的轮询游标；无法读取额度
+时仍返回 Token 用量，`quota` 为 `null`。未分配路由的身份仍可查询既有 Token 记录，但没有账户额度。
+
+### 旧路径
+
+配置了已弃用的 `admin.path` 时，`GET /<admin.path>/admin` 返回 `308` 跳转到 `/admin`，该路径族下的
+其他请求返回 `410`。旧的 `POST /account/data` 和 `/assets/*` 同样返回本地 `410`。
 
 ## 12. Token 用量统计
 
@@ -246,7 +306,7 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 usage 的上游终止 JSON/SSE/WebSocket 事件时把用量写入 SQLite。一个 WebSocket 连接可以记录多个
 response，相同 response ID 只落库一次。模型优先取终止响应，缺失且请求模型可用时使用请求模型。
 
-管理会话可读取 `GET /<admin.path>/admin/usage?range=7d`。`range` 支持 `cycle`、`24h`、`7d`、
+管理员会话可读取 `GET /admin/api/usage?range=7d`。`range` 支持 `cycle`、`24h`、`7d`、
 `30d` 和 `all`，省略时使用 `7d`。下游筛选使用 `downstreamType` 与 `downstreamId`，类型支持
 `api_key` 和 `auth_proxy`；上游筛选使用 `upstreamType` 与 `upstreamId`，类型支持
 `codex_account` 和 `account_group`。两个维度可以单独使用，也可以同时使用；同时使用时按逻辑与
@@ -267,14 +327,12 @@ response，相同 response ID 只落库一次。模型优先取终止响应，�
 
 ## 13. 管理 API
 
-管理 JSON API 位于 `/<admin.path>/admin`。精确的 `GET /<admin.path>/admin` 返回 React 管理页面；
-页面通过 `?page=usage`、`?page=pricing`、`?page=api-keys`、`?page=accounts` 和 `?page=account`
-切换视图。错误方法、额外路径段和其他隐藏路径族请求返回空 `404`。页面与以下 JSON 端点共享管理契约：
+管理 JSON API 位于 `/admin/api`，需要管理员会话：未登录返回 `401 invalid_session`，用户会话返回
+`403 admin_required`。控制台页面通过 `/admin?page=usage`、`?page=settings`、`?page=api-keys`、
+`?page=accounts` 和 `?page=account` 切换视图。以下为相对 `/admin/api` 的端点：
 
 | 方法与相对路径 | 用途 |
 | --- | --- |
-| `POST /login` | 使用 `admin.secret` 创建管理会话 |
-| `POST /logout` | 清除管理会话 |
 | `GET /state` | 读取 Codex 账户、账户组、路由、API Key 和下游账户 |
 | `GET /codex-accounts/subscription?id=<id>` | 实时读取指定 Codex 账户订阅与额度 |
 | `POST /codex-accounts/oauth/device` | 为新 Codex 账户创建设备授权请求 |
@@ -296,9 +354,8 @@ response，相同 response ID 只落库一次。模型优先取终止响应，�
 | `PUT /auth-proxy` | 更新下游账户的名称、`account_id` 或启用状态 |
 | `DELETE /auth-proxy` | 删除下游账户并释放其路由 |
 
-除登录和退出外，管理端点需要有效会话；所有管理写请求必须带有与 `server.public_origin`
-完全一致的 `Origin`。管理 Cookie
-保持 `Secure`、`HttpOnly` 和 `SameSite=Strict`，因此浏览器管理流量应通过 HTTPS。
+所有管理写请求必须带有与 `server.public_origin` 完全一致的 `Origin`。停用或删除 API Key、下游
+账户前会先撤销其全部控制台会话；撤销失败时返回 `503` 且不修改配置。
 
 Codex 账户、API Key、下游账户和账户组使用 UUID 格式的稳定 `id`。禁用 Codex 账户会暂停其路由，
 删除账户会同时移除组成员关系和直连路由。

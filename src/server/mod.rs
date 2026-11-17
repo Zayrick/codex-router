@@ -8,6 +8,8 @@ mod body;
 mod chatgpt_proxy;
 mod codex;
 pub mod config;
+mod console;
+mod console_security;
 mod frontend;
 mod oauth;
 mod pricing;
@@ -16,6 +18,7 @@ mod relay;
 mod response;
 mod router;
 mod scheduled;
+mod session_store;
 mod state;
 mod stream;
 mod usage;
@@ -44,6 +47,7 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
     let state = AppState::new(config.clone()).await?;
     let usage_database = state.usage.path().display().to_string();
     let maintenance = scheduled::spawn(state.clone(), snapshot.server.maintenance_interval_seconds);
+    warn_about_console_configuration(&config, &snapshot);
     let app = router::build(state);
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -54,12 +58,42 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
         config = %config.path().display(),
         usage_database = %usage_database
     );
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("HTTP server failed");
+    let result = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("HTTP server failed");
     maintenance.abort();
     result
+}
+
+fn warn_about_console_configuration(config: &ConfigStore, snapshot: &config::AppConfig) {
+    if let Some(path) = snapshot.admin.path.as_deref() {
+        tracing::warn!(
+            event = "deprecated_configuration",
+            setting = "admin.path",
+            "the web console now lives at /admin; /{path}/admin only redirects there and admin.path can be removed"
+        );
+    }
+    if console::insecure_public_origin(snapshot) {
+        tracing::warn!(
+            event = "insecure_console_origin",
+            public_origin = %snapshot.server.public_origin,
+            "administrator sign-in is disabled over plain HTTP; publish the console over HTTPS or set session.allow_insecure_http"
+        );
+    }
+    let index = config
+        .resolve_path(&snapshot.frontend.dir)
+        .join("index.html");
+    if !index.is_file() {
+        tracing::warn!(
+            event = "frontend_missing",
+            index = %index.display(),
+            "the web console is not installed; /admin will return 503 until frontend.dir contains a build"
+        );
+    }
 }
 
 async fn shutdown_signal() {

@@ -5,8 +5,10 @@ import { fileURLToPath, URL } from "node:url";
 
 const localBackendOrigin = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/;
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
 	appType: "custom",
+	// The Rust server serves built files below /admin/assets; the dev shell loads from the Vite origin root.
+	base: command === "build" ? "/admin/" : "/",
 	clearScreen: false,
 	html: {
 		// Rust replaces this build-time value with a fresh nonce per request.
@@ -32,4 +34,4 @@ export default defineConfig({
 		outDir: "dist",
 		emptyOutDir: true,
 	},
-});
+}));

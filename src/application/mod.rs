@@ -9,8 +9,9 @@ mod usage_monitor;
 pub use adapters::{AdaptedUpstreamRequest, RequestAdapter, ResponseAdapter};
 pub use reset_watch::reset_watch_notification;
 pub use routes::{
-    AdminRoute, ApiRoute, MatchedAdminRoute, ProtocolFamily, is_admin_path_family,
-    is_known_api_path, match_admin_route, match_api_route,
+    AdminRoute, ApiRoute, CONSOLE_BASE_PATH, ConsoleRoute, ProtocolFamily, is_console_path,
+    is_known_api_path, is_legacy_admin_path_family, legacy_admin_base_path, match_api_route,
+    match_console_route,
 };
 pub use tokenizer::Cl100kTokenCounter;
 pub use usage_monitor::{

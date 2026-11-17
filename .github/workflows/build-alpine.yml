@@ -38,6 +38,13 @@ jobs:
           restore-keys: |
             alpine-amd64-rust-1.97.1-
 
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm lint
+          pnpm build
+
       - name: Build release binary
         run: cargo build --locked --release
 
@@ -57,9 +64,12 @@ jobs:
           package_dir="dist/codex-router-alpine-amd64"
           install -D -m 0755 target/release/codex-router "$package_dir/codex-router"
           install -D -m 0644 config.example.toml "$package_dir/config.example.toml"
+          # The web console is deployed next to the binary and served from frontend.dir.
+          mkdir -p "$package_dir/web"
+          cp -R frontend/dist/. "$package_dir/web/"
           (
             cd "$package_dir"
-            sha256sum codex-router > SHA256SUMS
+            sha256sum codex-router config.example.toml $(find web -type f | sort) > SHA256SUMS
           )
           tar -C dist -czf dist/codex-router-alpine-amd64.tar.gz codex-router-alpine-amd64
 

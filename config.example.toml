@@ -7,10 +7,25 @@ public_origin = "http://127.0.0.1:8787"
 cors_origin = "*"
 maintenance_interval_seconds = 300
 log_filter = "codex_router=info,tower_http=info"
+# Reverse proxies (IPs or CIDRs) whose X-Forwarded-For header identifies the
+# real client for sign-in throttling. Set this when a proxy runs on the same host.
+# trusted_proxies = ["127.0.0.1", "::1"]
 
 [admin]
-path = "change-this-hidden-path"
+# Sign in at /admin with this secret. Use a long random value: the console path
+# is public. Every API key or downstream account id signs in at the same page.
 secret = "change-this-admin-secret"
+
+[frontend]
+# Directory containing the built web console (index.html and assets/).
+# Relative paths are resolved next to this configuration file.
+dir = "frontend/dist"
+
+[session]
+# Web console sessions. Relative paths are resolved next to this configuration file.
+database_path = "sessions.sqlite3"
+# Administrator sign-in requires HTTPS unless public_origin is a loopback address.
+# allow_insecure_http = false
 
 [upstream]
 # Optional SOCKS5 proxy for ChatGPT HTTP, SSE, and WebSocket connections.

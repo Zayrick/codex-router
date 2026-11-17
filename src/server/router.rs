@@ -2,7 +2,7 @@ use axum::{
     Router,
     body::Body,
     extract::{FromRequestParts, State, ws::WebSocketUpgrade},
-    http::Request,
+    http::{Request, StatusCode},
     response::Response,
 };
 use tower_http::trace::TraceLayer;
@@ -10,17 +10,17 @@ use url::Url;
 
 use crate::{
     application::{
-        AdminRoute, is_admin_path_family, is_known_api_path, match_admin_route, match_api_route,
+        is_known_api_path, is_legacy_admin_path_family, legacy_admin_base_path, match_api_route,
+        match_console_route,
     },
     auth::{ApiKeyRepository, RouteConsumerKind, client_token},
     upstream::relay::is_backend_api_path,
 };
 
 use super::{
-    account::handle_public_account,
-    admin::handle_admin,
     api::{RoutedApiIdentity, handle_api},
-    frontend,
+    console::{console_redirect, handle_console},
+    console_security::strip_console_cookies,
     oauth::current_time_ms,
     relay::handle_relay,
     response,
@@ -53,17 +53,24 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("websocket"));
 
-    if let Some(response) = frontend::asset_response(request.method(), &path) {
-        return response;
+    if let Some(route) = match_console_route(&method, &path) {
+        return handle_console(route, request, client_url, &config, &state).await;
     }
+    // Console cookies are never forwarded to upstream services.
+    let mut request = request;
+    strip_console_cookies(request.headers_mut());
 
-    let output = if let Some(matched) = match_admin_route(&method, &path, &config.admin.path) {
-        if matched.route == AdminRoute::Page {
-            return frontend::application_page();
+    let output = if let Some(legacy) = legacy_admin_base_path(config.admin.path.as_deref())
+        .filter(|base| is_legacy_admin_path_family(&path, base))
+    {
+        if path == legacy && matches!(method.as_str(), "GET" | "HEAD") {
+            console_redirect(StatusCode::PERMANENT_REDIRECT)
+        } else {
+            gone()
         }
-        handle_admin(matched, request, client_url, &config, &state).await
-    } else if is_admin_path_family(&path, &config.admin.path) {
-        response::empty(404)
+    } else if path == "/account/data" || path.starts_with("/assets/") {
+        // Former public endpoints stay local instead of falling through to the relay.
+        gone()
     } else if is_backend_api_path(&path) {
         if has_websocket_upgrade && websocket.is_none() {
             response::empty(400)
@@ -92,14 +99,8 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
             }
         }
     } else if path == "/" {
-        if method == "GET" {
-            return frontend::application_page();
-        } else {
-            response::empty(404)
-        }
-    } else if path == "/account/data" {
-        if method == "POST" {
-            handle_public_account(request, &config, &state).await
+        if matches!(method.as_str(), "GET" | "HEAD") {
+            console_redirect(StatusCode::FOUND)
         } else {
             response::empty(404)
         }
@@ -177,6 +178,15 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
     response::suppress_html_body(output)
 }
 
+fn gone() -> Response {
+    let mut output = response::empty(410);
+    output.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    output
+}
+
 fn client_url(public_origin: &str, uri: &axum::http::Uri) -> Option<Url> {
     let path_and_query = uri.path_and_query().map_or("/", |value| value.as_str());
     Url::parse(&format!("{public_origin}{path_and_query}")).ok()
@@ -196,8 +206,8 @@ mod tests {
     };
 
     use super::super::config::{
-        AdminConfig, AppConfig, ConfigStore, NotificationConfig, PersistentState,
-        PublicAccountConfig, ServerConfig, UpstreamConfig,
+        AdminConfig, AppConfig, ConfigStore, FrontendConfig, NotificationConfig, PersistentState,
+        PublicAccountConfig, ServerConfig, SessionConfig, UpstreamConfig,
     };
     use super::*;
 
@@ -213,16 +223,24 @@ mod tests {
 
     #[tokio::test]
     async fn serves_local_apis() {
-        let path =
-            std::env::temp_dir().join(format!("codex-router-test-{}.toml", uuid::Uuid::new_v4()));
-        let usage_path = path.with_extension("usage.sqlite3");
+        let directory =
+            std::env::temp_dir().join(format!("codex-router-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(directory.join("web/assets")).unwrap();
+        std::fs::write(
+            directory.join("web/index.html"),
+            r#"<script type="module" nonce="__CODEX_ROUTER_CSP_NONCE__" src="/admin/assets/app.js"></script>"#,
+        )
+        .unwrap();
+        std::fs::write(directory.join("web/assets/app.js"), "export {}").unwrap();
+        let path = directory.join("config.toml");
+        let usage_path = directory.join("usage.sqlite3");
         let config = AppConfig {
             server: ServerConfig {
-                public_origin: "http://router.example".into(),
+                public_origin: ORIGIN.into(),
                 ..ServerConfig::default()
             },
             admin: AdminConfig {
-                path: "secret".into(),
+                path: Some("secret".into()),
                 secret: "admin-secret".into(),
             },
             upstream: UpstreamConfig {
@@ -235,6 +253,8 @@ mod tests {
             },
             notifications: NotificationConfig::default(),
             public_account: PublicAccountConfig::default(),
+            frontend: FrontendConfig { dir: "web".into() },
+            session: SessionConfig::default(),
             state: PersistentState {
                 api_keys: vec![
                     ClientApiKey {
@@ -357,62 +377,343 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(payload["input_tokens"].as_u64().is_some());
 
-        for page in ["/", "/secret/admin"] {
-            let response = app
-                .clone()
-                .oneshot(Request::builder().uri(page).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(
-                response.headers().get("content-type").unwrap(),
-                "text/html; charset=utf-8"
-            );
-            assert!(
-                response
-                    .headers()
-                    .get("content-security-policy")
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .contains("nonce-")
-            );
-            let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-            assert!(
-                body.windows(b"/@vite/client".len())
-                    .any(|value| value == b"/@vite/client")
-            );
+        // The console shell and its assets are served from frontend.dir.
+        let page = send(&app, Request::get("/admin")).await;
+        assert_eq!(page.status(), StatusCode::OK);
+        assert_eq!(page.headers()["content-type"], "text/html; charset=utf-8");
+        let csp = page.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = to_bytes(page.into_body(), 1024 * 1024).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body.contains("__CODEX_ROUTER_CSP_NONCE__"));
+        let nonce = body
+            .split("nonce=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        assert!(csp.contains(&format!("'nonce-{nonce}'")));
+        let asset = send(&app, Request::get("/admin/assets/app.js")).await;
+        assert_eq!(asset.status(), StatusCode::OK);
+
+        // Root, the trailing slash, and the deprecated hidden path all lead to /admin.
+        for (uri, status) in [
+            ("/", StatusCode::FOUND),
+            ("/admin/", StatusCode::PERMANENT_REDIRECT),
+            ("/secret/admin", StatusCode::PERMANENT_REDIRECT),
+        ] {
+            let response = send(&app, Request::get(uri)).await;
+            assert_eq!(response.status(), status, "{uri}");
+            assert_eq!(response.headers()["location"], "/admin");
+        }
+        // Former and unknown console paths are answered locally, never relayed.
+        for (method, uri, status) in [
+            (Method::GET, "/secret/admin/state", StatusCode::GONE),
+            (Method::POST, "/account/data", StatusCode::GONE),
+            (Method::GET, "/assets/old.js", StatusCode::GONE),
+            (Method::GET, "/admin/unknown", StatusCode::NOT_FOUND),
+            (Method::GET, "/admin/api/unknown", StatusCode::NOT_FOUND),
+            (
+                Method::GET,
+                "/admin/assets/missing.js",
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            let response = send(&app, Request::builder().method(method).uri(uri)).await;
+            assert_eq!(response.status(), status, "{uri}");
         }
 
-        for (form, identity_type, range) in [
-            ("credential=sk-test-value-123%21&range=7d", "api_key", "7d"),
-            ("credential=account-test&range=24h", "auth_proxy", "24h"),
+        // Anonymous session lookups succeed with no session; protected APIs need one.
+        let anonymous = send(&app, Request::get("/admin/api/session")).await;
+        assert_eq!(anonymous.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(anonymous).await["session"],
+            serde_json::Value::Null
+        );
+        let anonymous = send(&app, Request::get("/admin/api/account?range=24h")).await;
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+        // Sign-in requires a same-origin JSON request.
+        let cross_site = send(
+            &app,
+            Request::post("/admin/api/session")
+                .header("origin", "https://evil.example")
+                .header("content-type", "application/json"),
+        )
+        .await;
+        assert_eq!(cross_site.status(), StatusCode::FORBIDDEN);
+        let wrong = sign_in(&app, "sk-wrong-value-123!").await;
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+        assert!(wrong.headers().get("set-cookie").is_none());
+
+        // A user session sees only its own usage and cannot use management APIs.
+        for (credential, identity_type) in [
+            ("sk-test-value-123!", "api_key"),
+            ("account-test", "auth_proxy"),
         ] {
-            let account_data = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method(Method::POST)
-                        .uri("/account/data")
-                        .header("content-type", "application/x-www-form-urlencoded")
-                        .body(Body::from(form))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(account_data.status(), StatusCode::OK);
-            let body = to_bytes(account_data.into_body(), 1024 * 1024)
-                .await
-                .unwrap();
-            let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let signed_in = sign_in(&app, credential).await;
+            assert_eq!(signed_in.status(), StatusCode::OK);
+            let cookie = session_cookie(&signed_in);
+            let set_cookie = signed_in.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .to_owned();
+            assert!(set_cookie.starts_with("__Host-codex-session="));
+            for attribute in ["Path=/", "Secure", "HttpOnly", "SameSite=Lax", "Max-Age="] {
+                assert!(set_cookie.contains(attribute), "{set_cookie}");
+            }
+            let session = json_body(signed_in).await;
+            assert_eq!(session["session"]["role"], "user");
+            assert_eq!(session["session"]["identityType"], identity_type);
+
+            let account = send(
+                &app,
+                Request::get("/admin/api/account?range=7d").header("cookie", &cookie),
+            )
+            .await;
+            assert_eq!(account.status(), StatusCode::OK);
+            assert_eq!(account.headers()["cache-control"], "no-store");
+            let payload = json_body(account).await;
             assert!(payload["account"].get("name").is_none());
             assert_eq!(payload["account"]["identityType"], identity_type);
-            assert_eq!(payload["usage"]["range"], range);
+            assert_eq!(payload["usage"]["range"], "7d");
+            let cycle = send(
+                &app,
+                Request::get("/admin/api/account?range=cycle").header("cookie", &cookie),
+            )
+            .await;
+            assert_eq!(cycle.status(), StatusCode::BAD_REQUEST);
+
+            let forbidden = send(
+                &app,
+                Request::get("/admin/api/state").header("cookie", &cookie),
+            )
+            .await;
+            assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
         }
 
-        let _ = tokio::fs::remove_file(path).await;
-        let _ = tokio::fs::remove_file(&usage_path).await;
-        let _ = tokio::fs::remove_file(usage_path.with_extension("sqlite3-shm")).await;
-        let _ = tokio::fs::remove_file(usage_path.with_extension("sqlite3-wal")).await;
+        // The administrator signs in with the same form and reaches management APIs.
+        let admin = sign_in(&app, "admin-secret").await;
+        assert_eq!(admin.status(), StatusCode::OK);
+        let admin_cookie = session_cookie(&admin);
+        assert_eq!(json_body(admin).await["session"]["role"], "admin");
+        let state_response = send(
+            &app,
+            Request::get("/admin/api/state").header("cookie", &admin_cookie),
+        )
+        .await;
+        assert_eq!(state_response.status(), StatusCode::OK);
+        let user_view = send(
+            &app,
+            Request::get("/admin/api/account?range=24h").header("cookie", &admin_cookie),
+        )
+        .await;
+        assert_eq!(user_view.status(), StatusCode::FORBIDDEN);
+
+        // Disabling a key ends its sessions, and re-enabling does not revive them.
+        let user = sign_in(&app, "sk-test-value-123!").await;
+        let user_cookie = session_cookie(&user);
+        for enabled in [false, true] {
+            let update = send(
+                &app,
+                Request::put("/admin/api/api-keys")
+                    .header("cookie", &admin_cookie)
+                    .header("origin", ORIGIN)
+                    .header("content-type", "application/json")
+                    .body_json(serde_json::json!({
+                        "id": "00000000-0000-4000-8000-000000000001",
+                        "name": "test",
+                        "key": "sk-test-value-123!",
+                        "enabled": enabled,
+                    })),
+            )
+            .await;
+            assert_eq!(update.status(), StatusCode::OK);
+        }
+        let revoked = send(
+            &app,
+            Request::get("/admin/api/account?range=24h").header("cookie", &user_cookie),
+        )
+        .await;
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+
+        // Rotating a key's value also ends sessions bound to the old value.
+        let user = sign_in(&app, "sk-test-value-123!").await;
+        let user_cookie = session_cookie(&user);
+        let rotate = send(
+            &app,
+            Request::put("/admin/api/api-keys")
+                .header("cookie", &admin_cookie)
+                .header("origin", ORIGIN)
+                .header("content-type", "application/json")
+                .body_json(serde_json::json!({
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "name": "test",
+                    "key": "sk-rotated-value-123!",
+                    "enabled": true,
+                })),
+        )
+        .await;
+        assert_eq!(rotate.status(), StatusCode::OK);
+        let rotated = send(
+            &app,
+            Request::get("/admin/api/session").header("cookie", &user_cookie),
+        )
+        .await;
+        assert_eq!(json_body(rotated).await["session"], serde_json::Value::Null);
+
+        // Restoring the previous value does not revive sessions bound to it.
+        let user = sign_in(&app, "sk-rotated-value-123!").await;
+        let rotated_cookie = session_cookie(&user);
+        for key in ["sk-test-value-123!", "sk-rotated-value-123!"] {
+            let restore = send(
+                &app,
+                Request::put("/admin/api/api-keys")
+                    .header("cookie", &admin_cookie)
+                    .header("origin", ORIGIN)
+                    .header("content-type", "application/json")
+                    .body_json(serde_json::json!({
+                        "id": "00000000-0000-4000-8000-000000000001",
+                        "name": "test",
+                        "key": key,
+                        "enabled": true,
+                    })),
+            )
+            .await;
+            assert_eq!(restore.status(), StatusCode::OK);
+        }
+        for cookie in [&user_cookie, &rotated_cookie] {
+            let revived = send(
+                &app,
+                Request::get("/admin/api/session").header("cookie", cookie),
+            )
+            .await;
+            assert_eq!(json_body(revived).await["session"], serde_json::Value::Null);
+        }
+        // An unchanged update keeps existing sessions.
+        let user = sign_in(&app, "sk-rotated-value-123!").await;
+        let kept_cookie = session_cookie(&user);
+        let rename = send(
+            &app,
+            Request::put("/admin/api/api-keys")
+                .header("cookie", &admin_cookie)
+                .header("origin", ORIGIN)
+                .header("content-type", "application/json")
+                .body_json(serde_json::json!({
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "name": "renamed",
+                    "key": "sk-rotated-value-123!",
+                    "enabled": true,
+                })),
+        )
+        .await;
+        assert_eq!(rename.status(), StatusCode::OK);
+        let kept = send(
+            &app,
+            Request::get("/admin/api/session").header("cookie", &kept_cookie),
+        )
+        .await;
+        assert_eq!(json_body(kept).await["session"]["role"], "user");
+
+        // A key equal to the admin secret is refused.
+        let conflict = send(
+            &app,
+            Request::post("/admin/api/api-keys")
+                .header("cookie", &admin_cookie)
+                .header("origin", ORIGIN)
+                .header("content-type", "application/json")
+                .body_json(serde_json::json!({
+                    "name": "conflict",
+                    "key": "admin-secret",
+                    "enabled": true,
+                })),
+        )
+        .await;
+        assert_eq!(conflict.status(), StatusCode::BAD_REQUEST);
+
+        // Signing out revokes the server-side session and clears the cookie.
+        let sign_out = send(
+            &app,
+            Request::delete("/admin/api/session")
+                .header("cookie", &admin_cookie)
+                .header("origin", ORIGIN),
+        )
+        .await;
+        assert_eq!(sign_out.status(), StatusCode::NO_CONTENT);
+        assert!(
+            sign_out.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .contains("Max-Age=0")
+        );
+        let after = send(
+            &app,
+            Request::get("/admin/api/state").header("cookie", &admin_cookie),
+        )
+        .await;
+        assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
+
+    const ORIGIN: &str = "https://router.example";
+
+    trait JsonBody {
+        fn body_json(self, value: serde_json::Value) -> Request<Body>;
+    }
+
+    impl JsonBody for axum::http::request::Builder {
+        fn body_json(self, value: serde_json::Value) -> Request<Body> {
+            self.body(Body::from(value.to_string())).unwrap()
+        }
+    }
+
+    trait IntoTestRequest {
+        fn into_request(self) -> Request<Body>;
+    }
+
+    impl IntoTestRequest for axum::http::request::Builder {
+        fn into_request(self) -> Request<Body> {
+            self.body(Body::empty()).unwrap()
+        }
+    }
+
+    impl IntoTestRequest for Request<Body> {
+        fn into_request(self) -> Request<Body> {
+            self
+        }
+    }
+
+    async fn send(app: &Router, request: impl IntoTestRequest) -> Response {
+        app.clone().oneshot(request.into_request()).await.unwrap()
+    }
+
+    async fn sign_in(app: &Router, credential: &str) -> Response {
+        send(
+            app,
+            Request::post("/admin/api/session")
+                .header("origin", ORIGIN)
+                .header("content-type", "application/json")
+                .body_json(serde_json::json!({ "credential": credential })),
+        )
+        .await
+    }
+
+    fn session_cookie(response: &Response) -> String {
+        response.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned()
+    }
+
+    async fn json_body(response: Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
     }
 }

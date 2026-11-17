@@ -10,7 +10,9 @@
 		<title>Codex Router</title>
 	</head>
 	<body>
-		<div id="root"></div>
+		<!-- Replaced by React on mount. If the application bundle cannot load (for
+		     example right after a release), this static hint stays visible. -->
+		<div id="root"><p>正在加载 Codex Router…如长时间没有响应，请刷新页面。</p></div>
 		<script type="module" src="/src/main.tsx"></script>
 	</body>
 </html>

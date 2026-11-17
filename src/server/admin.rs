@@ -1,21 +1,15 @@
-use axum::{
-    body::Body,
-    http::{HeaderValue, Method, Request, StatusCode, header},
-    response::Response,
-};
+use axum::{body::Body, http::Request, response::Response};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use url::Url;
 
 use crate::{
-    application::{AdminRoute, MatchedAdminRoute},
+    application::AdminRoute,
     auth::{
         ApiKeyRepository, CodexAccount, CredentialImport, DeviceAuthorizationService,
         DevicePollResult, MAX_CREDENTIAL_IMPORT_BYTES, OAuthProvider, OAuthRepository, OAuthStatus,
-        RouteConsumerKind, RoutingRepository, admin_secret_matches, admin_session_cookie_header,
-        clear_admin_session_cookie_header, create_admin_session, has_valid_admin_session,
-        oauth_status, valid_record_id,
+        RouteConsumerKind, RoutingRepository, constant_time_equal, oauth_status, valid_record_id,
     },
     core::{ApiError, AppResult, JsonObject},
     upstream::codex::{codex_subscription_from_usage, codex_subscription_metadata},
@@ -28,6 +22,7 @@ use super::{
     oauth::{ReqwestOAuthHttpClient, SystemClock, current_time_ms},
     pricing::{ModelPrice, sync_model_prices},
     response,
+    session_store::Principal,
     state::AppState,
     usage::{UsageBounds, UsageFilters, UsageIdentityFilter, UsageRange},
 };
@@ -39,74 +34,32 @@ const CODEX_ACCOUNT_OAUTH_READ_CONCURRENCY: usize = 4;
 #[path = "admin_import_tests.rs"]
 mod import_tests;
 
+/// Management API dispatch. Callers must already have verified an
+/// administrator session and, for writes, a same-origin request.
 pub async fn handle_admin(
-    matched: MatchedAdminRoute,
+    route: AdminRoute,
     request: Request<Body>,
     client_url: Url,
     config: &AppConfig,
     state: &AppState,
 ) -> Response {
-    match dispatch(matched, request, &client_url, config, state).await {
+    match dispatch(route, request, &client_url, config, state).await {
         Ok(output) => output,
         Err(error) => response::api_error(&error),
     }
 }
 
 async fn dispatch(
-    matched: MatchedAdminRoute,
+    route: AdminRoute,
     request: Request<Body>,
     client_url: &Url,
     config: &AppConfig,
     state: &AppState,
 ) -> AppResult<Response> {
     let now_ms = current_time_ms();
-    match matched.route {
-        AdminRoute::Page => return Ok(response::empty(404)),
-        AdminRoute::Login => {
-            require_same_origin(&request, config)?;
-            let (parts, body) = request.into_parts();
-            let bytes = body::read_limited_body(&parts.headers, body, MAX_ADMIN_BODY_BYTES).await?;
-            let secret = url::form_urlencoded::parse(&bytes)
-                .find(|(name, _)| name == "secret")
-                .map(|(_, value)| value.into_owned());
-            if !admin_secret_matches(
-                &secret.map(Value::String).unwrap_or(Value::Null),
-                &config.admin.secret,
-            ) {
-                return Err(invalid_admin_secret());
-            }
-            let session = create_admin_session(&config.admin.secret, now_ms)?;
-            return redirect_response(
-                &matched.base_path,
-                client_url,
-                Some(&admin_session_cookie_header(&session)),
-            );
-        }
-        AdminRoute::Logout => {
-            require_same_origin(&request, config)?;
-            return redirect_response(
-                &matched.base_path,
-                client_url,
-                Some(&clear_admin_session_cookie_header()),
-            );
-        }
-        _ => {}
-    }
-
-    let cookie = request
-        .headers()
-        .get("cookie")
-        .and_then(|value| value.to_str().ok());
-    if !has_valid_admin_session(cookie, &config.admin.secret, now_ms) {
-        return Err(invalid_admin_session());
-    }
-    if request.method() != Method::GET {
-        require_same_origin(&request, config)?;
-    }
-
     let keys = ApiKeyRepository::new(state.config.as_ref());
     let routing = RoutingRepository::new(state.config.as_ref());
-    match matched.route {
+    match route {
         AdminRoute::State => {
             let api_keys = keys.read().await?;
             let accounts = keys.read_auth_proxy_accounts().await?;
@@ -419,18 +372,36 @@ async fn dispatch(
         }
         AdminRoute::ApiKeysGet => response::json(&json!({ "apiKeys": keys.read().await? }), 200),
         AdminRoute::ApiKeysCreate => {
-            let input = Value::Object(admin_json(request).await?);
+            let input = admin_json(request).await?;
+            reject_admin_secret_reuse(&input, "key", config)?;
+            let input = Value::Object(input);
             response::json(&json!({ "apiKeys": keys.create(&input).await? }), 201)
         }
         AdminRoute::ApiKeysUpdate => {
             let input = admin_json(request).await?;
+            reject_admin_secret_reuse(&input, "key", config)?;
             let id = input.get("id").cloned().unwrap_or(Value::Null);
+            let _credentials = state.credential_lock.lock().await;
+            if let Some(id) = id.as_str() {
+                let current = keys.read().await?;
+                let unchanged = current.iter().any(|key| {
+                    key.id == id
+                        && key.enabled
+                        && input.get("enabled") == Some(&Value::Bool(true))
+                        && input.get("key").and_then(Value::as_str) == Some(key.key.as_str())
+                });
+                if !unchanged {
+                    revoke_sessions(state, Some(Principal::ApiKey(id.into()))).await?;
+                }
+            }
             let value = Value::Object(input);
             response::json(&json!({ "apiKeys": keys.update(&id, &value).await? }), 200)
         }
         AdminRoute::ApiKeysDelete => {
             let input = admin_json(request).await?;
             let id = input.get("id").cloned().unwrap_or(Value::Null);
+            let _credentials = state.credential_lock.lock().await;
+            revoke_sessions(state, id.as_str().map(|id| Principal::ApiKey(id.into()))).await?;
             let updated = keys.delete(&id).await?;
             if let Some(id) = id.as_str() {
                 routing
@@ -440,13 +411,33 @@ async fn dispatch(
             response::json(&json!({ "apiKeys": updated }), 200)
         }
         AdminRoute::AuthProxyCreate => {
-            let input = Value::Object(admin_json(request).await?);
+            let input = admin_json(request).await?;
+            reject_admin_secret_reuse(&input, "accountId", config)?;
+            let input = Value::Object(input);
             let accounts = keys.create_auth_proxy_account(&input).await?;
             response::json(&json!({ "authProxyAccounts": accounts }), 201)
         }
         AdminRoute::AuthProxyUpdate => {
             let input = admin_json(request).await?;
+            reject_admin_secret_reuse(&input, "accountId", config)?;
             let id = input.get("id").cloned().unwrap_or(Value::Null);
+            let _credentials = state.credential_lock.lock().await;
+            if let Some(id) = id.as_str() {
+                let current = keys.read_auth_proxy_accounts().await?;
+                let unchanged = current.iter().any(|entry| {
+                    entry.id == id
+                        && entry.enabled
+                        && input.get("enabled") == Some(&Value::Bool(true))
+                        && input
+                            .get("accountId")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            == Some(entry.account_id.as_str())
+                });
+                if !unchanged {
+                    revoke_sessions(state, Some(Principal::AuthProxy(id.into()))).await?;
+                }
+            }
             let value = Value::Object(input);
             let accounts = keys.update_auth_proxy_account(&id, &value).await?;
             response::json(&json!({ "authProxyAccounts": accounts }), 200)
@@ -454,6 +445,8 @@ async fn dispatch(
         AdminRoute::AuthProxyDelete => {
             let input = admin_json(request).await?;
             let id = input.get("id").cloned().unwrap_or(Value::Null);
+            let _credentials = state.credential_lock.lock().await;
+            revoke_sessions(state, id.as_str().map(|id| Principal::AuthProxy(id.into()))).await?;
             let accounts = keys.delete_auth_proxy_account(&id).await?;
             if let Some(id) = id.as_str() {
                 routing
@@ -462,7 +455,6 @@ async fn dispatch(
             }
             response::json(&json!({ "authProxyAccounts": accounts }), 200)
         }
-        AdminRoute::Page | AdminRoute::Login | AdminRoute::Logout => Err(invalid_admin_request()),
     }
 }
 
@@ -593,60 +585,48 @@ async fn admin_json(request: Request<Body>) -> AppResult<JsonObject> {
     value.as_object().cloned().ok_or_else(invalid_admin_json)
 }
 
-fn require_same_origin(request: &Request<Body>, config: &AppConfig) -> AppResult<()> {
-    let origin = request
-        .headers()
-        .get("origin")
-        .and_then(|value| value.to_str().ok());
-    if origin == Some(config.server.public_origin.as_str()) {
-        Ok(())
-    } else {
-        Err(invalid_admin_origin())
-    }
+/// Revokes a principal's console sessions before its credential is disabled,
+/// deleted, or changed, so re-enabling it or restoring the old value cannot
+/// revive a stolen session. Callers hold `credential_lock`, which also blocks
+/// sign-ins, so no session can be created between revocation and the change.
+async fn revoke_sessions(state: &AppState, principal: Option<Principal>) -> AppResult<()> {
+    let Some(principal) = principal else {
+        return Ok(());
+    };
+    state
+        .sessions
+        .revoke_principal(&principal)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            tracing::error!(event = "console_session_revoke", status = "failed", error = %error);
+            ApiError::new(
+                503,
+                "Existing sessions could not be revoked; nothing was changed.",
+            )
+            .with_kind("server_error")
+            .with_code("session_unavailable")
+        })
 }
 
-fn redirect_response(
-    base_path: &str,
-    request_url: &Url,
-    cookie: Option<&str>,
-) -> AppResult<Response> {
-    let location = request_url
-        .join(base_path)
-        .map_err(|_| invalid_admin_request())?;
-    let mut output = Response::new(Body::empty());
-    *output.status_mut() = StatusCode::SEE_OTHER;
-    output.headers_mut().insert(
-        header::LOCATION,
-        HeaderValue::from_str(location.as_str()).map_err(|_| invalid_admin_request())?,
-    );
-    output
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    if let Some(cookie) = cookie {
-        output.headers_mut().append(
-            header::SET_COOKIE,
-            HeaderValue::from_str(cookie).map_err(|_| invalid_admin_request())?,
+/// A user credential equal to the admin secret would make sign-in ambiguous.
+fn reject_admin_secret_reuse(input: &JsonObject, field: &str, config: &AppConfig) -> AppResult<()> {
+    let reused = input
+        .get(field)
+        .and_then(Value::as_str)
+        .is_some_and(|value| {
+            constant_time_equal(value, &config.admin.secret)
+                || constant_time_equal(value.trim(), config.admin.secret.trim())
+        });
+    if reused {
+        return Err(
+            ApiError::new(400, "This credential is already used by the administrator.")
+                .with_kind("invalid_request_error")
+                .with_code("credential_conflict")
+                .with_param(field),
         );
     }
-    Ok(output)
-}
-
-fn invalid_admin_session() -> ApiError {
-    ApiError::new(401, "The management session is missing or expired.")
-        .with_kind("authentication_error")
-        .with_code("invalid_admin_session")
-}
-
-fn invalid_admin_secret() -> ApiError {
-    ApiError::new(401, "管理密钥无效。")
-        .with_kind("authentication_error")
-        .with_code("invalid_admin_secret")
-}
-
-fn invalid_admin_origin() -> ApiError {
-    ApiError::new(403, "The management request must be same-origin.")
-        .with_kind("authentication_error")
-        .with_code("invalid_admin_origin")
+    Ok(())
 }
 
 fn invalid_admin_json() -> ApiError {

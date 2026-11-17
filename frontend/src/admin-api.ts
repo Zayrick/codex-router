@@ -282,7 +282,7 @@ export class AdminApiError extends Error {
 
 export class AdminSessionExpiredError extends AdminApiError {
 	constructor() {
-		super("管理会话已失效，请重新登录。", 401, "invalid_admin_session");
+		super("登录已失效，请重新登录。", 401, "invalid_session");
 		this.name = "AdminSessionExpiredError";
 	}
 }
@@ -292,18 +292,6 @@ export class AdminApiClient {
 
 	constructor(basePath: string) {
 		this.basePath = basePath.replace(/\/$/, "");
-	}
-
-	async login(secret: string): Promise<void> {
-		await this.submitSessionForm(
-			"/login",
-			new URLSearchParams({ secret }),
-			false,
-		);
-	}
-
-	async logout(): Promise<void> {
-		await this.submitSessionForm("/logout", undefined, true);
 	}
 
 	getState(): Promise<AdminState> {
@@ -482,23 +470,6 @@ export class AdminApiClient {
 		return result.authProxyAccounts;
 	}
 
-	private async submitSessionForm(
-		path: string,
-		body: URLSearchParams | undefined,
-		sessionRequired: boolean,
-	): Promise<void> {
-		const headers = new Headers({ Accept: "application/json" });
-		const init: RequestInit = {
-			method: "POST",
-			credentials: "same-origin",
-			headers,
-			...(body ? { body } : {}),
-		};
-		const response = await fetch(`${this.basePath}${path}`, init);
-		if (response.ok) return;
-		throw await responseError(response, sessionRequired);
-	}
-
 	private async requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 		const headers = new Headers(init?.headers);
 		headers.set("Accept", "application/json");
@@ -537,6 +508,11 @@ async function responseError(
 		payload = await response.json();
 	} catch {}
 	const error = isRecord(payload) && isRecord(payload.error) ? payload.error : null;
+	// The browser's session was replaced by a non-administrator one (for example
+	// from another tab): leave the management view like an expired session.
+	if (sessionRequired && response.status === 403 && error?.code === "admin_required") {
+		return new AdminSessionExpiredError();
+	}
 	const message =
 		error && typeof error.message === "string"
 			? error.message

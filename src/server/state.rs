@@ -6,6 +6,8 @@ use super::{
     account_router::AccountRouter,
     chatgpt_proxy::{ChatgptProxy, ChatgptTransport},
     config::ConfigStore,
+    console_security::LoginThrottle,
+    session_store::SessionStore,
     usage::UsageStore,
 };
 
@@ -16,6 +18,11 @@ pub struct AppState {
     pub chatgpt: ChatgptTransport,
     pub usage: UsageStore,
     pub account_router: AccountRouter,
+    pub sessions: SessionStore,
+    pub login_throttle: Arc<LoginThrottle>,
+    /// Serializes console sign-in with credential changes, so a sign-in can
+    /// never observe a credential that is being disabled, deleted, or rotated.
+    pub credential_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -47,6 +54,7 @@ impl AppState {
         let chatgpt = ChatgptTransport::new(chatgpt_client, proxy);
         let usage_path = config.resolve_path(&snapshot.usage_tracking.database_path);
         let usage = UsageStore::open(usage_path)?;
+        let sessions = SessionStore::open(config.resolve_path(&snapshot.session.database_path))?;
         let account_router = AccountRouter::default();
         account_router
             .restore_quota_snapshots(config.as_ref())
@@ -57,6 +65,9 @@ impl AppState {
             chatgpt,
             usage,
             account_router,
+            sessions,
+            login_throttle: Arc::default(),
+            credential_lock: Arc::default(),
         })
     }
 }

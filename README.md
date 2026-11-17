@@ -2,7 +2,7 @@
 
 Codex Router 是一个独立运行的 Rust API 网关，把 ChatGPT Codex 能力转换或映射为 OpenAI、
 Anthropic 与 Gemini 风格接口。服务使用 Tokio、Axum 和 Reqwest，配置与账户状态保存在本地
-TOML 文件中，下游 Token 用量保存在 SQLite 中，React 管理界面随发行二进制一起提供。
+TOML 文件中，下游 Token 用量保存在 SQLite 中，React 控制台作为独立的静态文件目录随发行包提供。
 
 ## 当前能力
 
@@ -12,20 +12,22 @@ TOML 文件中，下游 Token 用量保存在 SQLite 中，React 管理界面随
 - `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket 转发；
 - Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
 - 统一 Codex 账户池、设备授权、JSON / 手动凭据导入、账户组、下游 API Key 与下游账户管理 API；
-- React 管理页面与公开账户用量查询页，账户组可展示组内全部额度时间轴；
+- 统一的 `/admin` 控制台：管理员与 API Key / 下游账户用户同一入口登录，登录状态保存在服务端会话中并自动续期；
+  用户视图的账户组可展示组内全部额度时间轴；
 - 按 API Key、下游账户、Codex 账户/组、模型和 HTTP/WebSocket 统计实际 Token 用量；
 - 后台 OAuth 刷新、用量采集，以及可按事件和账户配置的 reset watch、Bark 与钉钉通知；
 - 原生流式正文和双向 WebSocket bridge。
 
-`GET /` 提供账户用量查询页，提交 API Key 或 account id 后在原页显示对应调用身份的用量；管理页面只在精确的
-`/<admin.path>/admin` 路径提供，附近路径不会暴露页面。发行构建会把带指纹的 React 资源直接
-嵌入 Rust 二进制，部署时不需要 Node.js、pnpm 或 `frontend` 目录。完整契约见
+控制台位于 `/admin`（`/` 会跳转过去）。输入 `admin.secret` 进入管理视图，输入 API Key 或
+account id 进入该身份的用量视图。前端不再嵌入二进制：服务从 `frontend.dir` 目录读取
+`index.html` 并为每次请求注入 CSP nonce，`/admin/assets/*` 直接读取该目录下的带指纹资源。
+服务器只需要构建好的静态文件，不需要 Node.js 或 pnpm。完整契约见
 [API 文档](docs/api.md)，运行与持久化设置见[配置文档](docs/configuration.md)。
 
 ## 运行
 
-要求 Rust 1.97 或更高版本。第一次从源码构建还需要 Node.js 22.12 或更高版本及 pnpm 11；它们只
-用于编译 React 前端，不是发行二进制的运行时依赖。
+要求 Rust 1.97 或更高版本。开发和构建前端还需要 Node.js 22.12 或更高版本及 pnpm 11；它们不是
+服务运行时的依赖。
 
 ```sh
 cp config.example.toml config.toml
@@ -35,25 +37,26 @@ cargo run -- --config config.toml
 开发模式下这一个命令会同时启动 Vite 和 Rust 服务。修改 React/CSS 后浏览器通过 HMR 更新；修改
 Rust 源码后会自动执行增量编译，并在编译成功后重启后端。请通过 Rust 服务访问页面：
 
-- `http://127.0.0.1:8787/`
-- `http://127.0.0.1:8787/<admin.path>/admin`
+- `http://127.0.0.1:8787/admin`
 
-Vite 的 `127.0.0.1:5173` 端口只提供开发资源。生产运行使用发行构建：
+Vite 的 `127.0.0.1:5173` 端口只提供开发资源。生产运行先单独构建前端，再运行发行二进制：
 
 ```sh
+(cd frontend && pnpm install --frozen-lockfile && pnpm build)
 cargo run --release -- --config config.toml
 ```
 
-`cargo build --release` 同样会自动安装、检查并构建前端，然后把产物嵌入
-`target/release/codex-router`。构建完成后，单独复制该二进制和配置文件即可运行。
+`cargo build` 不再构建前端。`frontend.dir` 默认是配置文件旁的 `frontend/dist`；部署时把
+`frontend/dist` 的内容复制到服务器任意目录，并在配置中指向它。更新前端只需替换该目录，无需重启。
 
 不传 `--config` 时默认读取当前目录的 `config.toml`。配置只从该文件和命令行路径读取，不读取
 业务环境变量。
 
 启动前至少修改以下项目：
 
-- `admin.path`：隐藏管理 API 的 URL 段；
-- `admin.secret`：管理登录密钥；
+- `admin.secret`：管理员登录密钥（控制台路径公开，请使用足够长的随机值）；
+- `frontend.dir`：前端构建产物目录；
+- `server.trusted_proxies`：同机反向代理部署时设为 `["127.0.0.1", "::1"]`，让登录限流识别真实客户端；
 - `usage_tracking.database_path`：Token 用量 SQLite 文件，默认位于配置文件旁的 `usage.sqlite3`；
 - 登录或导入至少一个 Codex 账户，按需创建账户组，并在创建或编辑调用身份时选择账户或账户组。
 
@@ -113,8 +116,10 @@ API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
 并可按具体 API Key、下游 account id、Codex 账户或账户组重新计算全部用量视图。用户端时间筛选
 提供 24 小时、7 天、30 天和全部范围；用户端额度是否显示、通知和模型价格统一在管理端“设置”页维护。
 
-管理会话和 OAuth 设备轮询状态使用 HMAC-SHA256 签名。改变 `admin.secret` 会立即使已有管理会话
-与未完成的设备授权 state 失效。
+控制台会话保存在 `session.database_path`（默认 `sessions.sqlite3`）。管理员会话空闲 24 小时或满 7 天
+过期，用户会话空闲 30 天或满 90 天过期，使用期间自动续期。修改 `admin.secret`、API Key 或
+account id，以及停用、删除对应身份，都会让相关会话立即失效。OAuth 设备轮询 state 仍使用
+`admin.secret` 进行 HMAC-SHA256 签名。
 
 ## 部署注意
 
@@ -134,12 +139,13 @@ Ubuntu 可按 [Ubuntu 部署与更新](docs/deployment-ubuntu.md) 安装、创�
 
 - `upstream.chatgpt_proxy` 如包含认证信息，应与 OAuth 和 API Key 一样作为密钥保护；SOCKS5
   连接上的 ChatGPT 应用流量仍使用端到端 TLS；
-- `server.public_origin` 必须是客户端看到的精确 origin，并用于管理 API 同源校验；
-- 管理 Cookie 始终带 `Secure`，生产和浏览器管理场景应通过 HTTPS 反向代理访问；
+- `server.public_origin` 必须是客户端看到的精确 origin，并用于控制台同源校验；
+- 控制台应通过 HTTPS 访问；`public_origin` 为非回环 HTTP 时默认禁止管理员登录；
 - 反向代理需要允许 WebSocket Upgrade，并关闭 SSE 响应缓冲；
 - `config.toml` 包含明文 OAuth、API Key、Webhook 和管理密钥，不应提交到版本库、复制到日志或
   放入权限宽松的备份。
-- `usage.sqlite3` 及其 `-wal`/`-shm` 文件包含用量与身份元数据，也应按私有运行数据保护和备份。
+- `usage.sqlite3`、`sessions.sqlite3` 及其 `-wal`/`-shm` 文件包含用量、身份元数据与会话，也应按
+  私有运行数据保护和备份。
 
 ## 开发检查
 

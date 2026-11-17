@@ -118,6 +118,7 @@ import ManagementShell, {
 	ProductMark,
 	type ManagementPage,
 } from "./ManagementShell";
+import { CONSOLE_API_BASE, signOut } from "./session-api";
 import SettingsPage from "./SettingsPage";
 import {
 	ActivityHeatmaps,
@@ -129,7 +130,6 @@ import { formatCost, reasoningEffortLabel, serviceTierLabel } from "./usage-form
 import "./App.css";
 import "./UnifiedRouting.css";
 
-const MANAGEMENT_PATH_PATTERN = /^\/[A-Za-z0-9_-]{1,128}\/admin\/?$/;
 const MIN_API_KEY_LENGTH = 11;
 const MAX_API_KEY_LENGTH = 512;
 const GENERATED_API_KEY_LENGTH = 20;
@@ -152,20 +152,23 @@ const EMPTY_STATE: AdminState = {
 	routes: [],
 };
 
-type Screen = "loading" | "login" | "dashboard" | "invalid-path";
+type Screen = "loading" | "dashboard" | "error";
 type Notice = { tone: "success" | "error"; text: string };
 type EditableKey = ClientApiKey | "new" | null;
 type EditableProxy = AuthProxyAccount | "new" | null;
 type RouteTargetSelection = Pick<RouteAssignment, "targetType" | "targetId"> | null;
 
-function App() {
-	const basePath = useMemo(() => managementBasePath(window.location.pathname), []);
-	const api = useMemo(() => basePath ? new AdminApiClient(basePath) : null, [basePath]);
-	const [screen, setScreen] = useState<Screen>(basePath ? "loading" : "invalid-path");
+interface AppProps {
+	/** Returns to the sign-in screen, optionally explaining why. */
+	onSignedOut: (error?: string | null) => void;
+}
+
+function App({ onSignedOut }: AppProps) {
+	const api = useMemo(() => new AdminApiClient(CONSOLE_API_BASE), []);
+	const [screen, setScreen] = useState<Screen>("loading");
+	const [initError, setInitError] = useState<string | null>(null);
 	const [activePage, setActivePage] = useState<ManagementPage>(() => managementPageFromSearch(window.location.search));
 	const [data, setData] = useState<AdminState>(EMPTY_STATE);
-	const [loginLoading, setLoginLoading] = useState(false);
-	const [loginError, setLoginError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<Notice | null>(null);
 	const [now, setNow] = useState(() => Date.now());
 	const [settings, setSettings] = useState<AdminSettings | null>(null);
@@ -220,7 +223,7 @@ function App() {
 
 	useEffect(() => {
 		mountedRef.current = true;
-		if (api) void initializeRef.current();
+		void initializeRef.current();
 		return () => {
 			mountedRef.current = false;
 			clearDeviceTimer();
@@ -259,7 +262,6 @@ function App() {
 	}, [activePage, data.codexAccounts, screen, subscriptions]);
 
 	async function initialize(): Promise<void> {
-		if (!api) return;
 		setSettingsLoading(true);
 		try {
 			const [state, nextSettings] = await Promise.all([
@@ -271,7 +273,6 @@ function App() {
 			setSettings(nextSettings);
 			setSettingsError(null);
 			setScreen("dashboard");
-			setLoginError(null);
 			void refreshUsage("7d", null, null);
 			void refreshOverviewUsage();
 			void refreshPricing();
@@ -280,36 +281,19 @@ function App() {
 			if (error instanceof AdminSessionExpiredError) {
 				resetForLogin();
 			} else {
-				setScreen("login");
-				setLoginError(errorMessage(error, "无法读取管理状态，请稍后重试。"));
+				// Stay in the management view: the session is still valid, so
+				// returning to the console root would only remount and retry.
+				setInitError(errorMessage(error, "无法读取管理状态，请稍后重试。"));
+				setScreen("error");
 			}
 		} finally {
 			if (mountedRef.current) setSettingsLoading(false);
 		}
 	}
 
-	async function handleLogin(secret: string): Promise<void> {
-		if (!api || loginLoading) return;
-		setLoginLoading(true);
-		setLoginError(null);
-		try {
-			await api.login(secret);
-			if (!mountedRef.current) return;
-			setScreen("loading");
-			await initialize();
-		} catch (error) {
-			if (!mountedRef.current) return;
-			setLoginError(errorMessage(error, "登录失败，请稍后重试。"));
-			setScreen("login");
-		} finally {
-			if (mountedRef.current) setLoginLoading(false);
-		}
-	}
-
 	async function handleLogout(): Promise<void> {
-		if (!api) return;
 		try {
-			await api.logout();
+			await signOut();
 		} catch (error) {
 			if (!(error instanceof AdminSessionExpiredError)) {
 				showNotice(errorMessage(error, "退出管理会话失败。"), "error");
@@ -338,7 +322,7 @@ function App() {
 		setUsageDownstream(null);
 		setUsageUpstream(null);
 		setSubscriptions({});
-		setScreen("login");
+		onSignedOut(null);
 	}
 
 	function navigateManagementPage(page: ManagementPage): void {
@@ -355,7 +339,6 @@ function App() {
 		downstream = usageDownstream,
 		upstream = usageUpstream,
 	): Promise<void> {
-		if (!api) return;
 		const requestId = ++usageRequestRef.current;
 		setUsageLoading(true);
 		setUsageError(null);
@@ -386,7 +369,6 @@ function App() {
 	}
 
 	async function refreshOverviewUsage(): Promise<void> {
-		if (!api) return;
 		try {
 			const next = await api.getUsage("7d");
 			if (mountedRef.current) setOverviewUsage(next);
@@ -545,7 +527,6 @@ function App() {
 	}
 
 	async function importCodexCredentials(value: CodexCredentialImport): Promise<void> {
-		if (!api) return;
 		try {
 			const account = await api.importCodexCredentials(value);
 			if (!mountedRef.current) return;
@@ -689,7 +670,6 @@ function App() {
 	}
 
 	async function deleteApiKey(entry: ClientApiKey): Promise<void> {
-		if (!api) return;
 		setBusyKeys((current) => withSetValue(current, entry.id, true));
 		try {
 			const next = await api.deleteApiKey(entry.id);
@@ -752,7 +732,6 @@ function App() {
 	}
 
 	async function deleteProxy(entry: AuthProxyAccount): Promise<void> {
-		if (!api) return;
 		setBusyProxies((current) => withSetValue(current, entry.id, true));
 		try {
 			const next = await api.deleteAuthProxyAccount(entry.id);
@@ -770,10 +749,19 @@ function App() {
 		setNotice({ text, tone });
 	}
 
-	if (screen === "invalid-path") return <InvalidPath />;
 	if (screen === "loading") return <LoadingView />;
-	if (screen === "login") return <ScrollArea className="h-svh"><LoginView error={loginError} loading={loginLoading} onSubmit={(secret) => void handleLogin(secret)} /></ScrollArea>;
-	if (!basePath) return <InvalidPath />;
+	if (screen === "error") {
+		return (
+			<main className="loading-screen">
+				<ProductMark />
+				<Alert className="max-w-md" variant="destructive"><TriangleAlertIcon /><AlertDescription>{initError}</AlertDescription></Alert>
+				<div className="flex gap-2">
+					<Button onClick={() => { setScreen("loading"); void initialize(); }} type="button" variant="outline"><RefreshCwIcon data-icon="inline-start" />重试</Button>
+					<Button onClick={() => void handleLogout()} type="button" variant="ghost">退出登录</Button>
+				</div>
+			</main>
+		);
+	}
 	const pageAction = activePage === "api-keys" ? (
 		<Button onClick={() => setKeyEditor("new")} type="button">
 			<PlusIcon data-icon="inline-start" />
@@ -798,7 +786,7 @@ function App() {
 	return (
 		<ManagementShell
 			activePage={activePage}
-			basePath={basePath}
+			basePath="/admin"
 			onLogout={() => void handleLogout()}
 			onNavigate={navigateManagementPage}
 			pageAction={pageAction}
@@ -1456,45 +1444,8 @@ function AccountTargetSelect({
 	);
 }
 
-function LoginView({ error, loading, onSubmit }: { error: string | null; loading: boolean; onSubmit: (secret: string) => void }) {
-	const [secret, setSecret] = useState("");
-	const [visible, setVisible] = useState(false);
-	function submit(event: FormEvent<HTMLFormElement>): void { event.preventDefault(); if (secret && !loading) onSubmit(secret); }
-	return (
-		<div className="auth-shell">
-			<aside className="auth-aside"><div className="auth-aside-title"><span>Codex</span><span>Router</span></div></aside>
-			<div className="auth-main">
-				<main className="auth-card">
-					<div className="auth-mobile-brand"><ProductMark compact /><strong>Codex Router</strong></div>
-					<h1>登录管理面板</h1>
-					<p className="auth-description">输入服务端配置的管理密钥以继续。</p>
-					{error ? <Alert className="mt-4" variant="destructive"><TriangleAlertIcon /><AlertDescription>{error}</AlertDescription></Alert> : null}
-					<form className="auth-form" onSubmit={submit}>
-						<Field>
-							<FieldLabel htmlFor="admin-secret">管理密钥</FieldLabel>
-							<InputGroup className="h-10">
-								<InputGroupInput autoFocus disabled={loading} id="admin-secret" onChange={(event) => setSecret(event.target.value)} required type={visible ? "text" : "password"} value={secret} />
-								<InputGroupAddon align="inline-end">
-									<InputGroupButton aria-label={visible ? "隐藏" : "显示"} onClick={() => setVisible((value) => !value)} size="icon-sm">
-										{visible ? <EyeOffIcon /> : <EyeIcon />}
-									</InputGroupButton>
-								</InputGroupAddon>
-							</InputGroup>
-						</Field>
-						<Button className="mt-1 min-h-[3.05rem] w-full" disabled={loading || !secret} size="lg" type="submit">{loading ? <Spinner /> : null}{loading ? "登录中…" : "登录"}</Button>
-					</form>
-				</main>
-			</div>
-		</div>
-	);
-}
-
 function LoadingView() {
 	return <div className="loading-screen"><ProductMark /><Spinner /><strong>加载中…</strong></div>;
-}
-
-function InvalidPath() {
-	return <main className="invalid-path"><ProductMark /><h1>页面不存在</h1><p>请使用配置中的管理路径访问控制台。</p></main>;
 }
 
 function StatusToast({ notice, onClose }: { notice: Notice; onClose: () => void }) {
@@ -1544,11 +1495,6 @@ function parseRouteTargetValue(value: string): RouteTargetSelection {
 
 function invalidAdminResponse(): AdminApiError {
 	return new AdminApiError("管理服务返回了无法识别的数据。", 502, "invalid_admin_response");
-}
-
-function managementBasePath(pathname: string): string | null {
-	if (!MANAGEMENT_PATH_PATTERN.test(pathname)) return null;
-	return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
 }
 
 function managementPageFromSearch(search: string): ManagementPage {

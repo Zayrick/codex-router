@@ -3,11 +3,8 @@ import {
 	useEffect,
 	useRef,
 	useState,
-	type FormEvent,
 } from "react";
 import {
-	EyeIcon,
-	EyeOffIcon,
 	Layers3Icon,
 	RefreshCwIcon,
 	TriangleAlertIcon,
@@ -17,18 +14,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader } from "@/components/ui/empty";
-import { Field, FieldLabel } from "@/components/ui/field";
-import {
-	InputGroup,
-	InputGroupAddon,
-	InputGroupButton,
-	InputGroupInput,
-} from "@/components/ui/input-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { UsageDashboard, UsageRange } from "./admin-api";
 import { ProductMark } from "./ManagementShell";
+import { CONSOLE_API_BASE, signOut } from "./session-api";
 import QuotaTimeline, { type QuotaTimelineWindow } from "./QuotaTimeline";
 import {
 	CostActivityCard,
@@ -74,51 +65,50 @@ interface PublicQuotaCollection {
 	accounts: PublicQuotaSnapshot[];
 }
 
-function AccountUsage() {
+interface AccountUsageProps {
+	/** Returns to the sign-in screen, optionally explaining why. */
+	onSignedOut: (error?: string | null) => void;
+}
+
+function AccountUsage({ onSignedOut }: AccountUsageProps) {
 	const [range, setRange] = useState<UsageRange>("24h");
 	const [snapshot, setSnapshot] = useState<PublicAccountDashboard | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [now, setNow] = useState(() => Date.now());
 	const requestRef = useRef(0);
-	const credentialRef = useRef<string | null>(null);
 
-	const load = useCallback(async (
-		nextRange: UsageRange,
-		nextCredential: string | null = credentialRef.current,
-	) => {
-		if (!nextCredential) return;
+	const load = useCallback(async (nextRange: UsageRange) => {
 		const requestId = ++requestRef.current;
 		setLoading(true);
 		try {
-			const response = await fetch("/account/data", {
-				headers: { accept: "application/json" },
-				method: "POST",
-				body: new URLSearchParams({
-					credential: nextCredential,
-					range: nextRange,
-				}),
-			});
-			if (!response.ok) {
-				throw new Error(response.status === 404 ? "not-found" : `HTTP ${response.status}`);
+			const response = await fetch(
+				`${CONSOLE_API_BASE}/account?${new URLSearchParams({ range: nextRange })}`,
+				{ credentials: "same-origin", headers: { Accept: "application/json" } },
+			);
+			if (response.status === 401 || response.status === 403) {
+				if (requestId === requestRef.current) onSignedOut("登录已失效，请重新登录。");
+				return;
 			}
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			const next = parseDashboard(await response.json());
 			if (requestId !== requestRef.current) return;
-			credentialRef.current = nextCredential;
 			setSnapshot(next);
 			setError(null);
 			setNow(Date.now());
-		} catch (cause) {
+		} catch {
 			if (requestId !== requestRef.current) return;
-			setError(
-				cause instanceof Error && cause.message === "not-found"
-					? "输入的 API Key 或 account id 不存在，或已停用。"
-					: "暂时无法读取账户用量，请稍后重试。",
-			);
+			setError("暂时无法读取账户用量，请稍后重试。");
 		} finally {
 			if (requestId === requestRef.current) setLoading(false);
 		}
-	}, []);
+	}, [onSignedOut]);
+
+	useEffect(() => {
+		// Defer the first load so the effect itself never sets state synchronously.
+		const timer = window.setTimeout(() => void load("24h"), 0);
+		return () => window.clearTimeout(timer);
+	}, [load]);
 
 	const accountSelected = snapshot !== null;
 
@@ -142,27 +132,36 @@ function AccountUsage() {
 		};
 	}, [accountSelected, load, range]);
 
-	function lookup(credential: string): void {
-		setError(null);
-		setRange("24h");
-		void load("24h", credential);
-	}
-
 	function changeRange(nextRange: UsageRange): void {
 		if (nextRange === range) return;
 		setRange(nextRange);
 		void load(nextRange);
 	}
 
-	function clearAccount(): void {
-		credentialRef.current = null;
-		setRange("24h");
-		setSnapshot(null);
-		setError(null);
+	async function handleSignOut(): Promise<void> {
+		requestRef.current += 1;
+		try {
+			await signOut();
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : "退出登录失败，请稍后重试。");
+			return;
+		}
+		onSignedOut(null);
 	}
 
 	if (!snapshot) {
-		return <ScrollArea className="h-svh"><AccountLookupView error={error} loading={loading} onSubmit={lookup} /></ScrollArea>;
+		return error ? (
+			<main className="loading-screen">
+				<ProductMark />
+				<Alert className="max-w-md" variant="destructive"><TriangleAlertIcon /><AlertDescription>{error}</AlertDescription></Alert>
+				<div className="flex gap-2">
+					<Button onClick={() => void load(range)} type="button" variant="outline">重试</Button>
+					<Button onClick={() => void handleSignOut()} type="button" variant="ghost">退出登录</Button>
+				</div>
+			</main>
+		) : (
+			<div className="loading-screen"><ProductMark /><Spinner /><strong>加载中…</strong></div>
+		);
 	}
 
 	const usage = snapshot.usage;
@@ -178,12 +177,12 @@ function AccountUsage() {
 						<div><strong>Codex Router</strong><span>账户用量</span></div>
 						<Button
 							disabled={loading}
-							onClick={clearAccount}
+							onClick={() => void handleSignOut()}
 							size="sm"
 							type="button"
 							variant="outline"
 						>
-							更换凭据
+							退出登录
 						</Button>
 					</div>
 					<div className="public-account-heading">
@@ -310,83 +309,6 @@ function PublicQuotaSection({ now, quota }: { now: number; quota: PublicQuotaCol
 				<Empty className="min-h-30 border text-[.72rem]"><EmptyHeader><EmptyDescription>当前凭据尚未分配可展示的路由账户。</EmptyDescription></EmptyHeader></Empty>
 			)}
 		</section>
-	);
-}
-
-interface AccountLookupViewProps {
-	error: string | null;
-	loading: boolean;
-	onSubmit: (credential: string) => void;
-}
-
-function AccountLookupView({ error, loading, onSubmit }: AccountLookupViewProps) {
-	const [credential, setCredential] = useState("");
-	const [visible, setVisible] = useState(false);
-
-	function submit(event: FormEvent<HTMLFormElement>): void {
-		event.preventDefault();
-		if (!credential || loading) return;
-		onSubmit(credential);
-	}
-
-	return (
-		<div className="auth-shell">
-			<aside className="auth-aside" aria-label="Codex Router">
-				<div className="auth-aside-title" aria-hidden="true">
-					<span>Codex</span>
-					<span>Router</span>
-				</div>
-			</aside>
-
-			<div className="auth-main">
-				<main className="auth-card">
-					<div className="auth-mobile-brand"><ProductMark compact /><strong>Codex Router</strong></div>
-					<p className="auth-eyebrow">账户用量</p>
-					<h1>查看用量信息</h1>
-					<p className="auth-description">输入 API Key 或 account id，查看对应路由的 Token 消耗信息。</p>
-
-					{error ? (
-						<Alert className="mt-4" variant="destructive">
-							<TriangleAlertIcon />
-							<AlertDescription>{error}</AlertDescription>
-						</Alert>
-					) : null}
-
-					<form className="auth-form" onSubmit={submit}>
-						<Field>
-							<FieldLabel htmlFor="account-credential">API Key 或 account id</FieldLabel>
-							<InputGroup className="h-10">
-								<InputGroupInput
-									id="account-credential"
-									autoCapitalize="none"
-									autoComplete="off"
-									autoCorrect="off"
-									autoFocus
-									disabled={loading}
-									maxLength={512}
-									onChange={(event) => setCredential(event.target.value)}
-									placeholder="输入 API Key 或 account id"
-									required
-									spellCheck={false}
-									type={visible ? "text" : "password"}
-									value={credential}
-								/>
-								<InputGroupAddon align="inline-end">
-									<InputGroupButton aria-label={visible ? "隐藏访问凭据" : "显示访问凭据"} disabled={loading} onClick={() => setVisible((value) => !value)} size="icon-sm">
-										{visible ? <EyeOffIcon /> : <EyeIcon />}
-									</InputGroupButton>
-								</InputGroupAddon>
-							</InputGroup>
-						</Field>
-						<Button className="mt-1 min-h-[3.05rem] w-full" disabled={loading} size="lg" type="submit">
-							{loading ? <Spinner /> : null}
-							{loading ? "查询中…" : "查看账户用量"}
-						</Button>
-					</form>
-					<p className="auth-footnote">访问凭据仅用于本次用量查询</p>
-				</main>
-			</div>
-		</div>
 	);
 }
 

@@ -1,14 +1,34 @@
 # 配置
 
 Codex Router 从 `config.toml` 读取运行设置和持久状态。可复制 `config.example.toml` 作为起点；
-`server`、`admin`、`upstream`、`usage_tracking`、`notifications` 与 `public_account` 是运行设置，`state` 由管理 API
+`server`、`admin`、`upstream`、`usage_tracking`、`notifications`、`public_account`、`frontend` 与 `session`
+是运行设置，`state` 由管理 API
 和后台任务维护。配置文件包含凭据，应使用严格的文件权限并避免提交到版本库。
 
 ## 静态设置
 
 `server.bind` 必须是 IP socket address，例如 `127.0.0.1:8787` 或 `0.0.0.0:8787`。
 `server.public_origin` 是客户端实际访问的精确 HTTP/HTTPS origin，不允许路径、Query 或尾部斜杠。
-它用于解析入站请求路径和校验管理写请求的 `Origin`。
+它用于解析入站请求路径、校验控制台写请求的 `Origin`，并决定会话 Cookie 是否带 `Secure`。
+
+`server.trusted_proxies` 列出可信反向代理的 IP 或 CIDR，默认为空。只有 TCP 对端属于其中时，
+登录限流才会从 `X-Forwarded-For` 读取真实客户端地址。同机 Nginx/Caddy 部署通常设置为
+`["127.0.0.1", "::1"]`；代理必须覆盖或追加（而不是透传）客户端发来的该 header。
+
+## Web 控制台
+
+`admin.secret` 是管理员在 `/admin` 的登录密钥。控制台路径是公开的，请使用足够长的随机值
+（建议至少 32 个随机字节）。已弃用的 `admin.path` 可以删除；保留时只用于把旧地址跳转到 `/admin`。
+
+`frontend.dir` 指向前端构建产物目录（包含 `index.html` 和 `assets/`），默认 `frontend/dist`，
+相对路径以配置文件目录为基准。`index.html` 每次请求时读取，因此单独更新前端无需重启服务。
+
+`session.database_path` 是会话数据库，默认 `sessions.sqlite3`。`session.allow_insecure_http` 默认
+关闭；`public_origin` 是非回环地址的 HTTP 时，管理员无法登录，避免管理 Cookie 在网络上明文传输。
+会话时长、续期与失效规则见 [API 文档](api.md#11-web-控制台与登录会话)。
+
+`state.session_binding_key` 在首次启动时自动生成，用于把会话绑定到登录时的凭据。不要通过日志或
+备份泄露；删除或更换后，所有控制台用户需要重新登录。
 
 ChatGPT 请求发往 `https://chatgpt.com`。默认直接连接；需要代理时可配置
 `upstream.chatgpt_proxy`：
@@ -29,7 +49,7 @@ chatgpt_proxy = "socks5h://127.0.0.1:1080"
 secret 必须同时配置；只提供其中一个会导致启动失败。`upstream.codex_resets_url` 也可在设置页更新，
 仅接受 HTTPS 地址。
 
-`public_account.show_quota` 默认开启。开启后，根目录用户端会根据下游凭据的路由目标展示额度；若
+`public_account.show_quota` 默认开启。开启后，控制台用户视图会根据下游凭据的路由目标展示额度；若
 目标是账户组，则展示组内全部 Codex 账户的昵称与额度时间轴。关闭后用户端不返回额度数据，但
 Token 用量查询仍然可用。
 

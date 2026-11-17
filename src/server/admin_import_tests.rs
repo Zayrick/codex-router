@@ -1,14 +1,19 @@
 use std::path::PathBuf;
 
-use axum::{Router, body::to_bytes};
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    http::{Method, Request, StatusCode, header},
+    response::Response,
+};
 use tokio::fs;
 use tower::ServiceExt;
 
 use super::*;
 use crate::server::{config::ConfigStore, router};
 
-const IMPORT_PATH: &str = "/test/admin/codex-accounts/import";
-const ORIGIN: &str = "http://router.example";
+const IMPORT_PATH: &str = "/admin/api/codex-accounts/import";
+const ORIGIN: &str = "https://router.example";
 
 struct ImportApp {
     app: Router,
@@ -26,13 +31,7 @@ impl ImportApp {
         let mut config: AppConfig =
             toml::from_str(include_str!("../../config.example.toml")).unwrap();
         config.server.public_origin = ORIGIN.into();
-        config.admin.path = "test".into();
-        let session = create_admin_session(&config.admin.secret, current_time_ms()).unwrap();
-        let cookie = admin_session_cookie_header(&session)
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
+        let secret = config.admin.secret.clone();
         fs::write(&path, toml::to_string_pretty(&config).unwrap())
             .await
             .unwrap();
@@ -40,6 +39,25 @@ impl ImportApp {
             .await
             .unwrap();
         let app = router::build(state.clone());
+        let signed_in = app
+            .clone()
+            .oneshot(
+                Request::post("/admin/api/session")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, ORIGIN)
+                    .body(Body::from(json!({ "credential": secret }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(signed_in.status(), StatusCode::OK);
+        let cookie = signed_in.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
         Self {
             app,
             state,

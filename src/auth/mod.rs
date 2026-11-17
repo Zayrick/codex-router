@@ -1,6 +1,5 @@
 //! Authentication persistence and OAuth domain services.
 
-mod admin_session;
 mod api_keys;
 mod auth_proxy;
 mod credential_import;
@@ -17,10 +16,6 @@ mod store;
 #[cfg(test)]
 mod oauth_tests;
 
-pub use admin_session::{
-    admin_secret_matches, admin_session_cookie_header, clear_admin_session_cookie_header,
-    create_admin_session, has_valid_admin_session,
-};
 pub use api_keys::{
     ApiKeyRepository, ClientApiKey, authenticate_token, client_token, validate_api_key_input,
 };

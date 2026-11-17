@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use axum::http::HeaderValue;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use tokio::{fs, io::AsyncWriteExt, sync::RwLock};
 use url::Url;
@@ -47,7 +48,46 @@ pub struct AppConfig {
     #[serde(default)]
     pub public_account: PublicAccountConfig,
     #[serde(default)]
+    pub frontend: FrontendConfig,
+    #[serde(default)]
+    pub session: SessionConfig,
+    #[serde(default)]
     pub state: PersistentState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrontendConfig {
+    /// Directory containing the built web console (`index.html` and `assets/`).
+    #[serde(default = "default_frontend_dir")]
+    pub dir: String,
+}
+
+impl Default for FrontendConfig {
+    fn default() -> Self {
+        Self {
+            dir: default_frontend_dir(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    /// SQLite database holding web console sessions.
+    #[serde(default = "default_session_database_path")]
+    pub database_path: String,
+    /// Allows administrator sign-in when `server.public_origin` is plain HTTP
+    /// on a non-loopback host. Session cookies can then be sniffed in transit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_insecure_http: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            database_path: default_session_database_path(),
+            allow_insecure_http: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +130,9 @@ pub struct ServerConfig {
     pub maintenance_interval_seconds: u64,
     #[serde(default = "default_log_filter")]
     pub log_filter: String,
+    /// Reverse proxies whose `X-Forwarded-For` header is trusted, as IPs or CIDRs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -100,13 +143,17 @@ impl Default for ServerConfig {
             cors_origin: default_cors_origin(),
             maintenance_interval_seconds: default_maintenance_interval(),
             log_filter: default_log_filter(),
+            trusted_proxies: Vec::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminConfig {
-    pub path: String,
+    /// Deprecated hidden path segment. When present, the old `/<path>/admin`
+    /// page redirects to `/admin` and its API family is answered locally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     pub secret: String,
 }
 
@@ -311,6 +358,10 @@ pub struct PersistentState {
     pub usage: Option<CodexUsageMonitorState>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub account_usage: BTreeMap<String, CodexUsageMonitorState>,
+    /// Random key binding web sessions to the credential used to sign in.
+    /// Generated on first start; replacing it signs every console user out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_binding_key: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -335,7 +386,8 @@ impl ConfigStore {
         let mut config: AppConfig = toml::from_str(&source)
             .with_context(|| format!("failed to parse configuration {}", path.display()))?;
         validate_config(&config)?;
-        if migrate_legacy_accounts(&mut config) {
+        let generated_binding_key = ensure_session_binding_key(&mut config);
+        if migrate_legacy_accounts(&mut config) | generated_binding_key {
             persist(&path, &config)
                 .await
                 .with_context(|| format!("failed to migrate configuration {}", path.display()))?;
@@ -650,6 +702,26 @@ impl StateStore for ConfigStore {
     }
 }
 
+/// Generates the persistent session binding key on first start.
+fn ensure_session_binding_key(config: &mut AppConfig) -> bool {
+    if config.state.session_binding_key.is_some() {
+        return false;
+    }
+    let mut key = [0_u8; 32];
+    key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    config.state.session_binding_key = Some(URL_SAFE_NO_PAD.encode(key));
+    true
+}
+
+impl AppConfig {
+    /// Decoded session binding key; present after [`ConfigStore::load`].
+    pub fn session_binding_key(&self) -> Option<[u8; 32]> {
+        let encoded = self.state.session_binding_key.as_deref()?;
+        URL_SAFE_NO_PAD.decode(encoded).ok()?.try_into().ok()
+    }
+}
+
 fn migrate_legacy_accounts(config: &mut AppConfig) -> bool {
     let Some(primary_credentials) = config.state.oauth.take() else {
         if config.state.auth_proxy_oauth.is_empty() {
@@ -829,8 +901,31 @@ fn validate_config(config: &AppConfig) -> Result<()> {
     {
         bail!("usage_tracking.fast_cost_multiplier must be greater than 0 and at most 100");
     }
-    if !valid_admin_path(&config.admin.path) {
+    if config
+        .admin
+        .path
+        .as_deref()
+        .is_some_and(|path| !valid_admin_path(path))
+    {
         bail!("admin.path must be 1-128 URL-safe characters");
+    }
+    if config.frontend.dir.trim().is_empty() {
+        bail!("frontend.dir must not be empty");
+    }
+    if config.session.database_path.trim().is_empty() {
+        bail!("session.database_path must not be empty");
+    }
+    if let Some(key) = config.state.session_binding_key.as_deref()
+        && URL_SAFE_NO_PAD
+            .decode(key)
+            .ok()
+            .is_none_or(|bytes| bytes.len() != 32)
+    {
+        bail!("state.session_binding_key must be 32 bytes of unpadded base64url");
+    }
+    for proxy in &config.server.trusted_proxies {
+        parse_trusted_proxy(proxy)
+            .with_context(|| format!("server.trusted_proxies entry {proxy:?} is invalid"))?;
     }
     if config.admin.secret.trim().is_empty() {
         bail!("admin.secret must not be empty");
@@ -881,6 +976,18 @@ fn validate_origin(value: &str, name: &str) -> Result<()> {
         bail!("{name} must use HTTP or HTTPS");
     }
     Ok(())
+}
+
+/// Parses an IP address or CIDR network from `server.trusted_proxies`.
+pub fn parse_trusted_proxy(value: &str) -> Result<ipnet::IpNet> {
+    let value = value.trim();
+    if let Ok(network) = value.parse::<ipnet::IpNet>() {
+        return Ok(network.trunc());
+    }
+    let address = value
+        .parse::<std::net::IpAddr>()
+        .context("expected an IP address or CIDR")?;
+    Ok(ipnet::IpNet::from(address))
 }
 
 fn valid_admin_path(value: &str) -> bool {
@@ -973,6 +1080,14 @@ fn default_usage_database_path() -> String {
     "usage.sqlite3".into()
 }
 
+fn default_frontend_dir() -> String {
+    "frontend/dist".into()
+}
+
+fn default_session_database_path() -> String {
+    "sessions.sqlite3".into()
+}
+
 const fn default_true() -> bool {
     true
 }
@@ -989,7 +1104,7 @@ mod tests {
         AppConfig {
             server: ServerConfig::default(),
             admin: AdminConfig {
-                path: "secret".into(),
+                path: Some("secret".into()),
                 secret: "admin-secret".into(),
             },
             upstream: UpstreamConfig {
@@ -999,6 +1114,8 @@ mod tests {
             usage_tracking: UsageTrackingConfig::default(),
             notifications: NotificationConfig::default(),
             public_account: PublicAccountConfig::default(),
+            frontend: FrontendConfig::default(),
+            session: SessionConfig::default(),
             state: PersistentState::default(),
         }
     }

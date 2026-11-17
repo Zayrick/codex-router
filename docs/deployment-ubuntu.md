@@ -1,8 +1,8 @@
 # Ubuntu 部署与更新
 
 适用于 Ubuntu 22.04 或更高版本的 x86_64（amd64）服务器。GitHub Actions 的
-`Build and Deploy` 工作流生成 `codex-router-linux-amd64.tar.gz`，包含二进制、配置模板和校验文件。
-前端已嵌入二进制，服务器无需安装 Rust、Node.js 或 pnpm。ARM 服务器不能使用此包。
+`Build and Deploy` 工作流生成 `codex-router-linux-amd64.tar.gz`，包含二进制、`web/` 前端目录、配置模板和
+校验文件。服务器无需安装 Rust、Node.js 或 pnpm。ARM 服务器不能使用此包。
 
 ## 1. 上传并解压
 
@@ -32,21 +32,32 @@ sha256sum -c SHA256SUMS
 sudo useradd --system --home-dir /var/lib/codex-router \
   --shell /usr/sbin/nologin codex-router
 sudo install -m 0755 codex-router /usr/local/bin/codex-router
+sudo install -d -m 0755 /usr/local/share/codex-router
+sudo cp -R web /usr/local/share/codex-router/web
+sudo chmod -R u=rwX,go=rX /usr/local/share/codex-router/web
 sudo install -d -m 0750 -o codex-router -g codex-router /var/lib/codex-router
 sudo install -m 0600 -o codex-router -g codex-router \
   config.example.toml /var/lib/codex-router/config.toml
 sudo nano /var/lib/codex-router/config.toml
 ```
 
-修改 `admin.path`、`admin.secret` 和 `state.api_keys` 中的默认 Key。使用同机 HTTPS 反向代理时，
-保留 `server.bind = "127.0.0.1:8787"`，将 `server.public_origin` 改成实际访问地址，
-例如 `"https://router.example.com"`（不带路径或尾部斜杠）。
+修改 `admin.secret` 和 `state.api_keys` 中的默认 Key，并把前端目录指向安装位置：
+
+```toml
+[frontend]
+dir = "/usr/local/share/codex-router/web"
+```
+
+使用同机 HTTPS 反向代理时，保留 `server.bind = "127.0.0.1:8787"`，将 `server.public_origin` 改成
+实际访问地址，例如 `"https://router.example.com"`（不带路径或尾部斜杠），并设置
+`server.trusted_proxies = ["127.0.0.1", "::1"]`，让登录限流按真实客户端地址计数。
 
 默认直接连接 ChatGPT。如需 SOCKS5 出站代理，在 `[upstream]` 中配置 `chatgpt_proxy`；
 详细设置见[配置文档](configuration.md)。
 
 服务用户需要对整个 `/var/lib/codex-router` 目录有写权限，用于原子更新配置和写入 SQLite。
-默认数据库位于 `/var/lib/codex-router/usage.sqlite3`。
+默认用量数据库位于 `/var/lib/codex-router/usage.sqlite3`，控制台会话位于同目录的 `sessions.sqlite3`。
+前端目录只需服务用户可读，不要把配置或数据库放进该目录。
 
 ## 3. 创建 systemd 服务
 
@@ -93,13 +104,14 @@ sudo journalctl -u codex-router -f
 ## 4. 访问管理页面
 
 通过 Nginx 或 Caddy 将 HTTPS 请求代理到 `127.0.0.1:8787`，允许 WebSocket Upgrade，
-关闭 SSE 响应缓冲。管理 Cookie 带有 `Secure`，通过公网 HTTP 访问不能正常维持管理登录。
-同机反向代理部署无需对公网开放 8787 端口。
+关闭 SSE 响应缓冲，并设置 `X-Forwarded-For`（Nginx 使用 `$proxy_add_x_forwarded_for`）。
+`public_origin` 为非回环 HTTP 地址时默认禁止管理员登录。同机反向代理部署无需对公网开放 8787 端口。
 
-访问 `https://你的域名/你的admin.path/admin`，使用 `admin.secret` 登录，
-添加至少一个 Codex 账户，并将 API Key 分配到账户或账户组。
+访问 `https://你的域名/admin`，使用 `admin.secret` 登录，添加至少一个 Codex 账户，并将 API Key
+分配到账户或账户组。下游用户在同一页面输入自己的 API Key 或 account id 查看用量，登录状态会保存在
+浏览器中。
 
-## 5. 后续更新二进制
+## 5. 后续更新二进制与前端
 
 每次下载新版后，重复第 1 步上传、解压、校验，并确认版本命令正常退出。然后执行：
 
@@ -114,28 +126,39 @@ sudo systemctl stop codex-router
 backup_dir=$(sudo mktemp -d /var/backups/codex-router.XXXXXXXX) && \
 sudo cp -a /var/lib/codex-router "$backup_dir/"
 
-# 确认备份成功后，替换并启动
+# 确认备份成功后，替换二进制与前端并启动（旧前端保留为 web.bak 以便回滚）
 sudo install -m 0755 codex-router /usr/local/bin/codex-router && \
+sudo rm -rf /usr/local/share/codex-router/web.bak && \
+sudo mv /usr/local/share/codex-router/web /usr/local/share/codex-router/web.bak && \
+sudo cp -R web /usr/local/share/codex-router/web && \
+sudo chmod -R u=rwX,go=rX /usr/local/share/codex-router/web && \
 sudo systemctl start codex-router
 
 sudo systemctl status codex-router --no-pager
 sudo journalctl -u codex-router -n 50 --no-pager
 ```
 
-任一步骤报错时先处理错误，再继续。只替换二进制时无需 `daemon-reload`。
+任一步骤报错时先处理错误，再继续。只替换二进制时无需 `daemon-reload`。只更新前端时无需停服，
+`index.html` 每次请求都会重新读取。
+
+从内嵌前端的旧版本升级时，首次需要按第 2 步安装 `web` 目录并在配置中添加 `[frontend] dir`；
+旧的 `admin.path` 可以删除（保留时 `/<admin.path>/admin` 会跳转到 `/admin`），管理员和用户都需要
+重新登录一次。
 更新会短暂中断请求；不要用新版 `config.example.toml` 覆盖现有 `config.toml`。
 配置模板仅用于对照新增设置，手工改配置前应停止服务，保存后再启动。
 
 备份包含账户凭据及数据库、WAL 等文件；如果配置了目录外的数据库路径，停服后还需单独备份
 该数据库及其 `-wal`、`-shm` 文件（若存在）。新版可能迁移持久状态，应保留更新前的备份。
 
-## 6. 回滚二进制
+## 6. 回滚二进制与前端
 
 如果新版启动失败，且持久状态仍与旧版兼容：
 
 ```sh
 sudo systemctl stop codex-router && \
 sudo install -m 0755 /usr/local/bin/codex-router.bak /usr/local/bin/codex-router && \
+sudo rm -rf /usr/local/share/codex-router/web && \
+sudo mv /usr/local/share/codex-router/web.bak /usr/local/share/codex-router/web && \
 sudo systemctl start codex-router
 sudo systemctl status codex-router --no-pager
 ```
@@ -192,8 +215,9 @@ ssh -i ~/.ssh/codex_router_deploy deploy@服务器IP 'sudo -n -l'
 
 ### 7.3 更新过程
 
-更新脚本按第 5 步流程执行：校验压缩包、备份二进制、停服、将数据目录备份到
-`/var/backups/codex-router.*`（仅保留最近 5 份）、替换并启动。如果新版启动后数秒内退出，
-脚本会自动回滚二进制并让工作流失败；数据回滚仍需按第 6 步手动处理。
+更新脚本按第 5 步流程执行：校验压缩包和前端产物（入口存在、引用资源齐全、无符号链接）、
+备份二进制、停服、将数据目录备份到 `/var/backups/codex-router.*`（仅保留最近 5 份）、替换二进制与
+前端并启动。如果新版启动后数秒内退出，或 `/admin` 无法访问，脚本会成对回滚二进制与前端并让
+工作流失败；数据回滚仍需按第 6 步手动处理。配置未设置 `[frontend] dir` 时脚本会给出警告。
 
 更新脚本本身变化时，需要重新执行 7.1 中的 `install` 命令。
