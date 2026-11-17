@@ -237,6 +237,39 @@ impl AccountRouter {
         }
     }
 
+    /// Share of new (unbound) requests each enabled member would receive now,
+    /// following the group's strategy; quarantined members get 0.
+    pub async fn member_shares(&self, group: &AccountGroup, members: &[CodexAccount]) -> Vec<f64> {
+        let runtime = self.runtime.lock().await;
+        let available = members
+            .iter()
+            .filter(|account| account.enabled && !runtime.quota_limited.contains(&account.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let weights = match group.strategy.as_str() {
+            WEIGHTED_ROUND_ROBIN_STRATEGY => quota_weights(&runtime.quota, &available),
+            FALLBACK_STRATEGY => (0..available.len())
+                .map(|index| if index == 0 { 1.0 } else { 0.0 })
+                .collect(),
+            _ => vec![1.0; available.len()],
+        };
+        let total = weights.iter().sum::<f64>();
+        members
+            .iter()
+            .map(|account| {
+                available
+                    .iter()
+                    .position(|entry| entry.id == account.id)
+                    .filter(|_| total > 0.0)
+                    .map_or(0.0, |index| weights[index] / total)
+            })
+            .collect()
+    }
+
+    pub async fn is_quarantined(&self, account_id: &str) -> bool {
+        self.is_quota_limited(account_id).await
+    }
+
     async fn mark_quota_limited(&self, account_id: &str) {
         let mut runtime = self.runtime.lock().await;
         if quarantine_account(&mut runtime, account_id) {

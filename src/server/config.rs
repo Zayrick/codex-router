@@ -27,6 +27,9 @@ use crate::{
 };
 
 use super::chatgpt_proxy::ChatgptProxy;
+
+/// State-store key of the last model price synchronization.
+pub const PRICING_SYNC_KEY: &str = "PRICING_SYNC";
 use super::pricing::{ModelPrice, normalized_model_prices, validate_model_prices};
 use super::usage::DEFAULT_FAST_COST_MULTIPLIER;
 use super::usage_store::CODEX_ACCOUNT_USAGE_KEY_PREFIX;
@@ -358,6 +361,9 @@ pub struct PersistentState {
     pub usage: Option<CodexUsageMonitorState>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub account_usage: BTreeMap<String, CodexUsageMonitorState>,
+    /// Outcome of the last model price synchronization (see the pricing admin API).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_sync: Option<serde_json::Value>,
     /// Random key binding web sessions to the credential used to sign in.
     /// Generated on first start; replacing it signs every console user out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -607,6 +613,12 @@ impl StateStore for ConfigStore {
                 state: config.state.account_routing.clone(),
             })
             .map(Some),
+            PRICING_SYNC_KEY => config
+                .state
+                .pricing_sync
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose(),
             _ => {
                 if let Some(value) = key
                     .strip_prefix(CODEX_ACCOUNT_USAGE_KEY_PREFIX)
@@ -640,6 +652,10 @@ impl StateStore for ConfigStore {
                         return Err(config_read_error());
                     }
                     config.state.account_routing = stored.state;
+                }
+                PRICING_SYNC_KEY => {
+                    config.state.pricing_sync =
+                        Some(serde_json::from_str(value).map_err(|_| config_read_error())?);
                 }
                 _ => {
                     if let Some(id) = key
@@ -680,6 +696,7 @@ impl StateStore for ConfigStore {
                 ACCOUNT_ROUTING_KEY => {
                     config.state.account_routing = AccountRoutingState::default()
                 }
+                PRICING_SYNC_KEY => config.state.pricing_sync = None,
                 _ => {
                     if let Some(id) = key
                         .strip_prefix(CODEX_ACCOUNT_USAGE_KEY_PREFIX)
@@ -1200,6 +1217,31 @@ mod tests {
             Some("https://api.day.app/device-key")
         );
 
+        let _ = fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn pricing_sync_status_round_trips_through_the_state_store() {
+        let path = std::env::temp_dir().join(format!(
+            "codex-router-pricing-sync-test-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&path, toml::to_string_pretty(&config()).unwrap())
+            .await
+            .unwrap();
+        let store = ConfigStore::load(path.clone()).await.unwrap();
+        assert_eq!(store.get(PRICING_SYNC_KEY).await.unwrap(), None);
+        store
+            .put(
+                PRICING_SYNC_KEY,
+                r#"{"syncedAt":1,"matchedModels":["gpt-5"]}"#,
+            )
+            .await
+            .unwrap();
+        let reloaded = ConfigStore::load(path.clone()).await.unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&reloaded.get(PRICING_SYNC_KEY).await.unwrap().unwrap()).unwrap();
+        assert_eq!(value["matchedModels"][0], "gpt-5");
         let _ = fs::remove_file(path).await;
     }
 

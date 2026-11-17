@@ -1,40 +1,36 @@
 import { useState, type MouseEvent, type ReactNode } from "react";
 import {
 	ChartNoAxesColumnIcon,
+	CircleDollarSignIcon,
+	GaugeIcon,
 	HomeIcon,
 	KeyRoundIcon,
+	Layers3Icon,
 	LogOutIcon,
 	MenuIcon,
+	ScrollTextIcon,
 	Settings2Icon,
 	UserRoundIcon,
 	UsersIcon,
 } from "lucide-react";
+
+import { NAV_GROUPS, PAGE_META, pageHref, type ManagementPage } from "@/admin/pages";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-	Sheet,
-	SheetContent,
-	SheetDescription,
-	SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 
-export type ManagementPage =
-	| "overview"
-	| "usage"
-	| "settings"
-	| "api-keys"
-	| "accounts"
-	| "account";
-
-type ShellIconName =
-	| "home"
-	| "usage"
-	| "settings"
-	| "key"
-	| "accounts"
-	| "account"
-	| "logout"
-	| "menu";
+const PAGE_ICONS: Record<ManagementPage, ReactNode> = {
+	overview: <HomeIcon aria-hidden="true" />,
+	logs: <ScrollTextIcon aria-hidden="true" />,
+	usage: <ChartNoAxesColumnIcon aria-hidden="true" />,
+	performance: <GaugeIcon aria-hidden="true" />,
+	codex: <UserRoundIcon aria-hidden="true" />,
+	groups: <Layers3Icon aria-hidden="true" />,
+	"api-keys": <KeyRoundIcon aria-hidden="true" />,
+	downstream: <UsersIcon aria-hidden="true" />,
+	pricing: <CircleDollarSignIcon aria-hidden="true" />,
+	settings: <Settings2Icon aria-hidden="true" />,
+};
 
 interface ManagementShellProps {
 	activePage: ManagementPage;
@@ -45,57 +41,13 @@ interface ManagementShellProps {
 	pageAction?: ReactNode;
 }
 
-const PAGE_COPY: Record<ManagementPage, { title: string; description: string }> = {
-	overview: {
-		title: "运行概览",
-		description: "快速检查账户连接、调用身份与近期请求状态。",
-	},
-	usage: {
-		title: "用量分析",
-		description: "按时间、上游路由目标与下游调用身份查看完整 Token 消耗。",
-	},
-	settings: {
-		title: "设置",
-		description: "管理用户端、通知和模型价格。",
-	},
-	"api-keys": {
-		title: "API Keys",
-		description: "创建和维护下游客户端访问 Codex Router 的密钥。",
-	},
-	accounts: {
-		title: "下游账户",
-		description: "管理 auth proxy account id 与启停状态。",
-	},
-	account: {
-		title: "Codex 账户",
-		description: "管理 Codex 登录与凭据导入、订阅额度和账户组。",
-	},
-};
-
-export default function ManagementShell({
-	activePage,
-	basePath,
-	children,
-	onLogout,
-	onNavigate,
-	pageAction,
-}: ManagementShellProps) {
+/** Figma "Sidebar v2" + page heading around every management page. */
+export default function ManagementShell({ activePage, basePath, children, onLogout, onNavigate, pageAction }: ManagementShellProps) {
 	const [mobileOpen, setMobileOpen] = useState(false);
-	const pageCopy = PAGE_COPY[activePage];
+	const meta = PAGE_META[activePage];
 
-	function navigate(
-		event: MouseEvent<HTMLAnchorElement>,
-		page: ManagementPage,
-	): void {
-		if (
-			event.button !== 0 ||
-			event.metaKey ||
-			event.ctrlKey ||
-			event.shiftKey ||
-			event.altKey
-		) {
-			return;
-		}
+	function navigate(event: MouseEvent<HTMLAnchorElement>, page: ManagementPage): void {
+		if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
 		event.preventDefault();
 		setMobileOpen(false);
 		onNavigate(page);
@@ -104,12 +56,7 @@ export default function ManagementShell({
 	return (
 		<div className="management-shell">
 			<aside className="management-sidebar" id="management-sidebar-desktop">
-				<SidebarContent
-					activePage={activePage}
-					basePath={basePath}
-					navigate={navigate}
-					onLogout={onLogout}
-				/>
+				<SidebarContent activePage={activePage} basePath={basePath} navigate={navigate} onLogout={onLogout} />
 			</aside>
 
 			<Sheet onOpenChange={setMobileOpen} open={mobileOpen}>
@@ -121,17 +68,12 @@ export default function ManagementShell({
 				>
 					<SheetTitle className="sr-only">管理导航</SheetTitle>
 					<SheetDescription className="sr-only">前往管理面板的各个页面。</SheetDescription>
-					<SidebarContent
-						activePage={activePage}
-						basePath={basePath}
-						navigate={navigate}
-						onLogout={onLogout}
-					/>
+					<SidebarContent activePage={activePage} basePath={basePath} navigate={navigate} onLogout={onLogout} />
 				</SheetContent>
 			</Sheet>
 
 			<section className="panel-workspace">
-				<ScrollArea className="min-h-0 flex-1">
+				<ScrollArea className="min-h-0 flex-1" data-console-scroll="">
 					<main className="panel-main">
 						<section className="dashboard-heading" aria-labelledby="dashboard-title">
 							<div className="dashboard-heading-copy">
@@ -145,12 +87,12 @@ export default function ManagementShell({
 									type="button"
 									variant="outline"
 								>
-									<ShellIcon name="menu" />
+									<MenuIcon aria-hidden="true" />
 								</Button>
 								<div>
-									{activePage === "settings" ? null : <p className="page-eyebrow">{pageEyebrow(activePage)}</p>}
-									<h1 id="dashboard-title">{pageCopy.title}</h1>
-									<p className="dashboard-description">{pageCopy.description}</p>
+									{meta.eyebrow ? <p className="page-eyebrow">{meta.eyebrow}</p> : null}
+									<h1 id="dashboard-title">{meta.title}</h1>
+									<p className="dashboard-description">{meta.description}</p>
 								</div>
 							</div>
 							{pageAction ? <div className="dashboard-heading-action">{pageAction}</div> : null}
@@ -178,12 +120,7 @@ function SidebarContent({
 	return (
 		<>
 			<header className="sidebar-header">
-				<a
-					aria-label="Codex Router 首页"
-					className="sidebar-brand"
-					href={managementPageHref(basePath, "overview")}
-					onClick={(event) => navigate(event, "overview")}
-				>
+				<a aria-label="Codex Router 首页" className="sidebar-brand" href={pageHref(basePath, "overview")} onClick={(event) => navigate(event, "overview")}>
 					<ProductMark />
 					<span className="sidebar-brand-copy">
 						<strong>Codex Router</strong>
@@ -195,70 +132,35 @@ function SidebarContent({
 			<nav className="sidebar-navigation-shell" aria-label="主导航">
 				<ScrollArea className="min-h-0 flex-1">
 					<div className="sidebar-navigation">
-						<NavGroup label="运行">
-							<NavItem activePage={activePage} basePath={basePath} icon="home" label="概览" onNavigate={navigate} page="overview" />
-							<NavItem activePage={activePage} basePath={basePath} icon="usage" label="用量分析" onNavigate={navigate} page="usage" />
-						</NavGroup>
-						<NavGroup label="配置">
-							<NavItem activePage={activePage} basePath={basePath} icon="settings" label="设置" onNavigate={navigate} page="settings" />
-						</NavGroup>
-						<NavGroup label="调用身份">
-							<NavItem activePage={activePage} basePath={basePath} icon="key" label="API Keys" onNavigate={navigate} page="api-keys" />
-							<NavItem activePage={activePage} basePath={basePath} icon="accounts" label="下游账户" onNavigate={navigate} page="accounts" />
-						</NavGroup>
-						<NavGroup label="调度">
-							<NavItem activePage={activePage} basePath={basePath} icon="account" label="Codex 账户" onNavigate={navigate} page="account" />
-						</NavGroup>
+						{NAV_GROUPS.map((group) => (
+							<div className="sidebar-nav-group" key={group.label}>
+								<span className="sidebar-group-label">{group.label}</span>
+								<div className="sidebar-nav-items">
+									{group.pages.map((page) => {
+										const active = activePage === page;
+										return (
+											<Button asChild className="h-auto min-h-[2.55rem] w-full justify-start" key={page} variant={active ? "secondary" : "ghost"}>
+												<a aria-current={active ? "page" : undefined} href={pageHref(basePath, page)} onClick={(event) => navigate(event, page)}>
+													<span className="sidebar-nav-icon">{PAGE_ICONS[page]}</span>
+													<span className="sidebar-nav-label">{PAGE_META[page].label}</span>
+												</a>
+											</Button>
+										);
+									})}
+								</div>
+							</div>
+						))}
 					</div>
 				</ScrollArea>
 			</nav>
 
 			<div className="sidebar-footer">
 				<Button className="min-h-11 w-full justify-start [&_svg]:size-[1.1rem]" onClick={onLogout} title="退出" type="button" variant="ghost">
-					<ShellIcon name="logout" />
+					<LogOutIcon aria-hidden="true" />
 					<span>退出管理</span>
 				</Button>
 			</div>
 		</>
-	);
-}
-
-function NavGroup({ label, children }: { label: string; children: ReactNode }) {
-	return (
-		<div className="sidebar-nav-group">
-			<span className="sidebar-group-label">{label}</span>
-			<div className="sidebar-nav-items">{children}</div>
-		</div>
-	);
-}
-
-function NavItem({
-	activePage,
-	basePath,
-	icon,
-	label,
-	onNavigate,
-	page,
-}: {
-	activePage: ManagementPage;
-	basePath: string;
-	icon: ShellIconName;
-	label: string;
-	onNavigate: (event: MouseEvent<HTMLAnchorElement>, page: ManagementPage) => void;
-	page: ManagementPage;
-}) {
-	const active = activePage === page;
-	return (
-		<Button asChild className="h-auto min-h-[2.55rem] w-full justify-start" variant={active ? "secondary" : "ghost"}>
-			<a
-				aria-current={active ? "page" : undefined}
-				href={managementPageHref(basePath, page)}
-				onClick={(event) => onNavigate(event, page)}
-			>
-				<span className="sidebar-nav-icon"><ShellIcon name={icon} /></span>
-				<span className="sidebar-nav-label">{label}</span>
-			</a>
-		</Button>
 	);
 }
 
@@ -273,37 +175,4 @@ export function ProductMark({ compact = false }: { compact?: boolean }) {
 			</svg>
 		</span>
 	);
-}
-
-function pageEyebrow(page: ManagementPage): string {
-	if (page === "overview") return "DASHBOARD";
-	if (page === "usage") return "OBSERVABILITY";
-	if (page === "settings") return "PREFERENCES";
-	if (page === "account") return "CODEX ACCOUNTS";
-	return "IDENTITIES";
-}
-
-function managementPageHref(basePath: string, page: ManagementPage): string {
-	return page === "overview" ? basePath : `${basePath}?page=${encodeURIComponent(page)}`;
-}
-
-function ShellIcon({ name }: { name: ShellIconName }) {
-	switch (name) {
-		case "home":
-			return <HomeIcon aria-hidden="true" />;
-		case "usage":
-			return <ChartNoAxesColumnIcon aria-hidden="true" />;
-		case "settings":
-			return <Settings2Icon aria-hidden="true" />;
-		case "key":
-			return <KeyRoundIcon aria-hidden="true" />;
-		case "accounts":
-			return <UsersIcon aria-hidden="true" />;
-		case "account":
-			return <UserRoundIcon aria-hidden="true" />;
-		case "logout":
-			return <LogOutIcon aria-hidden="true" />;
-		case "menu":
-			return <MenuIcon aria-hidden="true" />;
-	}
 }

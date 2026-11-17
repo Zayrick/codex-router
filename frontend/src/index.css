@@ -122,6 +122,20 @@
 
 @theme inline {
 	--font-heading: var(--font-sans);
+	--font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	--color-success: var(--success);
+	--color-success-soft: var(--success-soft);
+	--color-warning: var(--warning);
+	--color-warning-soft: var(--warning-soft);
+	--color-warning-border: var(--warning-border);
+	--color-danger: var(--danger);
+	--color-danger-soft: var(--danger-soft);
+	--color-surface-subtle: var(--surface-subtle);
+	--color-surface-hover: var(--surface-hover);
+	--color-border-strong: var(--border-strong);
+	--color-primary-soft: var(--primary-soft);
+	--color-primary-border: var(--primary-border);
+	--color-faint: var(--text-tertiary);
 	--font-sans:
 		Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 	--color-sidebar-ring: var(--sidebar-ring);

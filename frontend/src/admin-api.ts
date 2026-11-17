@@ -205,6 +205,7 @@ export interface UsageEvent extends Omit<UsageTotals, "requests"> {
 	id: number;
 	recordedAt: number;
 	requestId: string;
+	responseId: string;
 	identityType: "api_key" | "auth_proxy";
 	identityId: string;
 	identityName: string;
@@ -250,6 +251,485 @@ export interface UsageDashboard {
 	unpricedModels: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Analytics (GET /usage/analytics) and request log (GET /usage/events)
+// ---------------------------------------------------------------------------
+
+export type AnalyticsRange = "24h" | "7d" | "30d" | "all" | "custom";
+
+export interface AnalyticsQuery {
+	range: AnalyticsRange;
+	/** Required with `custom`. */
+	startAt?: number;
+	endAt?: number;
+	/** Bucket size in minutes; defaults by range length. */
+	bucketMinutes?: number;
+	downstream?: UsageIdentityFilter | null;
+	upstream?: UsageIdentityFilter | null;
+	models?: string[];
+	statuses?: UsageEventStatus[];
+	efforts?: string[];
+	/** Requested service tiers: priority, default, auto, flex. */
+	tiers?: string[];
+	transports?: string[];
+	sessionKinds?: string[];
+	sessionId?: string;
+	search?: string;
+}
+
+export type EventView = "all" | "failed" | "slow" | "downgraded" | "subagent" | "rate_limited";
+
+export interface EventPageQuery extends AnalyticsQuery {
+	view?: EventView;
+	offset?: number;
+	limit?: number;
+	group?: "request" | "session";
+}
+
+export interface Percentiles {
+	p50: number | null;
+	p95: number | null;
+	max: number | null;
+	samples: number;
+}
+
+export interface OutcomeCounts {
+	requests: number;
+	completed: number;
+	incomplete: number;
+	failed: number;
+	cancelled: number;
+	interrupted: number;
+	/** Requests answered with HTTP 429. */
+	rateLimited: number;
+}
+
+export interface TokenCounts {
+	inputTokens: number;
+	cachedInputTokens: number;
+	cacheCreationInputTokens: number;
+	outputTokens: number;
+	reasoningOutputTokens: number;
+	totalTokens: number;
+	costUsd: number;
+}
+
+export interface AnalyticsTotals extends OutcomeCounts, TokenCounts {
+	unpricedTokens: number;
+	unpricedRequests: number;
+	fastRequests: number;
+	/** Cost of Fast requests before the Fast multiplier. */
+	fastBaseCostUsd: number;
+	/** Fast requests served as Fast / with another tier. */
+	fastFulfilled: number;
+	fastDowngraded: number;
+	sessions: number;
+	ttft: Percentiles;
+	latency: Percentiles;
+	/** Median output tokens per second. */
+	outputSpeed: number | null;
+	firstAt: number | null;
+	lastAt: number | null;
+}
+
+export interface AnalyticsBucket extends OutcomeCounts, TokenCounts {
+	startAt: number;
+	ttftP50: number | null;
+	ttftP95: number | null;
+	latencyP50: number | null;
+	latencyP95: number | null;
+	fastRequests: number;
+	fastDowngraded: number;
+}
+
+export interface NamedCount {
+	name: string;
+	requests: number;
+}
+
+export interface ModelStats extends OutcomeCounts, TokenCounts {
+	model: string;
+	priced: boolean;
+	ttft: Percentiles;
+	latency: Percentiles;
+	outputSpeed: number | null;
+	outputSpeedFirstHalf: number | null;
+	outputSpeedSecondHalf: number | null;
+	/** Requested models that were answered by this model. */
+	redirects: NamedCount[];
+	firstAt: number;
+	lastAt: number;
+	/** Total tokens per seventh of the range. */
+	trend: number[];
+}
+
+export interface IdentityStats extends OutcomeCounts, TokenCounts {
+	identityType: "api_key" | "auth_proxy";
+	identityId: string;
+	identityName: string;
+	sessions: number;
+	lastAt: number;
+	lastUserAgent: string;
+	trend: number[];
+}
+
+export interface ConsumerShare {
+	identityType: "api_key" | "auth_proxy";
+	identityId: string;
+	identityName: string;
+	requests: number;
+	totalTokens: number;
+}
+
+export interface UpstreamAccountStats extends OutcomeCounts, TokenCounts {
+	codexAccountId: string;
+	codexAccountName: string;
+	accountGroupId: string;
+	accountGroupName: string;
+	ttft: Percentiles;
+	latency: Percentiles;
+	fastRequests: number;
+	fastFulfilled: number;
+	fastDowngraded: number;
+	sessions: number;
+	lastAt: number;
+	/** HTTP 429 responses per series bucket. */
+	rateLimitSeries: number[];
+	trend: number[];
+	consumers: ConsumerShare[];
+}
+
+export interface UpstreamGroupStats extends OutcomeCounts, TokenCounts {
+	/** Empty for requests routed directly to an account. */
+	accountGroupId: string;
+	accountGroupName: string;
+	sessions: number;
+	sessionAffinityRate: number | null;
+	trend: number[];
+	consumers: ConsumerShare[];
+	/** Usage of each member account through this group. */
+	accounts: { codexAccountId: string; codexAccountName: string; requests: number; totalTokens: number; rateLimited: number }[];
+}
+
+export interface IdentityModelCell {
+	identityType: "api_key" | "auth_proxy";
+	identityId: string;
+	identityName: string;
+	model: string;
+	requests: number;
+	totalTokens: number;
+	costUsd: number;
+}
+
+export interface EffortTierCell {
+	effort: string;
+	/** Tier the upstream answered with; empty when unreported. */
+	tier: string;
+	requests: number;
+	totalTokens: number;
+}
+
+export interface FastBreakdown {
+	name: string;
+	requested: number;
+	fulfilled: number;
+	downgraded: number;
+}
+
+export interface FastStats {
+	requested: number;
+	fulfilled: number;
+	downgraded: number;
+	accounts: FastBreakdown[];
+	models: FastBreakdown[];
+}
+
+export interface ErrorStats {
+	status: UsageEventStatus;
+	statusCode: number | null;
+	errorCode: string;
+	requests: number;
+	lastAt: number;
+	accounts: NamedCount[];
+}
+
+export interface SessionKindStats {
+	kind: UsageSessionKind;
+	requests: number;
+	sessions: number;
+}
+
+export interface SessionSummary {
+	sessionId: string;
+	sessionKind: UsageSessionKind;
+	parentSessionId: string;
+	identityName: string;
+	requests: number;
+	childSessions: number;
+	totalTokens: number;
+	costUsd: number;
+	firstAt: number;
+	lastAt: number;
+}
+
+export interface SessionStats {
+	sessions: number;
+	requestsWithSession: number;
+	maxRequests: number;
+	medianDurationMs: number | null;
+	kinds: SessionKindStats[];
+	recent: SessionSummary[];
+}
+
+export interface ClientStats {
+	client: string;
+	version: string;
+	os: string;
+	requests: number;
+	failed: number;
+	websocketRequests: number;
+	ttft: Percentiles;
+	lastAt: number;
+}
+
+export interface IpStats {
+	ip: string;
+	forwardedFor: string;
+	requests: number;
+	lastAt: number;
+}
+
+export interface ClientOverview {
+	clients: ClientStats[];
+	distinctClients: number;
+	ips: IpStats[];
+	distinctIps: number;
+	forwardedRequests: number;
+}
+
+export interface TransportStats extends OutcomeCounts {
+	name: string;
+	ttft: Percentiles;
+	latency: Percentiles;
+	averageInputTokens: number;
+}
+
+export interface TransportOverview {
+	/** `http` / `websocket`. */
+	transports: TransportStats[];
+	/** `stream` / `non_stream`. */
+	streaming: TransportStats[];
+	endpoints: TransportStats[];
+}
+
+export interface LatencyDensity {
+	ttftEdgesMs: number[];
+	latencyEdgesMs: number[];
+	/** `cells[latencyBin][ttftBin]`. */
+	cells: number[][];
+	missingTtft: number;
+}
+
+export interface UnpricedModel {
+	model: string;
+	requests: number;
+	totalTokens: number;
+	firstAt: number;
+	lastAt: number;
+}
+
+export interface UsageAnalytics {
+	range: AnalyticsRange;
+	startAt: number;
+	endAt: number;
+	bucketMs: number;
+	totals: AnalyticsTotals;
+	/** Equally long period right before, up to the same elapsed time. */
+	previous: AnalyticsTotals | null;
+	series: AnalyticsBucket[];
+	models: ModelStats[];
+	identities: IdentityStats[];
+	upstreamAccounts: UpstreamAccountStats[];
+	upstreamGroups: UpstreamGroupStats[];
+	identityModels: IdentityModelCell[];
+	effortTiers: EffortTierCell[];
+	fast: FastStats;
+	errors: ErrorStats[];
+	sessions: SessionStats;
+	clients: ClientOverview;
+	transports: TransportOverview;
+	latencyDensity: LatencyDensity;
+	unpricedModels: UnpricedModel[];
+	recentFailures: UsageEvent[];
+}
+
+export interface EventViewCounts {
+	all: number;
+	failed: number;
+	slow: number;
+	downgraded: number;
+	subagent: number;
+	rateLimited: number;
+}
+
+/** `[recordedAt, latencyMs, status]` */
+export type TimelinePoint = [number, number, UsageEventStatus];
+
+export interface SessionChild extends OutcomeCounts {
+	sessionId: string;
+	sessionKind: UsageSessionKind;
+	totalTokens: number;
+	costUsd: number;
+	firstAt: number;
+	lastAt: number;
+	accounts: string[];
+	fastDowngraded: number;
+	timeline: TimelinePoint[];
+}
+
+export interface SessionGroup extends OutcomeCounts {
+	/** Root session; empty for requests without a session (grouped per identity). */
+	sessionId: string;
+	identityType: "api_key" | "auth_proxy";
+	identityId: string;
+	identityName: string;
+	accountGroupName: string;
+	accounts: string[];
+	userAgent: string;
+	totalTokens: number;
+	costUsd: number;
+	firstAt: number;
+	lastAt: number;
+	kinds: Partial<Record<UsageSessionKind, number>>;
+	timeline: TimelinePoint[];
+	children: SessionChild[];
+	/** Latest requests of the root session itself. */
+	events: UsageEvent[];
+	eventCount: number;
+}
+
+export interface UsageEventPage {
+	startAt: number;
+	endAt: number;
+	bucketMs: number;
+	/** Requests in the range before filters and views. */
+	rangeTotal: number;
+	/** Matching requests, or session groups when grouped. */
+	total: number;
+	offset: number;
+	summary: AnalyticsTotals;
+	series: AnalyticsBucket[];
+	views: EventViewCounts;
+	slowThresholdMs: number | null;
+	events: UsageEvent[];
+	sessions: SessionGroup[] | null;
+	/** Models seen in the range (filter options). */
+	models: string[];
+	/** Requests per session kind for each root session on this page, across the range. */
+	sessionCounts: Record<string, Partial<Record<UsageSessionKind, number>>>;
+}
+
+// ---------------------------------------------------------------------------
+// Quota forecasts (GET /quota)
+// ---------------------------------------------------------------------------
+
+export interface WindowForecast {
+	id: string;
+	category: QuotaCategory;
+	name: string;
+	kind: QuotaWindowKind;
+	usedPercent: number | null;
+	remainingPercent: number | null;
+	limitWindowSeconds: number | null;
+	resetAt: number | null;
+	limitReached: boolean;
+	windowStartAt: number | null;
+	/** Usage recorded on the account since the window started. */
+	requests: number;
+	totalTokens: number;
+	costUsd: number;
+	tokensPerPercent: number | null;
+	costPerPercent: number | null;
+	burnPercentPerHour: number | null;
+	exhaustAt: number | null;
+	exhaustsBeforeReset: boolean;
+}
+
+export interface AccountQuota {
+	accountId: string;
+	accountName: string;
+	enabled: boolean;
+	/** Taken out of routing after a 429 or an exhausted window. */
+	quarantined: boolean;
+	sampledAt: number | null;
+	planType: string | null;
+	windows: WindowForecast[];
+}
+
+export interface GroupShares {
+	groupId: string;
+	members: { accountId: string; share: number }[];
+}
+
+export interface QuotaOverview {
+	sampledAt: number | null;
+	accounts: AccountQuota[];
+	groups: GroupShares[];
+}
+
+export interface PricingSyncStatus {
+	syncedAt: number;
+	source: string;
+	sourceUrl: string;
+	matchedModels: string[];
+	unmatchedModels: string[];
+	updatedModels: string[];
+	/** Models with hand-edited prices that the sync left unchanged. */
+	skippedModels: string[];
+	/** Prices as written by the sync; a different current price was edited by hand. */
+	syncedPrices: ModelPrice[];
+}
+
+export type NotificationChannel = "bark" | "dingtalk";
+
+/** When each model and identity was last used, across all recorded events. */
+export interface LastSeen {
+	models: { model: string; firstAt: number; lastAt: number }[];
+	identities: { identityType: "api_key" | "auth_proxy"; identityId: string; lastAt: number; userAgent: string }[];
+}
+
+/** Query string shared by analytics and the request log. */
+export function analyticsSearchParams(query: AnalyticsQuery | EventPageQuery): URLSearchParams {
+	const params = new URLSearchParams({ range: query.range });
+	if (query.startAt !== undefined) params.set("startAt", String(Math.floor(query.startAt)));
+	if (query.endAt !== undefined) params.set("endAt", String(Math.ceil(query.endAt)));
+	if (query.bucketMinutes) params.set("bucket", String(query.bucketMinutes));
+	if (query.downstream) {
+		params.set("downstreamType", query.downstream.identityType);
+		params.set("downstreamId", query.downstream.identityId);
+	}
+	if (query.upstream) {
+		params.set("upstreamType", query.upstream.identityType);
+		params.set("upstreamId", query.upstream.identityId);
+	}
+	const lists: [string, string[] | undefined][] = [
+		["model", query.models],
+		["status", query.statuses],
+		["effort", query.efforts],
+		["tier", query.tiers],
+		["transport", query.transports],
+		["sessionKind", query.sessionKinds],
+	];
+	for (const [name, values] of lists) for (const value of values ?? []) params.append(name, value);
+	if (query.sessionId) params.set("sessionId", query.sessionId);
+	if (query.search?.trim()) params.set("q", query.search.trim());
+	if ("view" in query && query.view && query.view !== "all") params.set("view", query.view);
+	if ("offset" in query && query.offset) params.set("offset", String(query.offset));
+	if ("limit" in query && query.limit) params.set("limit", String(query.limit));
+	if ("group" in query && query.group === "session") params.set("group", "session");
+	return params;
+}
+
 export interface ModelPrice {
 	model: string;
 	input: number;
@@ -262,6 +742,7 @@ export interface ModelPrice {
 export interface PricingResponse {
 	prices: ModelPrice[];
 	usedModels: string[];
+	sync: PricingSyncStatus | null;
 }
 
 export interface PricingSyncResult {
@@ -270,6 +751,7 @@ export interface PricingSyncResult {
 	prices: ModelPrice[];
 	matchedModels: string[];
 	unmatchedModels: string[];
+	sync: PricingSyncStatus;
 }
 
 export interface DeviceAuthorization {
@@ -415,6 +897,39 @@ export class AdminApiClient {
 			query.set("endAt", String(bounds.endAt));
 		}
 		return this.requestJson<UsageDashboard>(`/usage?${query.toString()}`);
+	}
+
+	getAnalytics(query: AnalyticsQuery, signal?: AbortSignal): Promise<UsageAnalytics> {
+		return this.requestJson<UsageAnalytics>(`/usage/analytics?${analyticsSearchParams(query).toString()}`, { signal: signal ?? null });
+	}
+
+	getEvents(query: EventPageQuery, signal?: AbortSignal): Promise<UsageEventPage> {
+		return this.requestJson<UsageEventPage>(`/usage/events?${analyticsSearchParams(query).toString()}`, { signal: signal ?? null });
+	}
+
+	getLastSeen(signal?: AbortSignal): Promise<LastSeen> {
+		return this.requestJson<LastSeen>("/usage/last-seen", { signal: signal ?? null });
+	}
+
+	/** URL of the CSV export of the request log matching `query`. */
+	eventsCsvUrl(query: EventPageQuery): string {
+		const params = analyticsSearchParams({ ...query, offset: undefined, limit: undefined, group: undefined });
+		params.set("format", "csv");
+		return `${this.basePath}/usage/events?${params.toString()}`;
+	}
+
+	/**
+	 * Cached quota snapshots with forecasts. `refresh` samples every enabled
+	 * account first, or only the account whose id is given.
+	 */
+	getQuota(refresh: boolean | string = false): Promise<QuotaOverview> {
+		if (refresh === false) return this.requestJson<QuotaOverview>("/quota");
+		const target = refresh === true ? "1" : refresh;
+		return this.requestJson<QuotaOverview>(`/quota?refresh=${encodeURIComponent(target)}`);
+	}
+
+	async testNotification(channel: NotificationChannel): Promise<void> {
+		await this.requestJson<{ sent: boolean }>("/settings/notifications/test", jsonRequest("POST", { channel }));
 	}
 
 	getPricing(): Promise<PricingResponse> {

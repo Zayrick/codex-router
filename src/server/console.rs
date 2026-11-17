@@ -20,7 +20,7 @@ use crate::{
 };
 
 use super::{
-    account::signed_in_account_dashboard,
+    account::{signed_in_account_dashboard, signed_in_account_quota, user_scope},
     admin::handle_admin,
     body,
     config::AppConfig,
@@ -33,6 +33,7 @@ use super::{
     response,
     session_store::{Principal, SessionRecord},
     state::AppState,
+    usage_api,
 };
 
 const MAX_LOGIN_BODY_BYTES: usize = 8 * 1024;
@@ -93,6 +94,17 @@ async fn api(
                 .map(|(_, value)| value.into_owned());
             signed_in_account_dashboard(&session.record.principal, range.as_deref(), config, state)
                 .await?
+        }
+        (ConsoleRoute::AccountAnalytics, Some(session)) => {
+            let scope = user_scope(&session.record.principal)?;
+            usage_api::analytics(&client_url, scope, config, state).await?
+        }
+        (ConsoleRoute::AccountEvents, Some(session)) => {
+            let scope = user_scope(&session.record.principal)?;
+            usage_api::events(&client_url, scope, config, state).await?
+        }
+        (ConsoleRoute::AccountQuota, Some(session)) => {
+            signed_in_account_quota(&session.record.principal, config, state).await?
         }
         (ConsoleRoute::Admin(route), Some(session)) => {
             if !session.record.principal.is_admin() {

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
-import AccountUsage from "./AccountUsage";
 import App from "./App";
 import LoginView from "./LoginView";
 import { ProductMark } from "./ManagementShell";
 import { fetchSession, signIn, type ConsoleSession } from "./session-api";
+import UserConsole from "./user/UserConsole";
 
 type ConsoleState =
 	| { status: "loading" }
@@ -71,7 +71,7 @@ function Console() {
 	}
 	return state.session.role === "admin"
 		? <App onSignedOut={handleSignedOut} />
-		: <AccountUsage onSignedOut={handleSignedOut} />;
+		: <UserConsole onSignedOut={handleSignedOut} />;
 }
 
 function errorText(error: unknown, fallback: string): string {

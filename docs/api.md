@@ -240,6 +240,9 @@ ChatGPT；未知路径或方法返回空 `404`。
 | `POST /admin/api/session` | 登录，JSON 正文 `{"credential": "..."}` |
 | `DELETE /admin/api/session` | 退出登录：撤销服务端会话并清除 Cookie，返回 `204` |
 | `GET /admin/api/account?range=24h` | 用户会话查看自己的用量 |
+| `GET /admin/api/account/analytics` | 用户会话的用量分析，参数同 `/usage/analytics`，固定限定为本人 |
+| `GET /admin/api/account/events` | 用户会话的调用日志，参数同 `/usage/events`，固定限定为本人 |
+| `GET /admin/api/account/quota` | 用户会话的身份摘要、路由与所在账户池的额度预测 |
 | `/admin/api/<管理端点>` | 仅管理员会话，见第 13 节 |
 | `GET/HEAD /` | `302` 跳转到 `/admin` |
 
@@ -295,6 +298,11 @@ SameSite=Lax`）；HTTP 时为 `codex-session`（`Path=/admin; HttpOnly; SameSit
 额度根据该调用身份当前映射的单个账户或账户组可用成员读取，不会推进组的轮询游标；无法读取额度
 时仍返回 Token 用量，`quota` 为 `null`。未分配路由的身份仍可查询既有 Token 记录，但没有账户额度。
 
+`/account/analytics` 与 `/account/events` 拒绝 `downstreamType`/`downstreamId` 参数（`400`），
+下游身份只取自会话。`/account/quota` 返回 `identity`（身份类型、名称、凭据末 4 位）、`route`、
+`group`（账户组名称与策略）和 `visible`；仅当 `public_account.show_quota` 开启时才附带 `quota`
+（结构同管理端 `/quota`，仅含该身份路由到的账户）。
+
 ### 旧路径
 
 配置了已弃用的 `admin.path` 时，`GET /<admin.path>/admin` 返回 `308` 跳转到 `/admin`，该路径族下的
@@ -340,11 +348,47 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 缓存与推理 Token 分别是输入与输出 Token 的子集。该接口不返回 Key/OAuth，也不会记录或返回
 请求正文与模型输出。
 
+### 用量分析与调用日志
+
+`GET /admin/api/usage/analytics` 在一次扫描中计算控制台各分析页所需的全部聚合。时间参数：
+
+- `range`：`24h`、`7d`（默认）、`30d`、`all` 或 `custom`；`custom` 需要 `startAt`、`endAt`
+  （毫秒，跨度不超过 400 天，`endAt` 最多超前当前时间 2 天，便于按自然日查询“今天”）；
+- `bucket`：时间桶分钟数，默认 2 天内 60、8 天内 360、更长 1440；桶数不超过 2000。
+
+筛选参数（均可组合，多值参数可重复或用逗号分隔）：`downstreamType`/`downstreamId`、
+`upstreamType`/`upstreamId`（同 `/usage`）、`model`、`status`、`effort`、`tier`（请求的服务等级：
+`priority`、`default`、`auto`、`flex`）、`transport`、`sessionKind`、`sessionId`（同时匹配父会话）
+和 `q`（在 request ID、response ID、session ID 中不区分大小写搜索）。返回：
+
+- `totals`：结果计数（`completed`、`incomplete`、`failed`、`cancelled`、`interrupted`、`rateLimited` 为 HTTP 429）、Token 与成本、未定价 Token、Fast 请求数及其未乘倍率的成本、会话数、`ttft`/`latency` 的 P50/P95/最大值（仅统计成功请求），以及输出速度中位数（`outputTokens × 1000 ÷ latencyMs`）；
+- `previous`：等长的上一周期、截至相同经过时间的 `totals`（`all` 为 `null`）；
+- `series`：按桶的结果计数、Token 构成、成本、TTFT/延迟分位数和 Fast 降级数；
+- `models`、`identities`、`upstreamAccounts`、`upstreamGroups`：按模型、调用身份、Codex 账户、账户组聚合，含分位数、7 段 Token 趋势、429 按桶分布、会话保持率与使用方；
+- `identityModels`、`effortTiers`：身份 × 模型、思考强度 × 实际服务等级的交叉矩阵；
+- `fast`：Fast 请求、兑现与降级次数，按账户和模型细分；
+- `errors`：按状态、HTTP 状态码、错误码分组的未完成请求，含最近时间与涉及账户；
+- `sessions`、`clients`、`transports`：会话类型与最近会话、按 User-Agent 解析的客户端与 IP、传输方式/流式/端点对比；
+- `latencyDensity`：TTFT × 总延迟的对数分箱计数；`unpricedModels`；`recentFailures`（最近 20 条）。
+
+`GET /admin/api/usage/events` 使用相同的时间与筛选参数，另支持：
+
+- `view`：`all`（默认）、`failed`（`failed`/`interrupted`）、`slow`（总延迟超过区间内成功请求的 P95）、
+  `downgraded`（请求 Fast 但上游返回其他等级）、`subagent`、`rate_limited`（HTTP 429）；
+- `offset`、`limit`（1–500，默认 50），按时间倒序分页；
+- `group=session`：按会话树分组，`total` 为组数，`sessions` 每组含根会话的最新请求和子会话摘要；
+  无会话的请求按调用身份成组；
+- `format=csv`：导出匹配的请求（最多 50 000 条），字段含全部记录列与成本，公式前缀会被转义。
+
+分页响应还包含区间内未筛选的总数 `rangeTotal`、匹配请求的 `summary` 与 `series`、各视图计数
+`views` 和慢请求阈值 `slowThresholdMs`。
+
 ## 13. 管理 API
 
 管理 JSON API 位于 `/admin/api`，需要管理员会话：未登录返回 `401 invalid_session`，用户会话返回
-`403 admin_required`。控制台页面通过 `/admin?page=usage`、`?page=settings`、`?page=api-keys`、
-`?page=accounts` 和 `?page=account` 切换视图。以下为相对 `/admin/api` 的端点：
+`403 admin_required`。控制台页面通过 `/admin?page=<页面>` 切换视图，页面为 `logs`、`usage`、
+`performance`、`codex`、`groups`、`api-keys`、`downstream`、`pricing` 和 `settings`（旧的
+`account`、`routing`、`accounts` 会映射到新页面）。以下为相对 `/admin/api` 的端点：
 
 | 方法与相对路径 | 用途 |
 | --- | --- |
@@ -358,9 +402,13 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 | `GET /account-routing` | 读取账户组与调用身份路由 |
 | `PUT /account-routing` | 原子替换经校验的账户组与路由配置 |
 | `GET /usage?range=7d&upstreamType=codex_account&upstreamId=<id>&downstreamType=api_key&downstreamId=<id>` | 读取 SQLite 用量，可分别或组合筛选上游与下游 |
-| `GET /pricing` | 读取模型价格与已使用模型 |
+| `GET /usage/analytics` | 用量分析聚合，见第 12 节 |
+| `GET /usage/events` | 分页调用日志、会话分组与 CSV 导出，见第 12 节 |
+| `GET /quota` | 各账户缓存的额度快照与耗尽预测；`?refresh=1` 先立即采样全部启用账户 |
+| `GET /pricing` | 读取模型价格、已使用模型与上次同步状态 `sync` |
 | `PUT /pricing` | 替换模型价格配置 |
-| `POST /pricing/sync` | 从价格源同步模型价格 |
+| `POST /pricing/sync` | 从价格源同步模型价格，并记录同步状态 |
+| `POST /settings/notifications/test` | 通过已保存并启用的通道发送测试通知，正文 `{"channel": "bark"}` 或 `"dingtalk"`；通道未启用返回 `409` |
 | `GET /api-keys` | 读取 API Key 列表 |
 | `POST /api-keys` | 创建 API Key |
 | `PUT /api-keys` | 更新名称、值或启用状态 |
@@ -374,6 +422,14 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 
 Codex 账户、API Key、下游账户和账户组使用 UUID 格式的稳定 `id`。禁用 Codex 账户会暂停其路由，
 删除账户会同时移除组成员关系和直连路由。
+
+### 额度预测
+
+`GET /quota` 读取后台定期采样的额度快照，不会请求上游（`refresh=1` 除外）。每个窗口附带：
+窗口起点（`resetAt` 减窗口长度）以来该账户的请求、Token 与成本；已用比例不低于 1% 时的每 1%
+对应 Token 与成本；按最近 3 小时 Token 消耗折算的每小时消耗比例（无用量时退回窗口内平均速度）；
+预计耗尽时间及是否早于重置。`groups` 给出各账户组成员在当前额度下承接新请求的比例，与路由
+实际使用的权重一致；`quarantined` 表示账户因 429 或额度耗尽暂时退出路由。
 
 ### 凭据导入
 

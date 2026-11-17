@@ -121,6 +121,11 @@ pub enum AdminRoute {
     State,
     CodexAccountSubscription,
     Usage,
+    UsageAnalytics,
+    UsageEvents,
+    UsageLastSeen,
+    Quota,
+    NotificationTest,
     SettingsGet,
     SettingsUpdate,
     PricingGet,
@@ -159,6 +164,12 @@ pub enum ConsoleRoute {
     SessionDelete,
     /// `GET /admin/api/account`: usage of the signed-in API key or account.
     Account,
+    /// `GET /admin/api/account/analytics`: analytics limited to the signed-in identity.
+    AccountAnalytics,
+    /// `GET /admin/api/account/events`: request log of the signed-in identity.
+    AccountEvents,
+    /// `GET /admin/api/account/quota`: quota forecasts of the identity's route targets.
+    AccountQuota,
     Admin(AdminRoute),
     /// Unknown path or unsupported method inside the console namespace.
     NotFound,
@@ -205,6 +216,9 @@ pub fn match_console_route(method: &str, pathname: &str) -> Option<ConsoleRoute>
         ("POST", "session") => ConsoleRoute::SessionCreate,
         ("DELETE", "session") => ConsoleRoute::SessionDelete,
         ("GET", "account") => ConsoleRoute::Account,
+        ("GET", "account/analytics") => ConsoleRoute::AccountAnalytics,
+        ("GET", "account/events") => ConsoleRoute::AccountEvents,
+        ("GET", "account/quota") => ConsoleRoute::AccountQuota,
         _ => match_admin_api(method, relative).map_or(ConsoleRoute::NotFound, ConsoleRoute::Admin),
     };
     Some(route)
@@ -215,6 +229,11 @@ fn match_admin_api(method: &str, relative: &str) -> Option<AdminRoute> {
         ("GET", "state") => AdminRoute::State,
         ("GET", "codex-accounts/subscription") => AdminRoute::CodexAccountSubscription,
         ("GET", "usage") => AdminRoute::Usage,
+        ("GET", "usage/analytics") => AdminRoute::UsageAnalytics,
+        ("GET", "usage/events") => AdminRoute::UsageEvents,
+        ("GET", "usage/last-seen") => AdminRoute::UsageLastSeen,
+        ("GET", "quota") => AdminRoute::Quota,
+        ("POST", "settings/notifications/test") => AdminRoute::NotificationTest,
         ("GET", "settings") => AdminRoute::SettingsGet,
         ("PUT", "settings") => AdminRoute::SettingsUpdate,
         ("GET", "pricing") => AdminRoute::PricingGet,

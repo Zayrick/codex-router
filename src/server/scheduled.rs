@@ -94,6 +94,76 @@ pub async fn run_once(state: &AppState) {
         .await;
 }
 
+/// Samples the quota of every enabled account (or only `only`) now instead of
+/// at the next tick.
+pub async fn refresh_account_quotas(state: &AppState, only: Option<&str>) {
+    let config = state.config.snapshot().await;
+    let now_ms = current_time_ms();
+    let accounts = match RoutingRepository::new(state.config.as_ref()).read().await {
+        Ok(routing) => routing.accounts,
+        Err(error) => {
+            log_failure("manual_quota_refresh", &error);
+            return;
+        }
+    };
+    stream::iter(
+        accounts
+            .into_iter()
+            .filter(|account| account.enabled && only.is_none_or(|id| id == account.id)),
+    )
+    .for_each_concurrent(CODEX_ACCOUNT_REFRESH_CONCURRENCY, |account| {
+        let config = &config;
+        async move {
+            let oauth = OAuthRepository::new(state.config.as_ref(), &account.id);
+            if let Err(error) =
+                monitor_usage(state, config, &oauth, &account.id, &account.name, now_ms).await
+            {
+                log_failure("manual_quota_refresh", &error);
+            }
+        }
+    })
+    .await;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationChannel {
+    Bark,
+    DingTalk,
+}
+
+/// Sends a test message through one saved, enabled channel.
+pub async fn send_test_notification(
+    state: &AppState,
+    channel: NotificationChannel,
+) -> AppResult<bool> {
+    let config = state.config.snapshot().await;
+    let notification = PushNotification {
+        title: "Codex Router".into(),
+        body: "这是一条测试通知。".into(),
+        url: None,
+    };
+    match channel {
+        NotificationChannel::Bark => {
+            if !config.notifications.bark_is_enabled()
+                || config.notifications.bark_push_url.is_none()
+            {
+                return Ok(false);
+            }
+            send_bark(state, &config, &notification).await?;
+        }
+        NotificationChannel::DingTalk => {
+            if !config.notifications.dingtalk_is_enabled()
+                || config.notifications.dingtalk_webhook_url.is_none()
+                || config.notifications.dingtalk_secret.is_none()
+            {
+                return Ok(false);
+            }
+            send_dingtalk(state, &config, &notification, current_time_ms()).await?;
+        }
+    }
+    Ok(true)
+}
+
 async fn monitor_reset_watch(state: &AppState, config: &AppConfig, now_ms: i64) -> AppResult<()> {
     let response = state
         .client

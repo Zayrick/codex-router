@@ -9,7 +9,8 @@ use crate::{
     auth::{
         ApiKeyRepository, CodexAccount, CredentialImport, DeviceAuthorizationService,
         DevicePollResult, MAX_CREDENTIAL_IMPORT_BYTES, OAuthProvider, OAuthRepository, OAuthStatus,
-        RouteConsumerKind, RoutingRepository, constant_time_equal, oauth_status, valid_record_id,
+        RouteConsumerKind, RoutingRepository, StateStore, constant_time_equal, oauth_status,
+        valid_record_id,
     },
     core::{ApiError, AppResult, JsonObject},
     upstream::codex::{codex_subscription_from_usage, codex_subscription_metadata},
@@ -18,14 +19,35 @@ use crate::{
 use super::{
     body,
     codex::CodexClient,
-    config::{AdminSettings, AppConfig},
+    config::{AdminSettings, AppConfig, PRICING_SYNC_KEY},
     oauth::{ReqwestOAuthHttpClient, SystemClock, current_time_ms},
     pricing::{ModelPrice, sync_model_prices},
+    quota::quota_overview,
     response,
+    scheduled::{NotificationChannel, refresh_account_quotas, send_test_notification},
     session_store::Principal,
     state::AppState,
     usage::{UsageBounds, UsageFilters, UsageIdentityFilter, UsageRange},
+    usage_analytics::AnalyticsScope,
+    usage_api,
 };
+
+/// Outcome of the last price synchronization, kept to label synced prices.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PricingSyncStatus {
+    synced_at: i64,
+    source: String,
+    source_url: String,
+    matched_models: Vec<String>,
+    unmatched_models: Vec<String>,
+    updated_models: Vec<String>,
+    /// Models with hand-edited prices that the sync left unchanged.
+    #[serde(default)]
+    skipped_models: Vec<String>,
+    /// Prices as written by the sync; a different current price was edited by hand.
+    synced_prices: Vec<ModelPrice>,
+}
 
 const MAX_ADMIN_BODY_BYTES: usize = 16 * 1024;
 const CODEX_ACCOUNT_OAUTH_READ_CONCURRENCY: usize = 4;
@@ -157,6 +179,45 @@ async fn dispatch(
                 })?;
             response::json(&dashboard, 200)
         }
+        AdminRoute::UsageAnalytics => {
+            usage_api::analytics(client_url, AnalyticsScope::Admin, config, state).await
+        }
+        AdminRoute::UsageLastSeen => {
+            let last_seen = state.usage.last_seen().await.map_err(|error| {
+                tracing::warn!(event = "usage_last_seen", status = "failed", error = %error);
+                usage_query_error()
+            })?;
+            response::json(&last_seen, 200)
+        }
+        AdminRoute::UsageEvents => {
+            usage_api::events(client_url, AnalyticsScope::Admin, config, state).await
+        }
+        AdminRoute::Quota => {
+            // `refresh=1` samples every enabled account, `refresh=<id>` only that one.
+            if let Some(target) = client_url
+                .query_pairs()
+                .find(|(name, _)| name == "refresh")
+                .map(|(_, value)| value.into_owned())
+            {
+                let only = (target != "1").then_some(target);
+                refresh_account_quotas(state, only.as_deref()).await;
+            }
+            let config = state.config.snapshot().await;
+            let overview = quota_overview(state, &config, None, current_time_ms()).await?;
+            response::json(&overview, 200)
+        }
+        AdminRoute::NotificationTest => {
+            let input = admin_json(request).await?;
+            let channel = match input.get("channel").and_then(Value::as_str) {
+                Some("bark") => NotificationChannel::Bark,
+                Some("dingtalk") => NotificationChannel::DingTalk,
+                _ => return Err(invalid_admin_request()),
+            };
+            if !send_test_notification(state, channel).await? {
+                return Err(notification_channel_disabled());
+            }
+            response::json(&json!({ "sent": true }), 200)
+        }
         AdminRoute::SettingsGet => response::json(&AdminSettings::from(config), 200),
         AdminRoute::SettingsUpdate => {
             let input =
@@ -170,10 +231,12 @@ async fn dispatch(
                 tracing::warn!(event = "pricing_models", status = "failed", error = %error);
                 usage_query_error()
             })?;
+            let sync = read_pricing_sync(state).await;
             response::json(
                 &json!({
                     "prices": config.usage_tracking.model_prices,
                     "usedModels": used_models,
+                    "sync": sync,
                 }),
                 200,
             )
@@ -191,9 +254,21 @@ async fn dispatch(
                 tracing::warn!(event = "pricing_models", status = "failed", error = %error);
                 usage_query_error()
             })?;
+            // Prices edited by hand since the last sync are kept as they are.
+            let previous_sync = read_pricing_sync(state).await;
+            let skipped_models =
+                manual_price_models(&config.usage_tracking.model_prices, previous_sync.as_ref());
+            let candidates = used_models
+                .into_iter()
+                .filter(|model| {
+                    !skipped_models
+                        .iter()
+                        .any(|skipped| skipped.eq_ignore_ascii_case(model))
+                })
+                .collect::<Vec<_>>();
             let result = sync_model_prices(
                 &state.client,
-                &used_models,
+                &candidates,
                 &config.usage_tracking.model_prices,
             )
             .await
@@ -201,11 +276,64 @@ async fn dispatch(
                 tracing::warn!(event = "pricing_sync", status = "failed", error = %error);
                 pricing_sync_error()
             })?;
+            let previous = &config.usage_tracking.model_prices;
+            let updated_models = result
+                .matched_models
+                .iter()
+                .filter(|model| {
+                    let before = previous
+                        .iter()
+                        .find(|price| price.model.eq_ignore_ascii_case(model));
+                    let after = result
+                        .prices
+                        .iter()
+                        .find(|price| price.model.eq_ignore_ascii_case(model));
+                    before != after
+                })
+                .cloned()
+                .collect();
             state
                 .config
                 .replace_model_prices(result.prices.clone())
                 .await?;
-            response::json(&result, 200)
+            let status = PricingSyncStatus {
+                synced_at: now_ms,
+                source: result.source.into(),
+                source_url: result.source_url.into(),
+                matched_models: result.matched_models.clone(),
+                unmatched_models: result.unmatched_models.clone(),
+                updated_models,
+                skipped_models,
+                // Newly matched prices, plus earlier synced prices left untouched.
+                synced_prices: result
+                    .prices
+                    .iter()
+                    .filter(|price| {
+                        result
+                            .matched_models
+                            .iter()
+                            .any(|model| model.eq_ignore_ascii_case(&price.model))
+                            || previous_sync
+                                .as_ref()
+                                .is_some_and(|sync| sync.synced_prices.contains(price))
+                    })
+                    .cloned()
+                    .collect(),
+            };
+            if let Ok(serialized) = serde_json::to_string(&status) {
+                state.config.put(PRICING_SYNC_KEY, &serialized).await?;
+            }
+            response::json(
+                &json!({
+                    "source": result.source,
+                    "sourceUrl": result.source_url,
+                    "prices": result.prices,
+                    "matchedModels": result.matched_models,
+                    "unmatchedModels": result.unmatched_models,
+                    "sync": status,
+                }),
+                200,
+            )
         }
         AdminRoute::CodexAccountOAuthStart => {
             let id = routing.next_account_id().await?;
@@ -464,6 +592,33 @@ struct PricingUpdateInput {
     prices: Vec<ModelPrice>,
 }
 
+/// Models whose current price differs from the last synchronized one (or was
+/// never synchronized). Without an earlier sync every price may be replaced.
+fn manual_price_models(prices: &[ModelPrice], previous: Option<&PricingSyncStatus>) -> Vec<String> {
+    let Some(previous) = previous else {
+        return Vec::new();
+    };
+    prices
+        .iter()
+        .filter(|price| !previous.synced_prices.contains(price))
+        .map(|price| price.model.clone())
+        .collect()
+}
+
+async fn read_pricing_sync(state: &AppState) -> Option<PricingSyncStatus> {
+    let serialized = state.config.get(PRICING_SYNC_KEY).await.ok()??;
+    serde_json::from_str(&serialized).ok()
+}
+
+fn notification_channel_disabled() -> ApiError {
+    ApiError::new(
+        409,
+        "The notification channel is not enabled or not configured.",
+    )
+    .with_kind("invalid_request_error")
+    .with_code("notification_channel_disabled")
+}
+
 fn query_i64(url: &Url, name: &str) -> AppResult<Option<i64>> {
     let Some((_, value)) = url.query_pairs().find(|(key, _)| key == name) else {
         return Ok(None);
@@ -687,4 +842,48 @@ fn invalid_usage_identity_filter() -> ApiError {
     ApiError::new(400, "The usage identity filter is invalid.")
         .with_kind("invalid_request_error")
         .with_code("invalid_usage_identity_filter")
+}
+
+#[cfg(test)]
+mod pricing_sync_tests {
+    use super::*;
+
+    fn price(model: &str, input: f64) -> ModelPrice {
+        ModelPrice {
+            model: model.into(),
+            input,
+            output: 10.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            multiplier: 1.0,
+        }
+    }
+
+    fn status(synced: Vec<ModelPrice>) -> PricingSyncStatus {
+        PricingSyncStatus {
+            synced_at: 1,
+            source: "Models.dev".into(),
+            source_url: String::new(),
+            matched_models: Vec::new(),
+            unmatched_models: Vec::new(),
+            updated_models: Vec::new(),
+            skipped_models: Vec::new(),
+            synced_prices: synced,
+        }
+    }
+
+    #[test]
+    fn hand_edited_and_hand_added_prices_are_skipped_by_the_next_sync() {
+        let current = vec![
+            price("synced", 1.0),
+            price("edited", 2.0),
+            price("added", 3.0),
+        ];
+        let previous = status(vec![price("synced", 1.0), price("edited", 1.5)]);
+        assert_eq!(
+            manual_price_models(&current, Some(&previous)),
+            vec!["edited", "added"]
+        );
+        assert!(manual_price_models(&current, None).is_empty());
+    }
 }

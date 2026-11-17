@@ -5,8 +5,8 @@ use serde::Serialize;
 use crate::{
     application::MonitoredQuotaWindow,
     auth::{
-        AccountRoutingState, CodexAccount, OAuthRepository, RouteConsumerKind, RouteTargetKind,
-        RoutingRepository,
+        AccountRoutingState, ApiKeyRepository, CodexAccount, OAuthRepository, RouteConsumerKind,
+        RouteTargetKind, RoutingRepository,
     },
     core::{ApiError, AppResult},
     upstream::codex::{CodexQuotaWindow, codex_subscription_from_usage},
@@ -16,10 +16,12 @@ use super::{
     codex::CodexClient,
     config::AppConfig,
     oauth::current_time_ms,
+    quota::quota_overview,
     response,
     session_store::Principal,
     state::AppState,
     usage::{UsageFilters, UsageIdentityFilter, UsageRange},
+    usage_analytics::AnalyticsScope,
     usage_store::CodexUsageStateRepository,
 };
 
@@ -126,6 +128,129 @@ pub async fn signed_in_account_dashboard(
         .filter(|range| *range != UsageRange::Cycle)
         .ok_or_else(invalid_usage_range)?;
     account_dashboard(&account, range, config, state).await
+}
+
+/// Last four characters of a credential, never the full value.
+fn credential_hint(value: &str) -> String {
+    let tail = value.chars().rev().take(4).collect::<Vec<_>>();
+    if value.chars().count() <= 8 {
+        return "••••".into();
+    }
+    tail.into_iter().rev().collect()
+}
+
+fn public_account(principal: &Principal) -> AppResult<PublicAccount> {
+    match principal {
+        Principal::ApiKey(id) => Ok(PublicAccount {
+            id: id.clone(),
+            kind: PublicAccountKind::ApiKey,
+        }),
+        Principal::AuthProxy(id) => Ok(PublicAccount {
+            id: id.clone(),
+            kind: PublicAccountKind::AuthProxy,
+        }),
+        Principal::Admin => Err(user_session_required()),
+    }
+}
+
+/// Analytics scope limited to the signed-in API key or account.
+pub fn user_scope(principal: &Principal) -> AppResult<AnalyticsScope> {
+    let account = public_account(principal)?;
+    let identity = UsageIdentityFilter::parse_downstream(account.kind.identity_type(), &account.id)
+        .expect("stored public account identity is valid");
+    Ok(AnalyticsScope::Identity(identity))
+}
+
+/// Quota forecasts of the accounts the signed-in identity is routed to.
+pub async fn signed_in_account_quota(
+    principal: &Principal,
+    config: &AppConfig,
+    state: &AppState,
+) -> AppResult<Response> {
+    let account = public_account(principal)?;
+    let keys = ApiKeyRepository::new(state.config.as_ref());
+    let (name, credential) = match account.kind {
+        PublicAccountKind::ApiKey => keys
+            .read()
+            .await?
+            .into_iter()
+            .find(|entry| entry.id == account.id)
+            .map(|entry| (entry.name, entry.key))
+            .unwrap_or_default(),
+        PublicAccountKind::AuthProxy => keys
+            .read_auth_proxy_accounts()
+            .await?
+            .into_iter()
+            .find(|entry| entry.id == account.id)
+            .map(|entry| (entry.name, entry.account_id))
+            .unwrap_or_default(),
+    };
+    let identity = serde_json::json!({
+        "identityType": account.kind.identity_type(),
+        "name": name,
+        "credentialHint": credential_hint(&credential),
+    });
+    let routing = RoutingRepository::new(state.config.as_ref()).read().await?;
+    let route = routing
+        .routes
+        .iter()
+        .find(|route| route.consumer_type == account.kind.route_consumer() && route.consumer_id == account.id)
+        .map(|route| serde_json::json!({ "targetType": route.target_type, "targetId": route.target_id }));
+    let group_settings = routing
+        .routes
+        .iter()
+        .find(|route| {
+            route.consumer_type == account.kind.route_consumer() && route.consumer_id == account.id
+        })
+        .filter(|route| route.target_type == RouteTargetKind::Group)
+        .and_then(|route| {
+            routing
+                .groups
+                .iter()
+                .find(|group| group.id == route.target_id)
+                .cloned()
+        })
+        .map(|group| {
+            serde_json::json!({
+                "id": group.id,
+                "name": group.name,
+                "strategy": group.strategy,
+                "sessionAffinity": group.session_affinity,
+                "sessionAffinityTtl": group.session_affinity_ttl,
+            })
+        });
+    if !config.public_account.show_quota {
+        return response::json(
+            &serde_json::json!({
+                "visible": false,
+                "identity": identity,
+                "route": route,
+                "group": group_settings,
+            }),
+            200,
+        );
+    }
+    let (group, accounts) = quota_targets(routing, &account);
+    let ids = accounts
+        .iter()
+        .map(|account| account.id.clone())
+        .collect::<Vec<_>>();
+    let mut overview = quota_overview(state, config, Some(&ids), current_time_ms()).await?;
+    overview.groups.retain(|shares| {
+        group
+            .as_ref()
+            .is_some_and(|group| group.id == shares.group_id)
+    });
+    response::json(
+        &serde_json::json!({
+            "visible": true,
+            "identity": identity,
+            "route": route,
+            "group": group_settings,
+            "quota": overview,
+        }),
+        200,
+    )
 }
 
 async fn account_dashboard(

@@ -91,7 +91,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_response_id
 
 /// Recorded when the request was observed but did not set the field explicitly.
 const DEFAULT_REQUEST_SETTING: &str = "default";
-const PRIORITY_SERVICE_TIER: &str = "priority";
+pub(super) const PRIORITY_SERVICE_TIER: &str = "priority";
 /// Requests without an explicit tier let the upstream choose.
 const AUTO_SERVICE_TIER: &str = "auto";
 /// Groups cost queries by whether the request used Fast mode.
@@ -99,15 +99,15 @@ const FAST_SQL: &str = "(service_tier = 'priority')";
 pub const DEFAULT_FAST_COST_MULTIPLIER: f64 = 2.0;
 
 /// The upstream finished the response.
-const STATUS_COMPLETED: &str = "completed";
+pub(super) const STATUS_COMPLETED: &str = "completed";
 /// The upstream stopped early, for example at `max_output_tokens`.
-const STATUS_INCOMPLETE: &str = "incomplete";
+pub(super) const STATUS_INCOMPLETE: &str = "incomplete";
 /// The upstream or the router rejected the request.
-const STATUS_FAILED: &str = "failed";
+pub(super) const STATUS_FAILED: &str = "failed";
 /// The client went away (or started another response) before the upstream finished.
-const STATUS_CANCELLED: &str = "cancelled";
+pub(super) const STATUS_CANCELLED: &str = "cancelled";
 /// The upstream body ended or broke without a terminal event.
-const STATUS_INTERRUPTED: &str = "interrupted";
+pub(super) const STATUS_INTERRUPTED: &str = "interrupted";
 /// Request health: successful and failed buckets; cancellations count as neither.
 const SUCCESS_SQL: &str = "(status IN ('completed', 'incomplete'))";
 const FAILURE_SQL: &str = "(status IN ('failed', 'interrupted'))";
@@ -184,11 +184,11 @@ impl UsageIdentityFilter {
         })
     }
 
-    fn kind(&self) -> &'static str {
+    pub(super) fn kind(&self) -> &'static str {
         self.kind.as_str()
     }
 
-    fn id(&self) -> &str {
+    pub(super) fn id(&self) -> &str {
         &self.id
     }
 }
@@ -438,6 +438,21 @@ impl UsageStore {
         tokio::task::spawn_blocking(move || {
             let connection = connection.lock().expect("usage database lock poisoned");
             query_dashboard(&connection, range, &filters, bounds, &costs)
+        })
+        .await
+        .context("usage database query task failed")?
+    }
+
+    /// Runs a read-only query on the usage database off the async runtime.
+    pub(super) async fn read<T, F>(&self, query: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+    {
+        let connection = self.connection.clone();
+        tokio::task::spawn_blocking(move || {
+            let connection = connection.lock().expect("usage database lock poisoned");
+            query(&connection)
         })
         .await
         .context("usage database query task failed")?
@@ -1385,6 +1400,7 @@ pub struct UsageEventRow {
     pub id: i64,
     pub recorded_at: i64,
     pub request_id: String,
+    pub response_id: String,
     pub identity_type: String,
     pub identity_id: String,
     pub identity_name: String,
@@ -1503,7 +1519,7 @@ fn query_dashboard(
     })
 }
 
-fn filter_parameters(
+pub(super) fn filter_parameters(
     filters: &UsageFilters,
 ) -> (Option<&str>, Option<&str>, Option<&str>, Option<&str>) {
     let (downstream_type, downstream_id) = filters
@@ -1529,7 +1545,7 @@ fn identity_filter_sql(kind_parameter: usize, id_parameter: usize) -> String {
     )
 }
 
-fn usage_filters_sql(
+pub(super) fn usage_filters_sql(
     downstream_kind_parameter: usize,
     downstream_id_parameter: usize,
     upstream_kind_parameter: usize,
@@ -1851,20 +1867,20 @@ fn add_totals(target: &mut UsageTotals, source: &UsageTotals) {
 }
 
 /// Model prices plus the surcharge applied to Fast (priority tier) requests.
-struct CostIndex {
+pub(super) struct CostIndex {
     prices: BTreeMap<String, ModelPrice>,
     fast_multiplier: f64,
 }
 
 impl CostIndex {
-    fn new(prices: &[ModelPrice], fast_multiplier: f64) -> Self {
+    pub(super) fn new(prices: &[ModelPrice], fast_multiplier: f64) -> Self {
         Self {
             prices: price_index(prices),
             fast_multiplier,
         }
     }
 
-    fn is_priced(&self, model: &str) -> bool {
+    pub(super) fn is_priced(&self, model: &str) -> bool {
         self.prices.contains_key(&model.trim().to_ascii_lowercase())
     }
 
@@ -1879,7 +1895,7 @@ impl CostIndex {
         )
     }
 
-    fn token_cost(
+    pub(super) fn token_cost(
         &self,
         model: &str,
         fast: bool,
@@ -2031,7 +2047,7 @@ fn query_unpriced_models(
         .collect())
 }
 
-fn event_cost(event: &UsageEventRow, costs: &CostIndex) -> f64 {
+pub(super) fn event_cost(event: &UsageEventRow, costs: &CostIndex) -> f64 {
     costs.token_cost(
         &event.model,
         event.service_tier == PRIORITY_SERVICE_TIER,
@@ -2042,6 +2058,59 @@ fn event_cost(event: &UsageEventRow, costs: &CostIndex) -> f64 {
     )
 }
 
+/// Columns read by [`event_from_row`], in order.
+pub(super) const EVENT_COLUMNS: &str = r#"
+    id, recorded_at_ms, request_id, response_id, identity_type, identity_id, identity_name,
+    codex_account_id, codex_account_name, account_group_id, account_group_name,
+    requested_model, model, transport, endpoint, stream, status, status_code,
+    error_code, reasoning_effort, service_tier, response_service_tier,
+    session_id, parent_session_id, session_kind, client_ip, x_forwarded_for,
+    user_agent, latency_ms, ttft_ms, input_tokens, cached_input_tokens,
+    cache_creation_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
+"#;
+
+pub(super) fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageEventRow> {
+    Ok(UsageEventRow {
+        id: row.get(0)?,
+        recorded_at: row.get(1)?,
+        request_id: row.get(2)?,
+        response_id: row.get(3)?,
+        identity_type: row.get(4)?,
+        identity_id: row.get(5)?,
+        identity_name: row.get(6)?,
+        codex_account_id: row.get(7)?,
+        codex_account_name: row.get(8)?,
+        account_group_id: row.get(9)?,
+        account_group_name: row.get(10)?,
+        requested_model: row.get(11)?,
+        model: row.get(12)?,
+        transport: row.get(13)?,
+        endpoint: row.get(14)?,
+        stream: row.get(15)?,
+        status: row.get(16)?,
+        status_code: row.get(17)?,
+        error_code: row.get(18)?,
+        reasoning_effort: row.get(19)?,
+        service_tier: row.get(20)?,
+        response_service_tier: row.get(21)?,
+        session_id: row.get(22)?,
+        parent_session_id: row.get(23)?,
+        session_kind: row.get(24)?,
+        client_ip: row.get(25)?,
+        x_forwarded_for: row.get(26)?,
+        user_agent: row.get(27)?,
+        latency_ms: row.get(28)?,
+        ttft_ms: row.get(29)?,
+        input_tokens: row.get(30)?,
+        cached_input_tokens: row.get(31)?,
+        cache_creation_input_tokens: row.get(32)?,
+        output_tokens: row.get(33)?,
+        reasoning_output_tokens: row.get(34)?,
+        total_tokens: row.get(35)?,
+        cost_usd: 0.0,
+    })
+}
+
 fn query_recent_events(
     connection: &Connection,
     start_at: i64,
@@ -2049,19 +2118,9 @@ fn query_recent_events(
     filters: &UsageFilters,
 ) -> Result<Vec<UsageEventRow>> {
     let sql = format!(
-        r#"
-        SELECT id, recorded_at_ms, request_id, identity_type, identity_id, identity_name,
-               codex_account_id, codex_account_name, account_group_id, account_group_name,
-               requested_model, model, transport, endpoint, stream, status, status_code,
-               error_code, reasoning_effort, service_tier, response_service_tier,
-               session_id, parent_session_id, session_kind, client_ip, x_forwarded_for,
-               user_agent, latency_ms, ttft_ms, input_tokens, cached_input_tokens,
-               cache_creation_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
-        FROM usage_events
-        WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2
-          AND {}
-        ORDER BY recorded_at_ms DESC, id DESC LIMIT ?7
-        "#,
+        "SELECT {EVENT_COLUMNS} FROM usage_events \
+         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 AND {} \
+         ORDER BY recorded_at_ms DESC, id DESC LIMIT ?7",
         usage_filters_sql(3, 4, 5, 6)
     );
     let mut statement = connection.prepare(&sql)?;
@@ -2076,46 +2135,7 @@ fn query_recent_events(
             upstream_id,
             RECENT_EVENT_LIMIT
         ],
-        |row| {
-            Ok(UsageEventRow {
-                id: row.get(0)?,
-                recorded_at: row.get(1)?,
-                request_id: row.get(2)?,
-                identity_type: row.get(3)?,
-                identity_id: row.get(4)?,
-                identity_name: row.get(5)?,
-                codex_account_id: row.get(6)?,
-                codex_account_name: row.get(7)?,
-                account_group_id: row.get(8)?,
-                account_group_name: row.get(9)?,
-                requested_model: row.get(10)?,
-                model: row.get(11)?,
-                transport: row.get(12)?,
-                endpoint: row.get(13)?,
-                stream: row.get(14)?,
-                status: row.get(15)?,
-                status_code: row.get(16)?,
-                error_code: row.get(17)?,
-                reasoning_effort: row.get(18)?,
-                service_tier: row.get(19)?,
-                response_service_tier: row.get(20)?,
-                session_id: row.get(21)?,
-                parent_session_id: row.get(22)?,
-                session_kind: row.get(23)?,
-                client_ip: row.get(24)?,
-                x_forwarded_for: row.get(25)?,
-                user_agent: row.get(26)?,
-                latency_ms: row.get(27)?,
-                ttft_ms: row.get(28)?,
-                input_tokens: row.get(29)?,
-                cached_input_tokens: row.get(30)?,
-                cache_creation_input_tokens: row.get(31)?,
-                output_tokens: row.get(32)?,
-                reasoning_output_tokens: row.get(33)?,
-                total_tokens: row.get(34)?,
-                cost_usd: 0.0,
-            })
-        },
+        event_from_row,
     )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
