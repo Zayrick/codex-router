@@ -98,7 +98,10 @@ fn request_adaptation_maps_gemini_fields() {
         "toolConfig": {
             "functionCallingConfig": { "mode": "ANY", "allowedFunctionNames": [long_name] }
         },
-        "generationConfig": { "thinkingConfig": { "thinkingBudget": 20_000 } },
+        "generationConfig": {
+            "maxOutputTokens": 8192,
+            "thinkingConfig": { "thinkingBudget": 20_000 }
+        },
         "serviceTier": "fast"
     });
     let adapted = gemini_request_to_responses(request.as_object().unwrap(), "gpt-5.6-luna")
@@ -109,6 +112,7 @@ fn request_adaptation_maps_gemini_fields() {
         Some(&json!({ "effort": "high" }))
     );
     assert_eq!(adapted.body.get("service_tier"), Some(&json!("priority")));
+    assert_eq!(adapted.body["max_output_tokens"], 8192);
     let tool = adapted.body["tools"][0].as_object().unwrap();
     let shortened = tool["name"].as_str().unwrap();
     assert_eq!(shortened.encode_utf16().count(), 64);

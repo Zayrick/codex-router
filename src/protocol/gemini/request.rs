@@ -4,8 +4,9 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     core::{ApiError, AppResult, JsonObject},
-    protocol::identifiers::{
-        ToolNameMaps, build_tool_name_maps, codex_tool_name, shorten_codex_call_id,
+    protocol::{
+        identifiers::{ToolNameMaps, build_tool_name_maps, codex_tool_name, shorten_codex_call_id},
+        openai::request_policy::insert_max_output_tokens,
     },
 };
 
@@ -76,6 +77,12 @@ pub fn gemini_request_to_responses(
         &mut body,
         alias(input, "toolConfig", "tool_config"),
         &name_maps,
+    );
+    insert_max_output_tokens(
+        &mut body,
+        alias(input, "generationConfig", "generation_config")
+            .and_then(Value::as_object)
+            .and_then(|config| alias(config, "maxOutputTokens", "max_output_tokens")),
     );
     let tier = alias(input, "service_tier", "serviceTier")
         .and_then(Value::as_str)

@@ -107,8 +107,9 @@ Codex OAuth 替换原请求中已有的 `Authorization` 和 `ChatGPT-Account-ID`
 
 Messages 支持 system、文本、图片、文档、thinking、客户端工具、工具结果、Web Search、
 tool choice、usage 和 stop reason 等主要结构。请求必须包含 Anthropic 形式的 `max_tokens`，
-但该值不会转发为 Codex 的输出上限。`temperature`、`top_p`、`top_k`、`stop_sequences`、
-metadata 和 `cache_control` 也不提供等价的上游语义。
+该值转发为 Codex 的 `max_output_tokens`（上游最小值为 16，更小的值按 16 发送）。
+`temperature`、`top_p`、`top_k`、`stop_sequences`、metadata 和 `cache_control` 不提供
+等价的上游语义。
 
 错误响应使用 Anthropic error envelope；流式错误使用对应的 SSE error 事件。
 
@@ -123,8 +124,9 @@ metadata 和 `cache_control` 也不提供等价的上游语义。
 | `POST /v1beta/models/{model}:countTokens` | 本地处理 | 估算顶层 `contents` 或嵌套 `generateContentRequest` 的 token 数 |
 
 转换覆盖 system instruction、Content/Part、内联或 URI 媒体、function call/result、工具声明、
-tool config、thinking 和 usage metadata。`generationConfig` 中仅 thinking level/budget 具有
-对应转换；采样参数、候选数、停止序列以及输出 MIME/schema 不会转发为 Codex 语义。
+tool config、thinking 和 usage metadata。`generationConfig` 中 thinking level/budget 与
+`maxOutputTokens`（转为 `max_output_tokens`，最小 16）具有对应转换；采样参数、候选数、
+停止序列以及输出 MIME/schema 不会转发为 Codex 语义。
 
 错误响应使用 Google 风格 error envelope。
 
@@ -144,9 +146,23 @@ tool config、thinking 和 usage metadata。`generationConfig` 中仅 thinking l
 普通 HTTP `POST /v1/responses` 还会删除 `previous_response_id`、`generate`、
 `prompt_cache_retention`、`safety_identifier` 和 `stream_options`。WebSocket
 `response.create` 仅额外删除其中的 `prompt_cache_retention` 与 `safety_identifier`，保留
-`previous_response_id`、`generate` 和 `stream_options` 的会话语义。Chat Completions、旧版
-Completions、Anthropic Messages 与 Gemini Content 转换后发往 Codex Responses 的 HTTP
-请求也应用上述 HTTP 删除规则。
+`previous_response_id`、`generate` 和 `stream_options` 的会话语义。
+
+Chat Completions、旧版 Completions、Anthropic Messages 与 Gemini Content 转换后发往 Codex
+Responses 的请求使用单独的策略，只移除上游明确拒绝的值：
+
+- 删除 `background`、`generate`、`max_completion_tokens`、`max_tokens`、`maxOutputTokens`、
+  `metadata`、`previous_response_id`、`prompt_cache_options`、`prompt_cache_retention`、
+  `safety_identifier`、`temperature`、`top_p`、`truncation` 和 `user`；
+- `service_tier` 仅在值严格等于 `priority` 时保留；
+- `store` 固定为 `false`，`stream` 固定为 `true`（上游要求两者显式出现）；
+- `stream_options` 只删除 `include_usage`，删空后移除整个对象；
+- `include` 删除 `message.output_text.logprobs`，并补齐 `reasoning.encrypted_content`；
+- 删除 `type: "configuration_update"` 输入项和内容块上的 `prompt_cache_breakpoint`；
+- `max_output_tokens`、`context_management`、`prompt_cache_key` 和 `instructions` 保持不变。
+
+Chat Completions 的 `max_completion_tokens`（优先）或 `max_tokens`、旧版 Completions 的
+`max_tokens` 均转为 `max_output_tokens`，小于 16 时按 16 发送；Chat 的 `metadata` 不再转发。
 
 compact 只应用数组 input 的角色规范化，不应用 Responses 创建参数策略。WebSocket
 `response.append` 同样只规范化 input 角色；其他文本帧、所有二进制帧和全部上游帧保持原样。

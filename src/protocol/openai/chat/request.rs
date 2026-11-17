@@ -5,7 +5,9 @@ use serde_json::{Value, json};
 use crate::core::{ApiError, AppResult, JsonObject};
 
 use super::{AdaptedChatRequest, ToolKind};
-use crate::protocol::openai::{invalid_request, responses::to_codex_message_role};
+use crate::protocol::openai::{
+    invalid_request, request_policy::insert_max_output_tokens, responses::to_codex_message_role,
+};
 
 struct AdaptedTools {
     items: Vec<Value>,
@@ -81,9 +83,13 @@ pub fn chat_request_to_responses(input: &JsonObject) -> AppResult<AdaptedChatReq
     if input.get("service_tier").and_then(Value::as_str) == Some("priority") {
         body.insert("service_tier".into(), Value::String("priority".into()));
     }
-    if let Some(metadata) = input.get("metadata").and_then(Value::as_object) {
-        body.insert("metadata".into(), Value::Object(metadata.clone()));
-    }
+    insert_max_output_tokens(
+        &mut body,
+        input
+            .get("max_completion_tokens")
+            .filter(|value| !value.is_null())
+            .or_else(|| input.get("max_tokens")),
+    );
     if let Some(value) = input.get("prompt_cache_key") {
         body.insert(
             "prompt_cache_key".into(),
@@ -679,6 +685,9 @@ mod tests {
             "reasoning_effort":"low",
             "parallel_tool_calls":false,
             "service_tier":"flex",
+            "max_tokens":64,
+            "max_completion_tokens":4096,
+            "metadata":{"trace":"1"},
             "messages":[
                 {"role":"system","content":"Answer precisely."},
                 {"role":"user","content":[
@@ -698,6 +707,8 @@ mod tests {
         assert_eq!(adapted.body["reasoning"], json!({"effort":"low"}));
         assert_eq!(adapted.body["parallel_tool_calls"], false);
         assert!(adapted.body.get("service_tier").is_none());
+        assert_eq!(adapted.body["max_output_tokens"], 4096);
+        assert!(adapted.body.get("metadata").is_none());
         assert_eq!(adapted.body["input"][0]["role"], "developer");
         assert_eq!(
             adapted.body["input"][1]["content"][0]["type"],

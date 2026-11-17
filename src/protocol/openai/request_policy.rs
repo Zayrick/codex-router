@@ -55,13 +55,7 @@ const REMOVED_HTTP_RESPONSE_FIELDS: [&str; 3] =
 
 fn apply_base_policy(editor: &mut BodyEditor<'_>) {
     remove_fields(editor, &REMOVED_RESPONSE_FIELDS);
-    if editor
-        .current()
-        .get("service_tier")
-        .is_some_and(|value| value != "priority")
-    {
-        editor.make_mut().remove("service_tier");
-    }
+    remove_non_priority_service_tier(editor);
     set_field(editor, "store", Value::Bool(false));
 }
 
@@ -88,18 +82,162 @@ fn set_field(editor: &mut BodyEditor<'_>, field: &str, value: Value) {
     }
 }
 
+/// Responses rejects `max_output_tokens` below this value.
+pub(crate) const MIN_MAX_OUTPUT_TOKENS: u64 = 16;
+
+/// Maps a downstream output limit onto `max_output_tokens`, raising limits
+/// below the upstream minimum instead of letting the request fail.
+pub(crate) fn insert_max_output_tokens(body: &mut JsonObject, limit: Option<&Value>) {
+    if let Some(limit) = limit.and_then(Value::as_u64) {
+        body.insert(
+            "max_output_tokens".into(),
+            Value::from(limit.max(MIN_MAX_OUTPUT_TOKENS)),
+        );
+    }
+}
+
+/// Fields the plan-backed Responses endpoint rejects. `max_output_tokens`,
+/// `context_management`, `prompt_cache_key` and `instructions` are accepted
+/// and therefore kept.
+const REMOVED_CONVERTED_RESPONSE_FIELDS: [&str; 14] = [
+    "background",
+    "generate",
+    "max_completion_tokens",
+    "max_tokens",
+    "maxOutputTokens",
+    "metadata",
+    "previous_response_id",
+    "prompt_cache_options",
+    "prompt_cache_retention",
+    "safety_identifier",
+    "temperature",
+    "top_p",
+    "truncation",
+    "user",
+];
+const REQUIRED_INCLUDE: &str = "reasoning.encrypted_content";
+const UNSUPPORTED_INCLUDES: [&str; 1] = ["message.output_text.logprobs"];
+const UNSUPPORTED_STREAM_OPTIONS: [&str; 1] = ["include_usage"];
+const UNSUPPORTED_INPUT_ITEM_TYPES: [&str; 1] = ["configuration_update"];
+const UNSUPPORTED_CONTENT_FIELDS: [&str; 1] = ["prompt_cache_breakpoint"];
+
+/// Egress policy for bodies converted from Chat/Completions/Messages/Gemini.
+/// Only rejected values are removed; `store: false` and `stream: true` must be
+/// explicit, and encrypted reasoning is requested for signature round-trips.
 #[must_use]
 pub fn apply_converted_response_egress_policy<'a>(body: &'a JsonObject) -> Cow<'a, JsonObject> {
     let mut editor = BodyEditor::new(body);
-    apply_http_response_create_egress_policy_to(&mut editor);
-    set_field(&mut editor, "instructions", Value::String(String::new()));
+    remove_fields(&mut editor, &REMOVED_CONVERTED_RESPONSE_FIELDS);
+    remove_non_priority_service_tier(&mut editor);
+    set_field(&mut editor, "store", Value::Bool(false));
     set_field(&mut editor, "stream", Value::Bool(true));
-    set_field(
-        &mut editor,
-        "include",
-        Value::Array(vec![Value::String("reasoning.encrypted_content".into())]),
-    );
+    remove_unsupported_stream_options(&mut editor);
+    normalize_include(&mut editor);
+    remove_unsupported_input_parts(&mut editor);
     editor.finish()
+}
+
+fn remove_non_priority_service_tier(editor: &mut BodyEditor<'_>) {
+    if editor
+        .current()
+        .get("service_tier")
+        .is_some_and(|value| value != "priority")
+    {
+        editor.make_mut().remove("service_tier");
+    }
+}
+
+fn remove_unsupported_stream_options(editor: &mut BodyEditor<'_>) {
+    let Some(options) = editor.current().get("stream_options") else {
+        return;
+    };
+    let Some(options) = options.as_object() else {
+        editor.make_mut().remove("stream_options");
+        return;
+    };
+    if !UNSUPPORTED_STREAM_OPTIONS
+        .iter()
+        .any(|field| options.contains_key(*field))
+    {
+        return;
+    }
+    let mut options = options.clone();
+    for field in UNSUPPORTED_STREAM_OPTIONS {
+        options.remove(field);
+    }
+    let body = editor.make_mut();
+    if options.is_empty() {
+        body.remove("stream_options");
+    } else {
+        body.insert("stream_options".into(), Value::Object(options));
+    }
+}
+
+fn normalize_include(editor: &mut BodyEditor<'_>) {
+    let mut include = editor
+        .current()
+        .get("include")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    include.retain(|value| {
+        value
+            .as_str()
+            .is_some_and(|value| !UNSUPPORTED_INCLUDES.contains(&value))
+    });
+    if !include.iter().any(|value| value == REQUIRED_INCLUDE) {
+        include.push(Value::String(REQUIRED_INCLUDE.into()));
+    }
+    set_field(editor, "include", Value::Array(include));
+}
+
+fn remove_unsupported_input_parts(editor: &mut BodyEditor<'_>) {
+    let unsupported_item = |item: &Value| {
+        item.get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| UNSUPPORTED_INPUT_ITEM_TYPES.contains(&kind))
+    };
+    let unsupported_part = |part: &Value| {
+        part.as_object().is_some_and(|part| {
+            UNSUPPORTED_CONTENT_FIELDS
+                .iter()
+                .any(|field| part.contains_key(*field))
+        })
+    };
+    let needs_edit = editor
+        .current()
+        .get("input")
+        .and_then(Value::as_array)
+        .is_some_and(|input| {
+            input.iter().any(|item| {
+                unsupported_item(item)
+                    || item
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|content| content.iter().any(unsupported_part))
+            })
+        });
+    if !needs_edit {
+        return;
+    }
+    let Some(input) = editor
+        .make_mut()
+        .get_mut("input")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    input.retain(|item| !unsupported_item(item));
+    for content in input
+        .iter_mut()
+        .filter_map(|item| item.get_mut("content").and_then(Value::as_array_mut))
+    {
+        for part in content.iter_mut().filter_map(Value::as_object_mut) {
+            for field in UNSUPPORTED_CONTENT_FIELDS {
+                part.remove(field);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -179,29 +317,80 @@ mod tests {
     }
 
     #[test]
-    fn converted_policy_applies_required_fields() {
+    fn converted_policy_removes_only_rejected_values() {
         let input = object(json!({
             "instructions":"downstream",
             "store":true,
             "stream":false,
-            "include":["downstream.value"],
-            "max_tokens":1024,
+            "include":["message.input_image.image_url","message.output_text.logprobs"],
+            "max_output_tokens":1024,
             "context_management":[{"type":"compaction"}],
+            "prompt_cache_key":"cache",
+            "service_tier":"flex",
+            "max_tokens":1024,
+            "metadata":{"k":"v"},
+            "background":false,
             "previous_response_id":"resp_1",
             "generate":true,
             "prompt_cache_options":{"mode":"implicit"},
             "prompt_cache_retention":"24h",
             "safety_identifier":"safety_1",
-            "stream_options":{"include_usage":true}
+            "stream_options":{"include_usage":true,"include_obfuscation":false},
+            "input":[
+                {"type":"configuration_update","reasoning":{"effort":"low"}},
+                {"type":"message","role":"user","content":[
+                    {"type":"input_text","text":"hi","prompt_cache_breakpoint":{"mode":"explicit"}}
+                ]}
+            ]
         }));
         assert_eq!(
             apply_converted_response_egress_policy(&input).as_ref(),
             &object(json!({
-                "instructions":"",
+                "instructions":"downstream",
+                "store":false,
+                "stream":true,
+                "include":["message.input_image.image_url","reasoning.encrypted_content"],
+                "max_output_tokens":1024,
+                "context_management":[{"type":"compaction"}],
+                "prompt_cache_key":"cache",
+                "stream_options":{"include_obfuscation":false},
+                "input":[
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}
+                ]
+            }))
+        );
+    }
+
+    #[test]
+    fn converted_policy_adds_required_fields_and_drops_empty_stream_options() {
+        let input = object(json!({"stream_options":{"include_usage":true}}));
+        assert_eq!(
+            apply_converted_response_egress_policy(&input).as_ref(),
+            &object(json!({
                 "store":false,
                 "stream":true,
                 "include":["reasoning.encrypted_content"]
             }))
         );
+        let satisfied = object(json!({
+            "store":false,
+            "stream":true,
+            "include":["reasoning.encrypted_content"]
+        }));
+        assert!(matches!(
+            apply_converted_response_egress_policy(&satisfied),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn output_limit_is_raised_to_upstream_minimum() {
+        let mut body = JsonObject::new();
+        insert_max_output_tokens(&mut body, Some(&json!(1)));
+        assert_eq!(body["max_output_tokens"], MIN_MAX_OUTPUT_TOKENS);
+        insert_max_output_tokens(&mut body, Some(&json!(64000)));
+        assert_eq!(body["max_output_tokens"], 64000);
+        insert_max_output_tokens(&mut body, Some(&json!("many")));
+        assert_eq!(body["max_output_tokens"], 64000);
     }
 }

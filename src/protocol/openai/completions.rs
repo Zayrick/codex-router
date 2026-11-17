@@ -42,7 +42,7 @@ pub fn completion_request_to_responses(input: &JsonObject) -> AppResult<AdaptedC
         "stream":input.get("stream").and_then(Value::as_bool) == Some(true)
     }));
     for key in [
-        "metadata",
+        "max_tokens",
         "prompt_cache_key",
         "reasoning_effort",
         "service_tier",
@@ -276,9 +276,10 @@ mod tests {
     #[test]
     fn converts_requests_responses_and_echo() {
         let request = completion_request_to_responses(&object(json!({
-            "model":"gpt-5.6-luna","prompt":"Prompt: ","echo":true
+            "model":"gpt-5.6-luna","prompt":"Prompt: ","echo":true,"max_tokens":8
         })))
         .expect("request");
+        assert_eq!(request.body["max_output_tokens"], 16);
         assert_eq!(request.echo_prefix, "Prompt: ");
         assert_eq!(request.body["input"][0]["content"][0]["text"], "Prompt: ");
 

@@ -2,7 +2,10 @@ use std::collections::HashSet;
 
 use serde_json::{Value, json};
 
-use crate::core::{ApiError, AppResult, JsonObject, record_field, string_field};
+use crate::{
+    core::{ApiError, AppResult, JsonObject, record_field, string_field},
+    protocol::openai::request_policy::insert_max_output_tokens,
+};
 
 use super::{
     AdaptedMessagesRequest, ToolNameMaps, build_tool_name_maps, codex_tool_name, empty_object,
@@ -89,6 +92,7 @@ pub fn messages_request_to_responses(
             ),
         );
     }
+    insert_max_output_tokens(&mut body, input.get("max_tokens"));
     if matches!(
         input.get("service_tier").and_then(Value::as_str),
         Some("priority" | "fast")
@@ -805,6 +809,7 @@ mod tests {
         assert_eq!(adapted.body["parallel_tool_calls"], false);
         assert_eq!(adapted.body["reasoning"], json!({"effort": "high"}));
         assert_eq!(adapted.body["service_tier"], "priority");
+        assert_eq!(adapted.body["max_output_tokens"], 2048);
         let tools = adapted.body["tools"].as_array().unwrap();
         assert_eq!(tools[0]["name"].as_str().unwrap().len(), 64);
         assert!(tools[0]["parameters"].get("$schema").is_none());
