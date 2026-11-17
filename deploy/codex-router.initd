@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+description="Codex Router API gateway"
+supervisor="supervise-daemon"
+command="/opt/codex-router/current/codex-router"
+command_args="--config /var/lib/codex-router/config.toml"
+command_user="codex-router:codex-router"
+directory="/var/lib/codex-router"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/codex-router/service.log"
+error_log="/var/log/codex-router/service.log"
+respawn_delay=3
+respawn_max=0
+retry="TERM/30/KILL/5"
+umask=077
+rc_ulimit="-n 65536"
+
+depend() {
+    need net
+    use logger mihomo
+    after firewall
+}
+
+start_pre() {
+    checkpath --directory --mode 0700 --owner codex-router:codex-router /var/lib/codex-router /var/log/codex-router
+    checkpath --file --mode 0600 --owner codex-router:codex-router /var/log/codex-router/service.log
+}

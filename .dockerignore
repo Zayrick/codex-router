@@ -1,0 +1,15 @@
+*
+!.gitignore
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!frontend/
+!frontend/**
+frontend/node_modules
+frontend/dist
+!config.example.toml
+!deploy/
+!deploy/**
+!docs/
+!docs/deployment-alpine.md

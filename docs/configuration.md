@@ -44,6 +44,10 @@ chatgpt_proxy = "socks5h://127.0.0.1:1080"
 `socks5h://user:password@127.0.0.1:1080`，特殊字符必须进行 URL percent-encoding。代理凭据会以
 明文保存在配置文件中。
 
+`upstream.codex_client_version` 是模型目录请求的默认客户端版本，默认 `0.168.0`，格式为数字
+`x.y.z`。可在管理端“设置 → 上游”修改，保存后对后续请求即时生效。模型查询优先使用请求中的
+`client_version` 参数，其次使用客户端提交的 `version` 值，最后使用该配置。
+
 通知字段都是可选的。管理端“设置”页可在运行时配置重置预测、额度重置和用量过高通知，选择全部
 或指定 Codex 账户，并分别启用 Bark、钉钉通道。账户型通知会包含账户昵称。钉钉 Webhook 与签名
 secret 必须同时配置；只提供其中一个会导致启动失败。`upstream.codex_resets_url` 也可在设置页更新，

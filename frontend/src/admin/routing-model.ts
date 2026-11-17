@@ -1,6 +1,7 @@
 // Pure helpers for routes, identities and account groups shared by dialogs and pages.
 
 import type { AccountGroup, AccountGroupStrategy, RouteAssignment } from "@/admin-api";
+import { randomUuid } from "@/lib/uuid";
 
 export const MIN_API_KEY_LENGTH = 11;
 export const MAX_API_KEY_LENGTH = 512;
@@ -70,7 +71,7 @@ export function generateApiKey(): string {
 
 export function newGroup(): AccountGroup {
 	return {
-		id: crypto.randomUUID(),
+		id: randomUuid(),
 		name: "",
 		accountIds: [],
 		strategy: "round-robin",

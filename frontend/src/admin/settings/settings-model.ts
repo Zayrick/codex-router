@@ -2,11 +2,12 @@ import type { AdminSettings, CodexAccount } from "@/admin-api";
 
 export const MAX_FAST_COST_MULTIPLIER = 100;
 
-export type SettingsSection = "public" | "billing" | "events" | "recipients" | "channels";
+export type SettingsSection = "public" | "upstream" | "billing" | "events" | "recipients" | "channels";
 
 /** Editable copy: the multiplier stays a string while typing. */
 export interface SettingsDraft {
 	showQuota: boolean;
+	codexClientVersion: string;
 	fastCostMultiplier: string;
 	resetWatchEnabled: boolean;
 	quotaResetEnabled: boolean;
@@ -25,6 +26,7 @@ export function toDraft(settings: AdminSettings): SettingsDraft {
 	const notifications = settings.notifications;
 	return {
 		showQuota: settings.publicAccount.showQuota,
+		codexClientVersion: settings.upstream.codexClientVersion,
 		fastCostMultiplier: String(settings.usage.fastCostMultiplier),
 		resetWatchEnabled: notifications.resetWatchEnabled,
 		quotaResetEnabled: notifications.quotaResetEnabled,
@@ -43,6 +45,7 @@ export function toDraft(settings: AdminSettings): SettingsDraft {
 export function toSettings(draft: SettingsDraft): AdminSettings {
 	return {
 		publicAccount: { showQuota: draft.showQuota },
+		upstream: { codexClientVersion: draft.codexClientVersion.trim() },
 		usage: { fastCostMultiplier: Number(draft.fastCostMultiplier) },
 		notifications: {
 			resetWatchEnabled: draft.resetWatchEnabled,
@@ -66,6 +69,11 @@ export function validMultiplier(value: string): boolean {
 	return Number.isFinite(parsed) && parsed > 0 && parsed <= MAX_FAST_COST_MULTIPLIER;
 }
 
+export function validClientVersion(value: string): boolean {
+	const version = value.trim();
+	return version.length <= 64 && /^\d+\.\d+\.\d+$/.test(version);
+}
+
 export function isHttpsUrl(value: string): boolean {
 	try {
 		const url = new URL(value.trim());
@@ -77,6 +85,7 @@ export function isHttpsUrl(value: string): boolean {
 
 /** First validation problem of the draft, if any. */
 export function validationError(draft: SettingsDraft): string | null {
+	if (!validClientVersion(draft.codexClientVersion)) return "Codex 客户端版本需使用 x.y.z 格式，例如 0.168.0。";
 	if (!validMultiplier(draft.fastCostMultiplier)) return `Fast 计费倍率必须大于 0 且不超过 ${MAX_FAST_COST_MULTIPLIER}。`;
 	if (!isHttpsUrl(draft.resetWatchApiUrl)) return "重置预测 API 地址必须是有效的 HTTPS 链接。";
 	if (draft.barkPushUrl.trim() && !isHttpsUrl(draft.barkPushUrl)) return "Bark 推送链接必须使用 HTTPS。";
@@ -95,6 +104,7 @@ export interface SettingsChange {
 
 const SECTION_LABELS: Record<SettingsSection, string> = {
 	public: "用户端",
+	upstream: "上游",
 	billing: "计费",
 	events: "通知事件",
 	recipients: "接收账户",
@@ -113,6 +123,9 @@ function onOff(value: boolean): string {
 export function settingsChanges(saved: SettingsDraft, draft: SettingsDraft, accounts: CodexAccount[]): SettingsChange[] {
 	const changes: SettingsChange[] = [];
 	if (saved.showQuota !== draft.showQuota) changes.push({ section: "public", text: `显示账户额度 ${onOff(draft.showQuota)}` });
+	if (saved.codexClientVersion.trim() !== draft.codexClientVersion.trim()) {
+		changes.push({ section: "upstream", text: `客户端版本 ${saved.codexClientVersion} → ${draft.codexClientVersion.trim() || "—"}` });
+	}
 	if (parseMultiplier(saved.fastCostMultiplier) !== parseMultiplier(draft.fastCostMultiplier)) {
 		changes.push({ section: "billing", text: `Fast 计费倍率 ${saved.fastCostMultiplier}× → ${draft.fastCostMultiplier || "—"}×` });
 	}

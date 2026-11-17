@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+description="Codex Router registration and client setup"
+supervisor="supervise-daemon"
+command="/usr/bin/python3"
+command_args="/opt/codex-router/current/deploy/bootstrap/server.py --config /etc/codex-router/bootstrap.toml"
+command_user="codex-router-bootstrap:codex-router-bootstrap"
+directory="/var/lib/codex-router-bootstrap"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/codex-router-bootstrap/service.log"
+error_log="/var/log/codex-router-bootstrap/service.log"
+respawn_delay=3
+respawn_max=0
+retry="TERM/15/KILL/5"
+umask=077
+
+depend() {
+    need net codex-router
+    after firewall
+}
+
+start_pre() {
+    checkpath --directory --mode 0700 --owner codex-router-bootstrap:codex-router-bootstrap /var/lib/codex-router-bootstrap /var/log/codex-router-bootstrap
+    checkpath --file --mode 0600 --owner codex-router-bootstrap:codex-router-bootstrap /var/log/codex-router-bootstrap/service.log
+}

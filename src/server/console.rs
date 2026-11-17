@@ -49,7 +49,9 @@ pub async fn handle_console(
 ) -> Response {
     let frontend_dir = state.config.resolve_path(&config.frontend.dir);
     match route {
-        ConsoleRoute::Page => frontend::application_page(request.method(), &frontend_dir).await,
+        ConsoleRoute::Page => {
+            frontend::application_page(request.method(), &frontend_dir, &client_url).await
+        }
         ConsoleRoute::PageRedirect => redirect(CONSOLE_BASE_PATH, StatusCode::PERMANENT_REDIRECT),
         ConsoleRoute::Asset => frontend::asset_response(request, &frontend_dir).await,
         ConsoleRoute::NotFound => no_store(response::empty(404)),

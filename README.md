@@ -137,6 +137,9 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
 Ubuntu 可按 [Ubuntu 部署与更新](docs/deployment-ubuntu.md) 安装、创建 systemd 服务、
 设置开机启动，以及更新和回滚版本。
 
+Alpine/OpenRC 替换 CLIProxyAPI、迁移凭据、Bootstrap 注册与回滚流程见
+[Alpine 替换部署](docs/deployment-alpine.md)。
+
 - `upstream.chatgpt_proxy` 如包含认证信息，应与 OAuth 和 API Key 一样作为密钥保护；SOCKS5
   连接上的 ChatGPT 应用流量仍使用端到端 TLS；
 - `server.public_origin` 必须是客户端看到的精确 origin，并用于控制台同源校验；
@@ -155,5 +158,5 @@ Ubuntu 可按 [Ubuntu 部署与更新](docs/deployment-ubuntu.md) 安装、创�
 cargo fmt --all -- --check
 cargo test --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
-(cd frontend && pnpm typecheck && pnpm lint && pnpm build)
+(cd frontend && pnpm typecheck && pnpm lint && pnpm test && pnpm build)
 ```

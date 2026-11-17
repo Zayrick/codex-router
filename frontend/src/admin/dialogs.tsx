@@ -54,6 +54,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
+import { randomUuid } from "@/lib/uuid";
 
 import {
 	MAX_ACCOUNT_ID_LENGTH,
@@ -88,7 +89,7 @@ interface CredentialDraft {
 }
 
 function newCredential(type: CredentialType): CredentialDraft {
-	return { key: crypto.randomUUID(), type, value: type === "api_key" ? generateApiKey() : "", name: "", enabled: true };
+	return { key: randomUuid(), type, value: type === "api_key" ? generateApiKey() : "", name: "", enabled: true };
 }
 
 function validCredential(credential: CredentialDraft): boolean {

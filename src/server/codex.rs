@@ -69,10 +69,11 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         &self,
         client_url: &Url,
         source_headers: &HeaderMap,
+        default_client_version: &str,
     ) -> AppResult<reqwest::Response> {
         let credentials = self.credentials().await?;
         let source = header_bag(source_headers);
-        let target = resolve_models_url(client_url, Some(&source));
+        let target = resolve_models_url(client_url, Some(&source), default_client_version);
         let headers = codex_headers(&credentials, "application/json", Some(&source), false);
         self.send(&target, Method::GET, headers, None, true).await
     }

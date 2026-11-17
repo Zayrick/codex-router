@@ -32,6 +32,8 @@ database_path = "sessions.sqlite3"
 # socks5h resolves upstream hostnames through the proxy.
 # chatgpt_proxy = "socks5h://127.0.0.1:1080"
 codex_resets_url = "https://codex-resets.com/api/v1/status"
+# Default client_version for model catalog requests; editable in Settings > Upstream.
+codex_client_version = "0.168.0"
 
 [usage_tracking]
 # Relative paths are resolved next to this configuration file.

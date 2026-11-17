@@ -1,0 +1,10 @@
+/var/log/codex-router/service.log /var/log/codex-router-bootstrap/service.log {
+    daily
+    maxsize 10M
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

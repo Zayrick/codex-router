@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-use super::DEFAULT_CODEX_CLIENT_VERSION;
-
 const FORWARDED_CODEX_HEADERS: [&str; 4] = [
     "version",
     "x-codex-beta-features",
@@ -119,10 +117,6 @@ pub fn usage_headers(credentials: &CodexCredentials) -> HeaderBag {
         ("accept", "application/json".to_owned()),
         ("authorization", format!("Bearer {}", credentials.token)),
         ("content-type", "application/json".to_owned()),
-        (
-            "user-agent",
-            format!("codex_cli_rs/{DEFAULT_CODEX_CLIENT_VERSION}"),
-        ),
     ]);
     if let Some(account_id) = credentials
         .account_id
@@ -154,25 +148,14 @@ pub fn proxy_request_headers(
     {
         headers.set("chatgpt-account-id", account_id);
     }
-    if super::is_codex_native_target(target_pathname) {
-        headers.set(
-            "user-agent",
-            format!("codex_cli_rs/{DEFAULT_CODEX_CLIENT_VERSION}"),
-        );
-        if !headers.contains("version") {
-            headers.set("version", DEFAULT_CODEX_CLIENT_VERSION);
-        }
-        if !headers.contains("originator") {
-            headers.set("originator", "codex_cli_rs");
-        }
-        if websocket_upgrade
-            && is_responses_websocket_path(target_pathname)
-            && !headers
-                .get("openai-beta")
-                .is_some_and(|value| value.contains("responses_websockets="))
-        {
-            headers.set("openai-beta", "responses_websockets=2026-02-06");
-        }
+    if super::is_codex_native_target(target_pathname)
+        && websocket_upgrade
+        && is_responses_websocket_path(target_pathname)
+        && !headers
+            .get("openai-beta")
+            .is_some_and(|value| value.contains("responses_websockets="))
+    {
+        headers.set("openai-beta", "responses_websockets=2026-02-06");
     }
     if websocket_upgrade {
         headers.set("upgrade", "websocket");

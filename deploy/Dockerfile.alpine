@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+FROM node:24-alpine3.22 AS frontend
+RUN npm install --global pnpm@11.18.0
+WORKDIR /build/frontend
+COPY .gitignore /build/.gitignore
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY frontend/ ./
+RUN pnpm lint && pnpm test && pnpm build
+
+FROM rust:1.97.1-alpine3.22 AS backend
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src/ ./src/
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --locked --release && \
+    cp target/release/codex-router /codex-router && \
+    /codex-router --version && \
+    ! readelf --wide --program-headers --dynamic /codex-router | grep -E 'INTERP|\(NEEDED\)'
+
+FROM scratch AS artifact
+COPY --from=backend /codex-router /codex-router
+COPY --from=frontend /build/frontend/dist/ /web/
+COPY config.example.toml /config.example.toml
+COPY deploy/ /deploy/
+COPY docs/deployment-alpine.md /DEPLOYMENT.md

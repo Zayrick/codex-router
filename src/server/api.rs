@@ -143,7 +143,13 @@ async fn dispatch(
             images::present_response(upstream, adapted.response_format, adapted.output_format).await
         }
         ApiRoute::Models => {
-            let upstream = client.fetch_models(client_url, request.headers()).await?;
+            let upstream = client
+                .fetch_models(
+                    client_url,
+                    request.headers(),
+                    &state.config.snapshot().await.upstream.codex_client_version,
+                )
+                .await?;
             observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
             if !upstream.status().is_success() {
                 return Ok(response::upstream_error(upstream));
@@ -158,7 +164,13 @@ async fn dispatch(
             response::json(&to_openai_model_list(&payload)?, 200)
         }
         ApiRoute::GeminiModels => {
-            let upstream = client.fetch_models(client_url, request.headers()).await?;
+            let upstream = client
+                .fetch_models(
+                    client_url,
+                    request.headers(),
+                    &state.config.snapshot().await.upstream.codex_client_version,
+                )
+                .await?;
             observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
             if !upstream.status().is_success() {
                 return Ok(gemini_upstream_error_response(upstream).await);
@@ -167,7 +179,13 @@ async fn dispatch(
             response::json(&gemini::gemini_model_list(&payload)?, 200)
         }
         ApiRoute::GeminiModel { model } => {
-            let upstream = client.fetch_models(client_url, request.headers()).await?;
+            let upstream = client
+                .fetch_models(
+                    client_url,
+                    request.headers(),
+                    &state.config.snapshot().await.upstream.codex_client_version,
+                )
+                .await?;
             observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
             if !upstream.status().is_success() {
                 return Ok(gemini_upstream_error_response(upstream).await);

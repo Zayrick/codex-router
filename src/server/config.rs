@@ -23,7 +23,10 @@ use crate::{
         valid_record_id,
     },
     core::{ApiError, AppResult},
-    upstream::{bark::parse_bark_push_url, dingtalk::signed_dingtalk_webhook},
+    upstream::{
+        bark::parse_bark_push_url, codex::DEFAULT_CODEX_CLIENT_VERSION,
+        dingtalk::signed_dingtalk_webhook,
+    },
 };
 
 use super::chatgpt_proxy::ChatgptProxy;
@@ -164,6 +167,8 @@ pub struct UpstreamConfig {
     pub chatgpt_proxy: Option<String>,
     #[serde(default = "default_codex_resets_url")]
     pub codex_resets_url: String,
+    #[serde(default = "default_codex_client_version")]
+    pub codex_client_version: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -238,8 +243,15 @@ impl Default for PublicAccountConfig {
 #[serde(rename_all = "camelCase")]
 pub struct AdminSettings {
     pub public_account: PublicAccountSettings,
+    pub upstream: UpstreamSettings,
     pub usage: UsageSettings,
     pub notifications: AdminNotificationSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamSettings {
+    pub codex_client_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,6 +313,9 @@ impl From<&AppConfig> for AdminSettings {
         Self {
             public_account: PublicAccountSettings {
                 show_quota: config.public_account.show_quota,
+            },
+            upstream: UpstreamSettings {
+                codex_client_version: config.upstream.codex_client_version.clone(),
             },
             usage: UsageSettings {
                 fast_cost_multiplier: config.usage_tracking.fast_cost_multiplier(),
@@ -447,6 +462,7 @@ impl ConfigStore {
         self.update(move |config| {
             validate_admin_settings(&stored, config)?;
             config.public_account.show_quota = stored.public_account.show_quota;
+            config.upstream.codex_client_version = stored.upstream.codex_client_version.clone();
             config.usage_tracking.fast_cost_multiplier = Some(stored.usage.fast_cost_multiplier);
             config.upstream.codex_resets_url = stored.notifications.reset_watch_api_url.clone();
             config.notifications.reset_watch_enabled =
@@ -514,6 +530,8 @@ impl ConfigStore {
 }
 
 fn normalized_admin_settings(mut settings: AdminSettings) -> AdminSettings {
+    settings.upstream.codex_client_version =
+        settings.upstream.codex_client_version.trim().to_owned();
     settings.notifications.reset_watch_api_url =
         settings.notifications.reset_watch_api_url.trim().to_owned();
     settings.notifications.bark.push_url = settings.notifications.bark.push_url.trim().to_owned();
@@ -537,7 +555,9 @@ fn normalized_admin_settings(mut settings: AdminSettings) -> AdminSettings {
 }
 
 fn validate_admin_settings(settings: &AdminSettings, config: &AppConfig) -> AppResult<()> {
-    if !valid_fast_cost_multiplier(settings.usage.fast_cost_multiplier) {
+    if !valid_fast_cost_multiplier(settings.usage.fast_cost_multiplier)
+        || !valid_codex_client_version(&settings.upstream.codex_client_version)
+    {
         return Err(invalid_admin_settings());
     }
 
@@ -798,6 +818,15 @@ fn valid_fast_cost_multiplier(value: f64) -> bool {
     value.is_finite() && value > 0.0 && value <= MAX_FAST_COST_MULTIPLIER
 }
 
+fn valid_codex_client_version(value: &str) -> bool {
+    let parts = value.split('.').collect::<Vec<_>>();
+    value.len() <= 64
+        && parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 fn validate_config(config: &AppConfig) -> Result<()> {
     config
         .server
@@ -856,6 +885,9 @@ fn validate_config(config: &AppConfig) -> Result<()> {
     }
     if let Some(proxy) = config.upstream.chatgpt_proxy.as_deref() {
         ChatgptProxy::parse(proxy).context("upstream.chatgpt_proxy is invalid")?;
+    }
+    if !valid_codex_client_version(&config.upstream.codex_client_version) {
+        bail!("upstream.codex_client_version must use the numeric major.minor.patch format");
     }
     let resets = Url::parse(&config.upstream.codex_resets_url)
         .context("upstream.codex_resets_url must be a valid URL")?;
@@ -1020,6 +1052,10 @@ fn default_codex_resets_url() -> String {
     "https://codex-resets.com/api/v1/status".into()
 }
 
+fn default_codex_client_version() -> String {
+    DEFAULT_CODEX_CLIENT_VERSION.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1034,6 +1070,7 @@ mod tests {
             upstream: UpstreamConfig {
                 chatgpt_proxy: None,
                 codex_resets_url: default_codex_resets_url(),
+                codex_client_version: default_codex_client_version(),
             },
             usage_tracking: UsageTrackingConfig::default(),
             notifications: NotificationConfig::default(),
@@ -1055,6 +1092,18 @@ mod tests {
         value.upstream.chatgpt_proxy = Some("socks5://proxy.example:1080".into());
         value.server.cors_origin = "https://client.example\ninvalid".into();
         assert!(validate_config(&value).is_err());
+    }
+
+    #[test]
+    fn model_client_version_defaults_and_validates_settings() {
+        let legacy: UpstreamConfig = toml::from_str("").unwrap();
+        assert_eq!(legacy.codex_client_version, DEFAULT_CODEX_CLIENT_VERSION);
+        let value = config();
+        for invalid in ["", "0.168", "0.168.0.1", "0.168.x", "0.168.\n0"] {
+            let mut settings = AdminSettings::from(&value);
+            settings.upstream.codex_client_version = invalid.into();
+            assert!(validate_admin_settings(&settings, &value).is_err());
+        }
     }
 
     #[test]
@@ -1101,6 +1150,7 @@ mod tests {
         let store = ConfigStore::load(path.clone()).await.unwrap();
         let mut settings = AdminSettings::from(&store.snapshot().await);
         settings.public_account.show_quota = false;
+        settings.upstream.codex_client_version = " 0.169.0 ".into();
         settings.notifications.reset_watch_enabled = false;
         settings.notifications.all_accounts = false;
         settings.notifications.account_ids = vec![account_id.into(), account_id.into()];
@@ -1112,6 +1162,8 @@ mod tests {
         let snapshot = store.snapshot().await;
 
         assert!(!saved.public_account.show_quota);
+        assert_eq!(saved.upstream.codex_client_version, "0.169.0");
+        assert_eq!(snapshot.upstream.codex_client_version, "0.169.0");
         assert_eq!(saved.notifications.account_ids, vec![account_id]);
         assert_eq!(
             saved.notifications.reset_watch_api_url,
@@ -1124,6 +1176,11 @@ mod tests {
             Some("https://api.day.app/device-key")
         );
 
+        let reloaded = ConfigStore::load(path.clone()).await.unwrap();
+        assert_eq!(
+            reloaded.snapshot().await.upstream.codex_client_version,
+            "0.169.0"
+        );
         let _ = fs::remove_file(path).await;
     }
 

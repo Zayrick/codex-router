@@ -452,6 +452,8 @@ API Key 鉴权的 Codex Responses 请求，以及按账户 ID 转发的 Codex Re
 | `GET /pricing` | 读取模型价格、已使用模型与上次同步状态 `sync` |
 | `PUT /pricing` | 替换模型价格配置 |
 | `POST /pricing/sync` | 从价格源同步模型价格，并记录同步状态 |
+| `GET /settings` | 读取用户端、上游、计费和通知设置；`upstream.codexClientVersion` 为模型目录默认版本 |
+| `PUT /settings` | 保存完整设置对象，`upstream.codexClientVersion` 使用数字 `x.y.z` 格式，保存后即时生效 |
 | `POST /settings/notifications/test` | 通过已保存并启用的通道发送测试通知，正文 `{"channel": "bark"}` 或 `"dingtalk"`；通道未启用返回 `409` |
 | `GET /users` | 读取用户及其凭据 |
 | `POST /users` | 创建用户，默认不分配路由 |

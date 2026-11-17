@@ -11,6 +11,7 @@
 		"build": "tsc -b tsconfig.app.json tsconfig.node.json && vite build",
 		"dev": "vite",
 		"lint": "oxlint",
+		"test": "node --test tests/*.test.mjs",
 		"typecheck": "tsc -b tsconfig.app.json tsconfig.node.json"
 	},
 	"dependencies": {

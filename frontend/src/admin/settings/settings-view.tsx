@@ -43,6 +43,7 @@ import {
 	settingsChanges,
 	toDraft,
 	toSettings,
+	validClientVersion,
 	validMultiplier,
 	validationError,
 	type SettingsDraft,
@@ -51,6 +52,7 @@ import {
 
 const SECTIONS: { id: SettingsSection; label: string; icon: ReactNode }[] = [
 	{ id: "public", label: "用户端", icon: <Globe2Icon /> },
+	{ id: "upstream", label: "上游", icon: <RadioTowerIcon /> },
 	{ id: "billing", label: "计费", icon: <CoinsIcon /> },
 	{ id: "events", label: "通知事件", icon: <BellRingIcon /> },
 	{ id: "recipients", label: "接收账户", icon: <UsersIcon /> },
@@ -117,6 +119,7 @@ export function SettingsView() {
 	const enabledChannels = [draft.barkEnabled, draft.dingtalkEnabled].filter(Boolean).length;
 	const navAside: Record<SettingsSection, string> = {
 		public: draft.showQuota ? "显示额度" : "隐藏额度",
+		upstream: draft.codexClientVersion || "—",
 		billing: `${draft.fastCostMultiplier || "—"}×`,
 		events: `${enabledEvents} / 3`,
 		recipients: draft.allAccounts ? "全部" : `${selectedAccounts} / ${state.codexAccounts.length}`,
@@ -143,7 +146,7 @@ export function SettingsView() {
 								{section.icon}
 								<span className="flex-1 text-left">{section.label}</span>
 								{dirtySections.has(section.id) ? <span aria-label="有未保存的修改" className="size-1.5 rounded-full bg-[#f59e0b]" /> : null}
-								<span className="text-[11.5px] font-normal text-faint">{navAside[section.id]}</span>
+								<span className="max-w-28 truncate text-[11.5px] font-normal text-faint">{navAside[section.id]}</span>
 							</Button>
 						))}
 					</nav>
@@ -197,6 +200,28 @@ export function SettingsView() {
 						label="显示账户额度"
 						onChange={(showQuota) => patch({ showQuota })}
 					/>
+				</Section>
+
+				<Section description="配置查询可用模型时使用的客户端版本。" icon={<RadioTowerIcon />} id="upstream" title="上游">
+					<Field>
+						<FieldLabel className="text-[12.5px]" htmlFor="settings-codex-client-version">
+							Codex 客户端版本
+						</FieldLabel>
+						<Input
+							aria-describedby="settings-codex-client-version-help"
+							aria-invalid={!validClientVersion(draft.codexClientVersion) || undefined}
+							className="max-w-xs font-mono"
+							id="settings-codex-client-version"
+							maxLength={64}
+							onChange={(event) => patch({ codexClientVersion: event.target.value })}
+							placeholder="0.168.0"
+							spellCheck={false}
+							value={draft.codexClientVersion}
+						/>
+						<FieldDescription id="settings-codex-client-version-help">
+							{validClientVersion(draft.codexClientVersion) ? "影响上游返回的模型列表，保存后即时生效。" : "请输入 x.y.z 格式的版本号，例如 0.168.0。"}
+						</FieldDescription>
+					</Field>
 				</Section>
 
 				<BillingSection draft={draft} onChange={(fastCostMultiplier) => patch({ fastCostMultiplier })} saved={saved.fastCostMultiplier} />

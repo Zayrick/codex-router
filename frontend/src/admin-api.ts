@@ -123,6 +123,9 @@ export interface AdminSettings {
 	publicAccount: {
 		showQuota: boolean;
 	};
+	upstream: {
+		codexClientVersion: string;
+	};
 	usage: {
 		/** Cost multiplier for Fast (priority tier) requests. */
 		fastCostMultiplier: number;

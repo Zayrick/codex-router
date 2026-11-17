@@ -2,7 +2,7 @@ use url::Url;
 
 use super::HeaderBag;
 
-pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.144.1";
+pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.168.0";
 pub const CODEX_MODELS_PATH: &str = "/backend-api/codex/models";
 pub const CODEX_RESPONSES_PATH: &str = "/backend-api/codex/responses";
 const CHATGPT_ORIGIN: &str = "https://chatgpt.com";
@@ -91,7 +91,11 @@ pub fn proxy_path(pathname: &str, method: &str) -> String {
     pathname.to_owned()
 }
 
-pub fn resolve_models_url(client_url: &Url, client_headers: Option<&HeaderBag>) -> Url {
+pub fn resolve_models_url(
+    client_url: &Url,
+    client_headers: Option<&HeaderBag>,
+    default_client_version: &str,
+) -> Url {
     let mut target = resolve_chatgpt_url(CODEX_MODELS_PATH, None);
     let query_version = client_url
         .query_pairs()
@@ -105,7 +109,7 @@ pub fn resolve_models_url(client_url: &Url, client_headers: Option<&HeaderBag>) 
         .map(str::to_owned);
     let client_version = query_version
         .or(header_version)
-        .unwrap_or_else(|| DEFAULT_CODEX_CLIENT_VERSION.to_owned());
+        .unwrap_or_else(|| default_client_version.to_owned());
     target
         .query_pairs_mut()
         .append_pair("client_version", &client_version);

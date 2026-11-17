@@ -245,6 +245,7 @@ mod tests {
             upstream: UpstreamConfig {
                 chatgpt_proxy: None,
                 codex_resets_url: "https://codex-resets.com/api/v1/status".into(),
+                codex_client_version: crate::upstream::codex::DEFAULT_CODEX_CLIENT_VERSION.into(),
             },
             usage_tracking: super::super::config::UsageTrackingConfig {
                 database_path: usage_path.display().to_string(),

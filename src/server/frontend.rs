@@ -1,9 +1,8 @@
 //! Serves the web console from a deployed frontend directory.
 //!
-//! The Rust binary no longer embeds the React build. `frontend.dir` points at a
-//! Vite output directory; `index.html` is read on every page request so a fresh
-//! CSP nonce can be injected (and so frontend releases do not need a restart),
-//! while fingerprinted files under `assets/` are served directly from disk.
+//! `frontend.dir` points at a Vite output directory. `index.html` is read on
+//! every page request and receives a fresh CSP nonce; fingerprinted files
+//! under `assets/` are served directly from disk.
 
 use std::{convert::Infallible, path::Path};
 
@@ -16,6 +15,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio::io::AsyncReadExt;
 use tower::ServiceExt;
 use tower_http::services::ServeDir;
+use url::{Host, Url};
 
 use crate::core::ApiError;
 
@@ -36,16 +36,21 @@ const DEV_SERVER_WEBSOCKET_ORIGIN: &str = "ws://127.0.0.1:5173";
 const DEV_CHILD_ENV: &str = "CODEX_ROUTER_DEV_CHILD";
 
 /// Serves the single console application shell with a per-request CSP nonce.
-pub async fn application_page(method: &Method, frontend_dir: &Path) -> Response {
+pub async fn application_page(method: &Method, frontend_dir: &Path, client_url: &Url) -> Response {
     let nonce = URL_SAFE_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes());
 
     #[cfg(debug_assertions)]
     if std::env::var_os(DEV_CHILD_ENV).is_some() {
-        return page_response(method, development_page(&nonce), dev_csp(&nonce));
+        return page_response(
+            method,
+            development_page(&nonce),
+            dev_csp(&nonce),
+            client_url,
+        );
     }
 
     match read_index(frontend_dir, &nonce).await {
-        Ok(html) => page_response(method, html, production_csp(&nonce)),
+        Ok(html) => page_response(method, html, production_csp(&nonce), client_url),
         Err(error) => {
             tracing::error!(
                 event = "frontend_index",
@@ -145,20 +150,24 @@ fn dev_csp(nonce: &str) -> String {
     )
 }
 
-fn page_response(method: &Method, html: String, content_security_policy: String) -> Response {
+fn page_response(
+    method: &Method,
+    html: String,
+    content_security_policy: String,
+    client_url: &Url,
+) -> Response {
     let length = html.len();
     let body = if *method == Method::HEAD {
         Body::empty()
     } else {
         Body::from(html)
     };
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::CONTENT_LENGTH, length)
         .header(header::CACHE_CONTROL, "no-store")
         .header(header::CONTENT_SECURITY_POLICY, content_security_policy)
-        .header("cross-origin-opener-policy", "same-origin")
         .header("cross-origin-resource-policy", "same-origin")
         .header(
             "permissions-policy",
@@ -166,9 +175,24 @@ fn page_response(method: &Method, html: String, content_security_policy: String)
         )
         .header(header::REFERRER_POLICY, "same-origin")
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-        .header("x-frame-options", "DENY")
-        .body(body)
-        .unwrap_or_else(|_| response::empty(500))
+        .header("x-frame-options", "DENY");
+    if trustworthy_origin(client_url) {
+        response = response.header("cross-origin-opener-policy", "same-origin");
+    }
+    response.body(body).unwrap_or_else(|_| response::empty(500))
+}
+
+fn trustworthy_origin(url: &Url) -> bool {
+    url.scheme() == "https"
+        || match url.host() {
+            Some(Host::Domain(domain)) => {
+                let host = domain.strip_suffix('.').unwrap_or(domain);
+                host == "localhost" || host.ends_with(".localhost")
+            }
+            Some(Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        }
 }
 
 #[cfg(debug_assertions)]
@@ -235,7 +259,8 @@ mod tests {
             format!("<script nonce=\"{CSP_NONCE_PLACEHOLDER}\"></script>"),
         )
         .unwrap();
-        let output = application_page(&Method::GET, &dir).await;
+        let url = Url::parse("https://router.example/admin").unwrap();
+        let output = application_page(&Method::GET, &dir, &url).await;
         assert_eq!(output.status(), StatusCode::OK);
         let csp = output.headers()[header::CONTENT_SECURITY_POLICY]
             .to_str()
@@ -252,10 +277,11 @@ mod tests {
     #[tokio::test]
     async fn missing_or_invalid_index_is_a_local_503() {
         let dir = temp_dir();
-        let missing = application_page(&Method::GET, &dir).await;
+        let url = Url::parse("https://router.example/admin").unwrap();
+        let missing = application_page(&Method::GET, &dir, &url).await;
         assert_eq!(missing.status(), StatusCode::SERVICE_UNAVAILABLE);
         std::fs::write(dir.join("index.html"), "<p>no placeholder</p>").unwrap();
-        let invalid = application_page(&Method::GET, &dir).await;
+        let invalid = application_page(&Method::GET, &dir, &url).await;
         assert_eq!(invalid.status(), StatusCode::SERVICE_UNAVAILABLE);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -302,5 +328,37 @@ mod tests {
         .await;
         assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn opener_isolation_follows_the_console_origin() {
+        for (origin, isolated) in [
+            ("http://192.168.160.172:8317", false),
+            ("http://router.example", false),
+            ("https://router.example", true),
+            ("http://localhost:8787", true),
+            ("http://console.localhost:8787", true),
+            ("http://127.0.0.2:8787", true),
+            ("http://[::1]:8787", true),
+        ] {
+            let output = page_response(
+                &Method::GET,
+                String::new(),
+                "default-src 'none'".into(),
+                &Url::parse(origin).unwrap(),
+            );
+            assert_eq!(
+                output
+                    .headers()
+                    .get("cross-origin-opener-policy")
+                    .and_then(|value| value.to_str().ok()),
+                isolated.then_some("same-origin"),
+                "{origin}",
+            );
+            assert_eq!(
+                output.headers()[header::CONTENT_SECURITY_POLICY],
+                "default-src 'none'"
+            );
+        }
     }
 }

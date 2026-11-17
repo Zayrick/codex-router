@@ -248,20 +248,21 @@ fn model_query_policy_keeps_only_version_and_channel() {
     assert_eq!(
         resolve_models_url(
             &client,
-            Some(&HeaderBag::from_pairs([("Version", "0.144.1")]))
+            Some(&HeaderBag::from_pairs([("Version", "0.144.1")])),
+            "0.169.0",
         )
         .as_str(),
         "https://chatgpt.com/backend-api/codex/models?client_version=0.200.0&channel=stable&channel=beta"
     );
     let client = Url::parse("https://worker.example/v1/models").unwrap();
     assert_eq!(
-        resolve_models_url(&client, None).query(),
-        Some("client_version=0.144.1")
+        resolve_models_url(&client, None, "0.169.0").query(),
+        Some("client_version=0.169.0")
     );
 }
 
 #[test]
-fn proxy_header_policy_drops_client_credentials_and_sets_native_defaults() {
+fn proxy_header_policy_applies_account_auth_and_websocket_controls() {
     let source = HeaderBag::from_pairs([
         ("Authorization", "Bearer attacker"),
         ("Chatgpt-Account-Id", "attacker-account"),
@@ -270,6 +271,8 @@ fn proxy_header_policy_drops_client_credentials_and_sets_native_defaults() {
         ("X-Goog-Api-Key", "secret"),
         ("Content-Length", "123"),
         ("User-Agent", "attacker-agent"),
+        ("Version", "0.144.1"),
+        ("Originator", "codex_cli_rs"),
         ("CF-Connecting-IP", "203.0.113.5"),
         ("X-Forwarded-For", "203.0.113.5"),
         ("Content-Type", "multipart/form-data; boundary=test"),
@@ -283,9 +286,18 @@ fn proxy_header_policy_drops_client_credentials_and_sets_native_defaults() {
         proxy_request_headers(&source, &credentials, "/backend-api/codex/responses", true);
     assert_eq!(headers.get("authorization"), Some("Bearer oauth-token"));
     assert_eq!(headers.get("chatgpt-account-id"), Some("account-test"));
-    assert_eq!(headers.get("user-agent"), Some("codex_cli_rs/0.144.1"));
+    assert!(headers.get("user-agent").is_none());
     assert_eq!(headers.get("version"), Some("0.144.1"));
     assert_eq!(headers.get("originator"), Some("codex_cli_rs"));
+    let defaults = proxy_request_headers(
+        &HeaderBag::new(),
+        &credentials,
+        "/backend-api/codex/responses",
+        true,
+    );
+    for name in ["user-agent", "version", "originator"] {
+        assert!(defaults.get(name).is_none());
+    }
     assert_eq!(headers.get("upgrade"), Some("websocket"));
     assert_eq!(
         headers.get("openai-beta"),
@@ -306,6 +318,8 @@ fn proxy_header_policy_drops_client_credentials_and_sets_native_defaults() {
 fn converted_client_headers_forward_only_codex_controls() {
     let source = HeaderBag::from_pairs([
         ("Version", " 0.200.0 "),
+        ("User-Agent", "codex_cli_rs/0.200.0"),
+        ("Originator", "codex_cli_rs"),
         ("X-Codex-Beta-Features", " beta-a "),
         ("X-Codex-Turn-Metadata", "turn"),
         ("X-Codex-Turn-State", "state"),
@@ -316,10 +330,17 @@ fn converted_client_headers_forward_only_codex_controls() {
         token: "oauth-token".into(),
         account_id: None,
     };
+    let defaults = codex_headers(&credentials, "text/event-stream", None, true);
+    for name in ["user-agent", "version", "originator"] {
+        assert!(defaults.get(name).is_none());
+    }
     let headers = codex_headers(&credentials, "text/event-stream", Some(&source), true);
     assert_eq!(headers.get("accept"), Some("text/event-stream"));
     assert_eq!(headers.get("content-type"), Some("application/json"));
     assert_eq!(headers.get("version"), Some("0.200.0"));
+    for name in ["user-agent", "originator"] {
+        assert!(headers.get(name).is_none());
+    }
     assert_eq!(headers.get("x-codex-beta-features"), Some("beta-a"));
     assert!(headers.get("x-request-id").is_none());
     assert!(headers.get("cookie").is_none());
@@ -330,6 +351,8 @@ fn converted_client_headers_forward_only_codex_controls() {
     });
     assert_eq!(usage.get("accept"), Some("application/json"));
     assert_eq!(usage.get("content-type"), Some("application/json"));
-    assert_eq!(usage.get("user-agent"), Some("codex_cli_rs/0.144.1"));
+    for name in ["user-agent", "version", "originator"] {
+        assert!(usage.get(name).is_none());
+    }
     assert_eq!(usage.get("chatgpt-account-id"), Some("account-test"));
 }

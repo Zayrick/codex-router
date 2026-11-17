@@ -20,6 +20,7 @@ import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { formatClock, formatCount, formatDay, startOfLocalDay } from "@/lib/format";
+import { randomUuid } from "@/lib/uuid";
 
 import { toast } from "sonner";
 
@@ -137,7 +138,7 @@ export function LogsView({
 	}, []);
 
 	function saveView(name: string) {
-		const saved: SavedView = { id: crypto.randomUUID(), name, filters, view };
+		const saved: SavedView = { id: randomUuid(), name, filters, view };
 		const next = [...savedViews, saved];
 		setSavedViews(next);
 		storeSavedViews(source.scope, next);
