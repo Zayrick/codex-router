@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import type { UsageEvent } from "@/admin-api";
 import { sessionKindLabel, tierLabel, transportLabel } from "@/components/app/viz";
 import { shortId } from "@/lib/format";
+import { copyToClipboard } from "@/lib/clipboard";
 
 export function isSuccess(event: UsageEvent): boolean {
 	return event.status === "completed" || event.status === "incomplete";
@@ -42,8 +43,7 @@ export function tierText(event: UsageEvent): string {
 
 export function copyText(value: string, label: string): void {
 	if (!value) return;
-	navigator.clipboard
-		.writeText(value)
+	copyToClipboard(value)
 		.then(() => toast.success(`已复制 ${label}`))
 		.catch(() => toast.error("复制失败。"));
 }

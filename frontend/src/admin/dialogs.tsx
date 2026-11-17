@@ -71,6 +71,7 @@ import {
 	type RouteTargetSelection,
 } from "./routing-model";
 import { CREDENTIAL_LABEL } from "./identities/model";
+import { copyToClipboard } from "@/lib/clipboard";
 
 export { default as CredentialImportDialog } from "@/CredentialImportDialog";
 export { default as DeleteConfirmationDialog } from "@/DeleteConfirmationDialog";
@@ -599,8 +600,12 @@ export function DeviceLoginDialog({
 
 	async function copyCode(): Promise<void> {
 		if (!flow) return;
-		await navigator.clipboard.writeText(flow.authorization.userCode);
-		setCopiedCode(flow.authorization.userCode);
+		try {
+			await copyToClipboard(flow.authorization.userCode);
+			setCopiedCode(flow.authorization.userCode);
+		} catch {
+			setCopiedCode(null);
+		}
 	}
 
 	return (

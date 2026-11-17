@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 
 import { useLastSeen } from "./use-last-seen";
 import { CREDENTIAL_LABEL, clientSummary, type RouteInfo } from "./model";
+import { copyToClipboard } from "@/lib/clipboard";
 
 const RANGE_TITLE: Record<string, string> = { "24h": "近 24 小时", "7d": "近 7 天", "30d": "近 30 天" };
 
@@ -97,7 +98,7 @@ function CredentialLine({ credential, seen }: { credential: UserCredential; seen
 	const secret = credential.type === "api_key";
 	async function copy() {
 		try {
-			await navigator.clipboard.writeText(credential.value);
+			await copyToClipboard(credential.value);
 			notify(`${CREDENTIAL_LABEL[credential.type]}已复制。`);
 		} catch {
 			notify("复制失败，请手动复制。", "error");
