@@ -200,7 +200,7 @@ export function LogFilterBar({
 			<div className="flex flex-wrap items-center gap-2 px-4 pt-2 pb-4">
 				{options.identities ? (
 					<FilterMenu
-						label="调用身份"
+						label="用户"
 						multiple={false}
 						onChange={(values) => set({ downstream: parseIdentity(options.identities ?? [], values[0]) })}
 						options={options.identities.map((option) => ({

@@ -4,16 +4,16 @@ import { useAdmin } from "@/admin/context";
 import { IdentityPage } from "@/admin/identities/identity-page";
 import { Button } from "@/components/ui/button";
 
-export default function ApiKeysPage() {
-	return <IdentityPage kind="api_key" />;
+export default function UsersPage() {
+	return <IdentityPage />;
 }
 
 export function PageAction() {
-	const { openApiKeyEditor } = useAdmin();
+	const { openUserEditor } = useAdmin();
 	return (
-		<Button onClick={() => openApiKeyEditor("new")} type="button">
+		<Button onClick={() => openUserEditor("new")} type="button">
 			<PlusIcon data-icon="inline-start" />
-			添加 API Key
+			添加用户
 		</Button>
 	);
 }

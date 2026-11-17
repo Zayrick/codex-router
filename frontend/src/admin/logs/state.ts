@@ -3,7 +3,7 @@
 // URL contract (other pages link here with `navigate("logs", params)`), all optional:
 //   range        1h | today | 7d | 30d | custom   (default today)
 //   startAt/endAt  epoch ms, with range=custom
-//   downstreamType/downstreamId   api_key | auth_proxy + id
+//   downstreamType/downstreamId   user | credential + id
 //   upstreamType/upstreamId       account_group | codex_account + id
 //   model, status, effort, tier, transport, sessionKind   comma-separated lists
 //   sessionId    request's session or parent session
@@ -54,7 +54,7 @@ export const RANGE_OPTIONS: { value: LogRange; label: string }[] = [
 	{ value: "custom", label: "自定义" },
 ];
 
-const IDENTITY_TYPES: UsageIdentityType[] = ["api_key", "auth_proxy", "codex_account", "account_group"];
+const IDENTITY_TYPES: UsageIdentityType[] = ["user", "credential", "codex_account", "account_group"];
 const STATUSES: UsageEventStatus[] = ["completed", "incomplete", "failed", "cancelled", "interrupted"];
 const VIEWS: EventView[] = ["all", "failed", "slow", "downgraded", "subagent", "rate_limited"];
 

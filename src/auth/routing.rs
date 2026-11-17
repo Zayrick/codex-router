@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::core::{ApiError, AppResult};
 
-use super::{AuthProxyAccount, ClientApiKey, StateStore, new_record_id, valid_record_id};
+use super::{StateStore, User, new_record_id, valid_record_id};
 
 pub const ACCOUNT_ROUTING_KEY: &str = "ACCOUNT_ROUTING";
 const ROUND_ROBIN_STRATEGY: &str = "round-robin";
@@ -41,22 +41,6 @@ pub struct AccountGroup {
     pub session_affinity_ttl: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RouteConsumerKind {
-    ApiKey,
-    AuthProxy,
-}
-
-impl RouteConsumerKind {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ApiKey => "api_key",
-            Self::AuthProxy => "auth_proxy",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteTargetKind {
@@ -67,8 +51,10 @@ pub enum RouteTargetKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteAssignment {
-    pub consumer_type: RouteConsumerKind,
-    pub consumer_id: String,
+    /// Empty for routes stored before users replaced API keys and downstream
+    /// accounts; those are dropped on load.
+    #[serde(default)]
+    pub user_id: String,
     pub target_type: RouteTargetKind,
     pub target_id: String,
 }
@@ -147,11 +133,11 @@ impl<'a> RoutingRepository<'a> {
         if stored.version != CURRENT_ROUTING_VERSION {
             return Err(invalid_stored_routing());
         }
-        validate_state(stored.state, None, None).map_err(|_| invalid_stored_routing())
+        validate_state(stored.state, None).map_err(|_| invalid_stored_routing())
     }
 
     async fn store(&self, state: AccountRoutingState) -> AppResult<AccountRoutingState> {
-        let state = validate_state(state, None, None)?;
+        let state = validate_state(state, None)?;
         let serialized = serde_json::to_string(&StoredAccountRouting {
             version: CURRENT_ROUTING_VERSION,
             state: state.clone(),
@@ -232,8 +218,7 @@ impl<'a> RoutingRepository<'a> {
     pub async fn replace_configuration(
         &self,
         value: &Value,
-        api_keys: &[ClientApiKey],
-        auth_proxy_accounts: &[AuthProxyAccount],
+        users: &[User],
     ) -> AppResult<AccountRoutingState> {
         let object = value
             .as_object()
@@ -255,19 +240,13 @@ impl<'a> RoutingRepository<'a> {
         let mut state = self.read().await?;
         state.groups = groups;
         state.routes = routes;
-        let state = validate_state(state, Some(api_keys), Some(auth_proxy_accounts))?;
+        let state = validate_state(state, Some(users))?;
         self.store(state).await
     }
 
-    pub async fn release_consumer(
-        &self,
-        kind: RouteConsumerKind,
-        id: &str,
-    ) -> AppResult<AccountRoutingState> {
+    pub async fn release_user(&self, id: &str) -> AppResult<AccountRoutingState> {
         let mut state = self.read().await?;
-        state
-            .routes
-            .retain(|route| !(route.consumer_type == kind && route.consumer_id == id));
+        state.routes.retain(|route| route.user_id != id);
         self.store(state).await
     }
 
@@ -316,8 +295,7 @@ pub fn session_affinity_ttl(value: &str) -> Option<std::time::Duration> {
 
 fn validate_state(
     mut state: AccountRoutingState,
-    api_keys: Option<&[ClientApiKey]>,
-    auth_proxy_accounts: Option<&[AuthProxyAccount]>,
+    users: Option<&[User]>,
 ) -> AppResult<AccountRoutingState> {
     if state.accounts.len() > MAX_CODEX_ACCOUNTS || state.groups.len() > MAX_ACCOUNT_GROUPS {
         return Err(invalid_routing_configuration());
@@ -367,27 +345,20 @@ fn validate_state(
         .groups
         .sort_by(|left, right| left.name.encode_utf16().cmp(right.name.encode_utf16()));
 
-    let configured_api_keys: Option<HashSet<_>> =
-        api_keys.map(|entries| entries.iter().map(|entry| entry.id.as_str()).collect());
-    let configured_auth_proxy: Option<HashSet<_>> =
-        auth_proxy_accounts.map(|entries| entries.iter().map(|entry| entry.id.as_str()).collect());
+    let configured_users: Option<HashSet<_>> =
+        users.map(|entries| entries.iter().map(|entry| entry.id.as_str()).collect());
     let mut consumers = HashSet::new();
     for route in &state.routes {
-        if !valid_record_id(&route.consumer_id) || !valid_record_id(&route.target_id) {
+        if !valid_record_id(&route.user_id) || !valid_record_id(&route.target_id) {
             return Err(invalid_routing_configuration());
         }
-        if !consumers.insert((route.consumer_type, route.consumer_id.clone())) {
+        if !consumers.insert(route.user_id.clone()) {
             return Err(invalid_routing_configuration());
         }
-        let consumer_exists = match route.consumer_type {
-            RouteConsumerKind::ApiKey => configured_api_keys
-                .as_ref()
-                .is_none_or(|ids| ids.contains(route.consumer_id.as_str())),
-            RouteConsumerKind::AuthProxy => configured_auth_proxy
-                .as_ref()
-                .is_none_or(|ids| ids.contains(route.consumer_id.as_str())),
-        };
-        if !consumer_exists {
+        let user_exists = configured_users
+            .as_ref()
+            .is_none_or(|ids| ids.contains(route.user_id.as_str()));
+        if !user_exists {
             return Err(invalid_routing_configuration());
         }
         match route.target_type {
@@ -409,10 +380,9 @@ fn validate_state(
             RouteTargetKind::Group => {}
         }
     }
-    state.routes.sort_by(|left, right| {
-        (left.consumer_type.as_str(), left.consumer_id.as_str())
-            .cmp(&(right.consumer_type.as_str(), right.consumer_id.as_str()))
-    });
+    state
+        .routes
+        .sort_by(|left, right| left.user_id.cmp(&right.user_id));
     Ok(state)
 }
 
@@ -612,14 +582,12 @@ mod tests {
                 }],
                 routes: vec![
                     RouteAssignment {
-                        consumer_type: RouteConsumerKind::ApiKey,
-                        consumer_id: direct_consumer.into(),
+                        user_id: direct_consumer.into(),
                         target_type: RouteTargetKind::Account,
                         target_id: account_id.into(),
                     },
                     RouteAssignment {
-                        consumer_type: RouteConsumerKind::AuthProxy,
-                        consumer_id: group_consumer.into(),
+                        user_id: group_consumer.into(),
                         target_type: RouteTargetKind::Group,
                         target_id: group_id.into(),
                     },

@@ -38,7 +38,7 @@ export function useLogs(
 
 	const events = useMemo(() => dedupe([first.data?.events ?? [], ...pages.map((page) => page.events)].flat(), (event) => String(event.id)), [first.data, pages]);
 	const sessions = useMemo(
-		() => dedupe([first.data?.sessions ?? [], ...pages.map((page) => page.sessions ?? [])].flat(), (group) => group.sessionId || `${group.identityType}:${group.identityId}`),
+		() => dedupe([first.data?.sessions ?? [], ...pages.map((page) => page.sessions ?? [])].flat(), (group) => group.sessionId || `user:${group.userId}`),
 		[first.data, pages],
 	);
 	const sessionCounts = useMemo(() => Object.assign({}, ...pages.map((page) => page.sessionCounts), first.data?.sessionCounts ?? {}) as UsageEventPage["sessionCounts"], [first.data, pages]);

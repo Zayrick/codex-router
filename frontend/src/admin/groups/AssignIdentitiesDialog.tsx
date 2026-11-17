@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { KeyRoundIcon, UserRoundIcon } from "lucide-react";
+import { UserRoundIcon } from "lucide-react";
 
-import type { AccountGroup, RouteAssignment, RouteConsumerType } from "@/admin-api";
+import type { AccountGroup, RouteAssignment } from "@/admin-api";
 import { useAdmin } from "@/admin/context";
-import { replaceConsumerRoute } from "@/admin/routing-model";
+import { replaceUserRoute } from "@/admin/routing-model";
 import { Tag } from "@/components/app/badges";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -12,7 +12,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 
 interface Candidate {
-	type: RouteConsumerType;
 	id: string;
 	name: string;
 	enabled: boolean;
@@ -20,13 +19,10 @@ interface Candidate {
 	current: string | null;
 }
 
-/** Chooses which API keys and downstream accounts route to `group`. */
+/** Chooses which users route to `group`. */
 export function AssignIdentitiesDialog({ group, onClose }: { group: AccountGroup; onClose: () => void }) {
 	const { state, saveRouting } = useAdmin();
-	const key = (type: RouteConsumerType, id: string) => `${type}:${id}`;
-	const assigned = new Set(
-		state.routes.filter((route) => route.targetType === "group" && route.targetId === group.id).map((route) => key(route.consumerType, route.consumerId)),
-	);
+	const assigned = new Set(state.routes.filter((route) => route.targetType === "group" && route.targetId === group.id).map((route) => route.userId));
 	const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set(assigned));
 	const [saving, setSaving] = useState(false);
 
@@ -36,22 +32,21 @@ export function AssignIdentitiesDialog({ group, onClose }: { group: AccountGroup
 		const account = state.codexAccounts.find((entry) => entry.id === route.targetId);
 		return account ? `直连 ${account.oauth?.email ?? account.name}` : "已移除的账户";
 	};
-	const candidates: Candidate[] = [
-		...state.apiKeys.map((entry) => ({ type: "api_key" as const, id: entry.id, name: entry.name, enabled: entry.enabled })),
-		...state.authProxyAccounts.map((entry) => ({ type: "auth_proxy" as const, id: entry.id, name: entry.name, enabled: entry.enabled })),
-	].map((entry) => ({
-		...entry,
-		current: targetName(state.routes.find((route) => route.consumerType === entry.type && route.consumerId === entry.id)),
+	const candidates: Candidate[] = state.users.map((user) => ({
+		id: user.id,
+		name: user.name,
+		enabled: user.enabled,
+		current: targetName(state.routes.find((route) => route.userId === user.id)),
 	}));
 
 	async function save() {
 		let routes = state.routes;
 		for (const candidate of candidates) {
-			const id = key(candidate.type, candidate.id);
+			const id = candidate.id;
 			if (selected.has(id) && !assigned.has(id)) {
-				routes = replaceConsumerRoute(routes, candidate.type, candidate.id, { targetType: "group", targetId: group.id });
+				routes = replaceUserRoute(routes, id, { targetType: "group", targetId: group.id });
 			} else if (!selected.has(id) && assigned.has(id)) {
-				routes = replaceConsumerRoute(routes, candidate.type, candidate.id, null);
+				routes = replaceUserRoute(routes, id, null);
 			}
 		}
 		setSaving(true);
@@ -69,14 +64,14 @@ export function AssignIdentitiesDialog({ group, onClose }: { group: AccountGroup
 		>
 			<DialogContent className="flex max-h-[min(36rem,calc(100svh-2rem))] flex-col gap-0 p-0 sm:max-w-md" showCloseButton={!saving}>
 				<DialogHeader className="border-b px-6 py-4 text-left">
-					<DialogTitle>分配给调用身份</DialogTitle>
-					<DialogDescription>选中的调用身份将路由到「{group.name}」，原有分配会被替换。</DialogDescription>
+					<DialogTitle>分配给用户</DialogTitle>
+					<DialogDescription>选中的用户将路由到「{group.name}」，原有分配会被替换。</DialogDescription>
 				</DialogHeader>
 				<ScrollArea className="min-h-0 flex-1">
 					<div className="flex flex-col p-2">
-						{candidates.length === 0 ? <p className="p-4 text-center text-sm text-muted-foreground">还没有 API Key 或下游账户。</p> : null}
+						{candidates.length === 0 ? <p className="p-4 text-center text-sm text-muted-foreground">还没有用户。</p> : null}
 						{candidates.map((candidate) => {
-							const id = key(candidate.type, candidate.id);
+							const id = candidate.id;
 							return (
 								<label className="flex cursor-pointer items-center gap-3 rounded-lg px-4 py-2.5 hover:bg-muted" key={id}>
 									<Checkbox
@@ -91,13 +86,10 @@ export function AssignIdentitiesDialog({ group, onClose }: { group: AccountGroup
 											})
 										}
 									/>
-									{candidate.type === "api_key" ? <KeyRoundIcon className="size-3.5 text-muted-foreground" /> : <UserRoundIcon className="size-3.5 text-muted-foreground" />}
+									<UserRoundIcon className="size-3.5 text-muted-foreground" />
 									<span className="flex min-w-0 flex-1 flex-col">
 										<span className="truncate text-sm font-medium">{candidate.name}</span>
-										<span className="truncate text-xs text-faint">
-											{candidate.type === "api_key" ? "API Key" : "下游账户"}
-											{candidate.current ? ` · 当前：${candidate.current}` : ""}
-										</span>
+										{candidate.current ? <span className="truncate text-xs text-faint">当前：{candidate.current}</span> : null}
 									</span>
 									{!candidate.enabled ? <Tag>已停用</Tag> : null}
 								</label>

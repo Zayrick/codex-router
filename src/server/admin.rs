@@ -7,9 +7,9 @@ use url::Url;
 use crate::{
     application::AdminRoute,
     auth::{
-        ApiKeyRepository, CodexAccount, CredentialImport, DeviceAuthorizationService,
+        CodexAccount, CredentialImport, CredentialKind, DeviceAuthorizationService,
         DevicePollResult, MAX_CREDENTIAL_IMPORT_BYTES, OAuthProvider, OAuthRepository, OAuthStatus,
-        RouteConsumerKind, RoutingRepository, StateStore, constant_time_equal, oauth_status,
+        RoutingRepository, StateStore, User, UserRepository, constant_time_equal, oauth_status,
         valid_record_id,
     },
     core::{ApiError, AppResult, JsonObject},
@@ -79,19 +79,17 @@ async fn dispatch(
     state: &AppState,
 ) -> AppResult<Response> {
     let now_ms = current_time_ms();
-    let keys = ApiKeyRepository::new(state.config.as_ref());
+    let users = UserRepository::new(state.config.as_ref());
     let routing = RoutingRepository::new(state.config.as_ref());
     match route {
         AdminRoute::State => {
-            let api_keys = keys.read().await?;
-            let accounts = keys.read_auth_proxy_accounts().await?;
+            let user_list = users.read().await?;
             let routing_state = routing.read().await?;
             let codex_accounts = codex_account_states(state, routing_state.accounts).await?;
             response::json(
                 &json!({
                     "codexAccounts": codex_accounts,
-                    "apiKeys": api_keys,
-                    "authProxyAccounts": accounts,
+                    "users": user_list,
                     "accountGroups": routing_state.groups,
                     "routes": routing_state.routes,
                 }),
@@ -485,11 +483,8 @@ async fn dispatch(
         }
         AdminRoute::AccountRoutingUpdate => {
             let value = Value::Object(admin_json(request).await?);
-            let api_keys = keys.read().await?;
-            let accounts = keys.read_auth_proxy_accounts().await?;
-            let updated = routing
-                .replace_configuration(&value, &api_keys, &accounts)
-                .await?;
+            let user_list = users.read().await?;
+            let updated = routing.replace_configuration(&value, &user_list).await?;
             response::json(
                 &json!({
                     "accountGroups": updated.groups,
@@ -498,92 +493,68 @@ async fn dispatch(
                 200,
             )
         }
-        AdminRoute::ApiKeysGet => response::json(&json!({ "apiKeys": keys.read().await? }), 200),
-        AdminRoute::ApiKeysCreate => {
+        AdminRoute::UsersGet => response::json(&json!({ "users": users.read().await? }), 200),
+        AdminRoute::UsersCreate => {
             let input = admin_json(request).await?;
-            reject_admin_secret_reuse(&input, "key", config)?;
+            reject_admin_secret_reuse(&input, config)?;
             let input = Value::Object(input);
-            response::json(&json!({ "apiKeys": keys.create(&input).await? }), 201)
+            response::json(&json!({ "users": users.create(&input).await? }), 201)
         }
-        AdminRoute::ApiKeysUpdate => {
+        AdminRoute::UsersUpdate => {
             let input = admin_json(request).await?;
-            reject_admin_secret_reuse(&input, "key", config)?;
+            reject_admin_secret_reuse(&input, config)?;
             let id = input.get("id").cloned().unwrap_or(Value::Null);
             let _credentials = state.credential_lock.lock().await;
             if let Some(id) = id.as_str() {
-                let current = keys.read().await?;
-                let unchanged = current.iter().any(|key| {
-                    key.id == id
-                        && key.enabled
-                        && input.get("enabled") == Some(&Value::Bool(true))
-                        && input.get("key").and_then(Value::as_str) == Some(key.key.as_str())
-                });
-                if !unchanged {
-                    revoke_sessions(state, Some(Principal::ApiKey(id.into()))).await?;
+                let current = users.user(id).await?;
+                if current.is_some_and(|user| revokes_sessions(&user, &input)) {
+                    revoke_sessions(state, Some(Principal::User(id.into()))).await?;
                 }
             }
             let value = Value::Object(input);
-            response::json(&json!({ "apiKeys": keys.update(&id, &value).await? }), 200)
+            response::json(&json!({ "users": users.update(&id, &value).await? }), 200)
         }
-        AdminRoute::ApiKeysDelete => {
+        AdminRoute::UsersDelete => {
             let input = admin_json(request).await?;
             let id = input.get("id").cloned().unwrap_or(Value::Null);
             let _credentials = state.credential_lock.lock().await;
-            revoke_sessions(state, id.as_str().map(|id| Principal::ApiKey(id.into()))).await?;
-            let updated = keys.delete(&id).await?;
+            revoke_sessions(state, id.as_str().map(|id| Principal::User(id.into()))).await?;
+            let updated = users.delete(&id).await?;
             if let Some(id) = id.as_str() {
-                routing
-                    .release_consumer(RouteConsumerKind::ApiKey, id)
-                    .await?;
+                routing.release_user(id).await?;
             }
-            response::json(&json!({ "apiKeys": updated }), 200)
-        }
-        AdminRoute::AuthProxyCreate => {
-            let input = admin_json(request).await?;
-            reject_admin_secret_reuse(&input, "accountId", config)?;
-            let input = Value::Object(input);
-            let accounts = keys.create_auth_proxy_account(&input).await?;
-            response::json(&json!({ "authProxyAccounts": accounts }), 201)
-        }
-        AdminRoute::AuthProxyUpdate => {
-            let input = admin_json(request).await?;
-            reject_admin_secret_reuse(&input, "accountId", config)?;
-            let id = input.get("id").cloned().unwrap_or(Value::Null);
-            let _credentials = state.credential_lock.lock().await;
-            if let Some(id) = id.as_str() {
-                let current = keys.read_auth_proxy_accounts().await?;
-                let unchanged = current.iter().any(|entry| {
-                    entry.id == id
-                        && entry.enabled
-                        && input.get("enabled") == Some(&Value::Bool(true))
-                        && input
-                            .get("accountId")
-                            .and_then(Value::as_str)
-                            .map(str::trim)
-                            == Some(entry.account_id.as_str())
-                });
-                if !unchanged {
-                    revoke_sessions(state, Some(Principal::AuthProxy(id.into()))).await?;
-                }
-            }
-            let value = Value::Object(input);
-            let accounts = keys.update_auth_proxy_account(&id, &value).await?;
-            response::json(&json!({ "authProxyAccounts": accounts }), 200)
-        }
-        AdminRoute::AuthProxyDelete => {
-            let input = admin_json(request).await?;
-            let id = input.get("id").cloned().unwrap_or(Value::Null);
-            let _credentials = state.credential_lock.lock().await;
-            revoke_sessions(state, id.as_str().map(|id| Principal::AuthProxy(id.into()))).await?;
-            let accounts = keys.delete_auth_proxy_account(&id).await?;
-            if let Some(id) = id.as_str() {
-                routing
-                    .release_consumer(RouteConsumerKind::AuthProxy, id)
-                    .await?;
-            }
-            response::json(&json!({ "authProxyAccounts": accounts }), 200)
+            response::json(&json!({ "users": updated }), 200)
         }
     }
+}
+
+/// Whether an update takes away a credential that may back a console session:
+/// the user is disabled, or an active credential is removed, disabled, or
+/// changed. Pure additions and renames keep existing sessions.
+fn revokes_sessions(current: &User, input: &JsonObject) -> bool {
+    if input.get("enabled") != Some(&Value::Bool(true)) {
+        return true;
+    }
+    let submitted = input
+        .get("credentials")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    current.active_credentials().any(|credential| {
+        !submitted.iter().any(|entry| {
+            let value = entry.get("value").and_then(Value::as_str).map(|value| {
+                if credential.kind == CredentialKind::AccountId {
+                    value.trim()
+                } else {
+                    value
+                }
+            });
+            entry.get("id").and_then(Value::as_str) == Some(credential.id.as_str())
+                && entry.get("enabled") == Some(&Value::Bool(true))
+                && entry.get("type").and_then(Value::as_str) == Some(credential.kind.as_str())
+                && value == Some(credential.value.as_str())
+        })
+    })
 }
 
 #[derive(Deserialize)]
@@ -765,11 +736,15 @@ async fn revoke_sessions(state: &AppState, principal: Option<Principal>) -> AppR
 }
 
 /// A user credential equal to the admin secret would make sign-in ambiguous.
-fn reject_admin_secret_reuse(input: &JsonObject, field: &str, config: &AppConfig) -> AppResult<()> {
+fn reject_admin_secret_reuse(input: &JsonObject, config: &AppConfig) -> AppResult<()> {
+    let field = "credentials";
     let reused = input
         .get(field)
-        .and_then(Value::as_str)
-        .is_some_and(|value| {
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("value").and_then(Value::as_str))
+        .any(|value| {
             constant_time_equal(value, &config.admin.secret)
                 || constant_time_equal(value.trim(), config.admin.secret.trim())
         });

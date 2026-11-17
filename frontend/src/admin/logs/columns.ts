@@ -15,7 +15,7 @@ export type ColumnKey =
 	| "endpoint";
 
 export const COLUMNS: { key: ColumnKey; label: string; defaultVisible: boolean; adminOnly?: boolean }[] = [
-	{ key: "identity", label: "调用身份", defaultVisible: true, adminOnly: true },
+	{ key: "identity", label: "用户", defaultVisible: true, adminOnly: true },
 	{ key: "model", label: "模型 · 强度 / 档位", defaultVisible: true },
 	{ key: "upstream", label: "上游路由", defaultVisible: true },
 	{ key: "session", label: "会话 · 传输", defaultVisible: true },

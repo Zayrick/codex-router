@@ -1,7 +1,5 @@
 //! Authentication persistence and OAuth domain services.
 
-mod api_keys;
-mod auth_proxy;
 mod credential_import;
 mod credentials;
 mod crypto;
@@ -12,14 +10,11 @@ mod record_id;
 mod refresh;
 mod routing;
 mod store;
+mod users;
 
 #[cfg(test)]
 mod oauth_tests;
 
-pub use api_keys::{
-    ApiKeyRepository, ClientApiKey, authenticate_token, client_token, validate_api_key_input,
-};
-pub use auth_proxy::{AuthProxyAccount, matching_auth_proxy_account};
 pub use credential_import::{CredentialImport, MAX_CREDENTIAL_IMPORT_BYTES};
 pub(crate) use credentials::CODEX_ACCOUNT_OAUTH_KEY_PREFIX;
 pub use credentials::{
@@ -43,10 +38,15 @@ pub(crate) use record_id::{derived_record_id, new_record_id, valid_record_id};
 pub use refresh::{OAuthRefreshResult, OAuthRefreshService, REFRESH_WINDOW_MS, oauth_refresh_due};
 pub use routing::{
     ACCOUNT_ROUTING_KEY, AccountGroup, AccountRoutingState, CodexAccount, FALLBACK_STRATEGY,
-    RouteAssignment, RouteConsumerKind, RouteTargetKind, RoutingRepository,
-    WEIGHTED_ROUND_ROBIN_STRATEGY, session_affinity_ttl,
+    RouteAssignment, RouteTargetKind, RoutingRepository, WEIGHTED_ROUND_ROBIN_STRATEGY,
+    session_affinity_ttl,
 };
 pub(crate) use routing::{
     CURRENT_ROUTING_VERSION, StoredAccountRouting, normalized_account_name, unique_account_name,
 };
 pub use store::StateStore;
+pub use users::{
+    AuthenticatedUser, CredentialKind, MAX_CREDENTIALS_PER_USER, USERS_KEY, User, UserCredential,
+    UserRepository, client_token, match_account_id, match_api_key,
+};
+pub(crate) use users::{CURRENT_USERS_VERSION, StoredUsers};

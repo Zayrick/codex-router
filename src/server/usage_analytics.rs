@@ -474,9 +474,8 @@ pub struct ModelStats {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityStats {
-    pub identity_type: String,
-    pub identity_id: String,
-    pub identity_name: String,
+    pub user_id: String,
+    pub user_name: String,
     #[serde(flatten)]
     pub outcomes: OutcomeCounts,
     #[serde(flatten)]
@@ -544,9 +543,8 @@ pub struct GroupAccountShare {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsumerShare {
-    pub identity_type: String,
-    pub identity_id: String,
-    pub identity_name: String,
+    pub user_id: String,
+    pub user_name: String,
     pub requests: i64,
     pub total_tokens: i64,
 }
@@ -554,9 +552,8 @@ pub struct ConsumerShare {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityModelCell {
-    pub identity_type: String,
-    pub identity_id: String,
-    pub identity_name: String,
+    pub user_id: String,
+    pub user_name: String,
     pub model: String,
     pub requests: i64,
     pub total_tokens: i64,
@@ -617,7 +614,7 @@ pub struct SessionSummary {
     pub session_id: String,
     pub session_kind: String,
     pub parent_session_id: String,
-    pub identity_name: String,
+    pub user_name: String,
     pub requests: i64,
     pub child_sessions: i64,
     pub total_tokens: i64,
@@ -766,11 +763,10 @@ pub struct SessionChild {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionGroup {
-    /// Root session; empty for requests without a session (grouped by identity).
+    /// Root session; empty for requests without a session (grouped by user).
     pub session_id: String,
-    pub identity_type: String,
-    pub identity_id: String,
-    pub identity_name: String,
+    pub user_id: String,
+    pub user_name: String,
     pub account_group_name: String,
     pub accounts: Vec<String>,
     pub user_agent: String,
@@ -889,6 +885,7 @@ impl UsageStore {
 pub struct LastSeen {
     pub models: Vec<ModelLastSeen>,
     pub identities: Vec<IdentityLastSeen>,
+    pub credentials: Vec<CredentialLastSeen>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -902,8 +899,15 @@ pub struct ModelLastSeen {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityLastSeen {
-    pub identity_type: String,
-    pub identity_id: String,
+    pub user_id: String,
+    pub last_at: i64,
+    pub user_agent: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialLastSeen {
+    pub credential_id: String,
     pub last_at: i64,
     pub user_agent: String,
 }
@@ -924,26 +928,42 @@ impl UsageStore {
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut statement = connection.prepare(
-                "SELECT identity_type, identity_id, recorded_at_ms, user_agent FROM ( \
-                     SELECT identity_type, identity_id, recorded_at_ms, user_agent, \
-                            ROW_NUMBER() OVER ( \
-                                PARTITION BY identity_type, identity_id \
-                                ORDER BY recorded_at_ms DESC, id DESC) AS position \
-                     FROM usage_events) \
-                 WHERE position = 1",
-            )?;
-            let identities = statement
+            let latest = |column: &str| {
+                format!(
+                    "SELECT {column}, recorded_at_ms, user_agent FROM ( \
+                         SELECT {column}, recorded_at_ms, user_agent, \
+                                ROW_NUMBER() OVER ( \
+                                    PARTITION BY {column} \
+                                    ORDER BY recorded_at_ms DESC, id DESC) AS position \
+                         FROM usage_events) \
+                     WHERE position = 1"
+                )
+            };
+            let identities = connection
+                .prepare(&latest("user_id"))?
                 .query_map([], |row| {
                     Ok(IdentityLastSeen {
-                        identity_type: row.get(0)?,
-                        identity_id: row.get(1)?,
-                        last_at: row.get(2)?,
-                        user_agent: row.get(3)?,
+                        user_id: row.get(0)?,
+                        last_at: row.get(1)?,
+                        user_agent: row.get(2)?,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(LastSeen { models, identities })
+            let credentials = connection
+                .prepare(&latest("credential_id"))?
+                .query_map([], |row| {
+                    Ok(CredentialLastSeen {
+                        credential_id: row.get(0)?,
+                        last_at: row.get(1)?,
+                        user_agent: row.get(2)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(LastSeen {
+                models,
+                identities,
+                credentials,
+            })
         })
         .await
     }
@@ -1546,29 +1566,26 @@ fn named_counts(values: BTreeMap<String, i64>) -> Vec<NamedCount> {
 }
 
 fn identities(events: &[UsageEventRow], grid: &Grid) -> Vec<IdentityStats> {
-    let mut groups = BTreeMap::<(&str, &str), (IdentityStats, HashSet<&str>)>::new();
+    let mut groups = BTreeMap::<&str, (IdentityStats, HashSet<&str>)>::new();
     for event in events {
-        let (row, sessions) = groups
-            .entry((&event.identity_type, &event.identity_id))
-            .or_insert_with(|| {
-                (
-                    IdentityStats {
-                        identity_type: event.identity_type.clone(),
-                        identity_id: event.identity_id.clone(),
-                        identity_name: event.identity_name.clone(),
-                        outcomes: OutcomeCounts::default(),
-                        tokens: TokenCounts::default(),
-                        sessions: 0,
-                        last_at: 0,
-                        last_user_agent: String::new(),
-                        trend: vec![0; TREND_SLICES],
-                    },
-                    HashSet::new(),
-                )
-            });
+        let (row, sessions) = groups.entry(&event.user_id).or_insert_with(|| {
+            (
+                IdentityStats {
+                    user_id: event.user_id.clone(),
+                    user_name: event.user_name.clone(),
+                    outcomes: OutcomeCounts::default(),
+                    tokens: TokenCounts::default(),
+                    sessions: 0,
+                    last_at: 0,
+                    last_user_agent: String::new(),
+                    trend: vec![0; TREND_SLICES],
+                },
+                HashSet::new(),
+            )
+        });
         add_outcome(&mut row.outcomes, event);
         add_tokens(&mut row.tokens, event);
-        row.identity_name.clone_from(&event.identity_name);
+        row.user_name.clone_from(&event.user_name);
         row.last_at = event.recorded_at;
         if !event.user_agent.is_empty() {
             row.last_user_agent.clone_from(&event.user_agent);
@@ -1589,19 +1606,18 @@ fn identities(events: &[UsageEventRow], grid: &Grid) -> Vec<IdentityStats> {
     rows
 }
 
-fn consumer_shares(values: BTreeMap<(String, String), ConsumerShare>) -> Vec<ConsumerShare> {
+fn consumer_shares(values: BTreeMap<String, ConsumerShare>) -> Vec<ConsumerShare> {
     let mut rows = values.into_values().collect::<Vec<_>>();
     rows.sort_by_key(|row| std::cmp::Reverse(row.requests));
     rows
 }
 
-fn add_consumer(target: &mut BTreeMap<(String, String), ConsumerShare>, event: &UsageEventRow) {
+fn add_consumer(target: &mut BTreeMap<String, ConsumerShare>, event: &UsageEventRow) {
     let entry = target
-        .entry((event.identity_type.clone(), event.identity_id.clone()))
+        .entry(event.user_id.clone())
         .or_insert_with(|| ConsumerShare {
-            identity_type: event.identity_type.clone(),
-            identity_id: event.identity_id.clone(),
-            identity_name: event.identity_name.clone(),
+            user_id: event.user_id.clone(),
+            user_name: event.user_name.clone(),
             requests: 0,
             total_tokens: 0,
         });
@@ -1615,7 +1631,7 @@ fn upstream_accounts(events: &[UsageEventRow], grid: &Grid) -> Vec<UpstreamAccou
         row: Option<UpstreamAccountStats>,
         samples: LatencySamples,
         sessions: HashSet<String>,
-        consumers: BTreeMap<(String, String), ConsumerShare>,
+        consumers: BTreeMap<String, ConsumerShare>,
     }
     let mut groups = BTreeMap::<&str, Accumulator>::new();
     for event in events
@@ -1681,7 +1697,7 @@ fn upstream_groups(events: &[UsageEventRow], grid: &Grid) -> Vec<UpstreamGroupSt
     struct Accumulator {
         row: Option<UpstreamGroupStats>,
         sessions: HashMap<String, HashMap<String, i64>>,
-        consumers: BTreeMap<(String, String), ConsumerShare>,
+        consumers: BTreeMap<String, ConsumerShare>,
         accounts: BTreeMap<String, GroupAccountShare>,
     }
     let mut groups = BTreeMap::<&str, Accumulator>::new();
@@ -1755,14 +1771,13 @@ fn upstream_groups(events: &[UsageEventRow], grid: &Grid) -> Vec<UpstreamGroupSt
 }
 
 fn identity_models(events: &[UsageEventRow]) -> Vec<IdentityModelCell> {
-    let mut cells = BTreeMap::<(&str, &str, &str), IdentityModelCell>::new();
+    let mut cells = BTreeMap::<(&str, &str), IdentityModelCell>::new();
     for event in events.iter().filter(|event| !event.model.is_empty()) {
         let cell = cells
-            .entry((&event.identity_type, &event.identity_id, &event.model))
+            .entry((&event.user_id, &event.model))
             .or_insert_with(|| IdentityModelCell {
-                identity_type: event.identity_type.clone(),
-                identity_id: event.identity_id.clone(),
-                identity_name: event.identity_name.clone(),
+                user_id: event.user_id.clone(),
+                user_name: event.user_name.clone(),
                 model: event.model.clone(),
                 requests: 0,
                 total_tokens: 0,
@@ -1909,7 +1924,7 @@ fn session_stats(events: &[UsageEventRow]) -> SessionStats {
                 session_id: event.session_id.clone(),
                 session_kind: event.session_kind.clone(),
                 parent_session_id: event.parent_session_id.clone(),
-                identity_name: event.identity_name.clone(),
+                user_name: event.user_name.clone(),
                 requests: 0,
                 child_sessions: 0,
                 total_tokens: 0,
@@ -2151,23 +2166,18 @@ fn session_groups(events: &[UsageEventRow]) -> Vec<SessionGroup> {
         }
         current.to_owned()
     };
-    let mut groups = HashMap::<(String, String, String), SessionGroup>::new();
-    let mut children = HashMap::<(String, String, String), BTreeMap<String, SessionChild>>::new();
+    let mut groups = HashMap::<(String, String), SessionGroup>::new();
+    let mut children = HashMap::<(String, String), BTreeMap<String, SessionChild>>::new();
     for event in events {
         let key = if event.session_id.is_empty() {
-            (
-                String::new(),
-                event.identity_type.clone(),
-                event.identity_id.clone(),
-            )
+            (String::new(), event.user_id.clone())
         } else {
-            (root_of(&event.session_id), String::new(), String::new())
+            (root_of(&event.session_id), String::new())
         };
         let group = groups.entry(key.clone()).or_insert_with(|| SessionGroup {
             session_id: key.0.clone(),
-            identity_type: event.identity_type.clone(),
-            identity_id: event.identity_id.clone(),
-            identity_name: event.identity_name.clone(),
+            user_id: event.user_id.clone(),
+            user_name: event.user_name.clone(),
             account_group_name: event.account_group_name.clone(),
             accounts: Vec::new(),
             user_agent: event.user_agent.clone(),
@@ -2259,9 +2269,11 @@ mod tests {
             recorded_at: at,
             request_id: format!("req_{at}"),
             response_id: String::new(),
-            identity_type: "api_key".into(),
-            identity_id: "key".into(),
-            identity_name: "Key".into(),
+            credential_type: "api_key".into(),
+            user_id: "key".into(),
+            user_name: "Key".into(),
+            credential_id: "credential".into(),
+            credential_name: "laptop".into(),
             codex_account_id: "acct".into(),
             codex_account_name: "a@example.com".into(),
             account_group_id: "group".into(),
@@ -2301,7 +2313,7 @@ mod tests {
                 &format!(
                     "INSERT INTO usage_events ({}) VALUES ({})",
                     EVENT_COLUMNS.replace("id, recorded_at_ms", "recorded_at_ms"),
-                    (1..=35)
+                    (1..=37)
                         .map(|index| format!("?{index}"))
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -2310,9 +2322,9 @@ mod tests {
                     event.recorded_at,
                     event.request_id,
                     event.response_id,
-                    event.identity_type,
-                    event.identity_id,
-                    event.identity_name,
+                    event.credential_type,
+                    event.user_id,
+                    event.user_name,
                     event.codex_account_id,
                     event.codex_account_name,
                     event.account_group_id,
@@ -2341,7 +2353,9 @@ mod tests {
                     event.cache_creation_input_tokens,
                     event.output_tokens,
                     event.reasoning_output_tokens,
-                    event.total_tokens
+                    event.total_tokens,
+                    event.credential_id,
+                    event.credential_name
                 ],
             )
             .unwrap();
@@ -2557,6 +2571,6 @@ mod tests {
             .iter()
             .find(|group| group.session_id.is_empty())
             .unwrap();
-        assert_eq!(loose.identity_id, "key");
+        assert_eq!(loose.user_id, "key");
     }
 }

@@ -13,7 +13,7 @@ function decode(values: string[]): UsageIdentityFilter | null {
 	return { identityType: value.slice(0, index) as UsageIdentityType, identityId: value.slice(index + 1) };
 }
 
-/** Toolbar filters: 调用身份 / 上游路由 / 模型 / 传输方式. */
+/** Toolbar filters: 用户 / 上游路由 / 模型 / 传输方式. */
 export function AnalyticsFilterMenus({
 	filters,
 	onChange,
@@ -30,13 +30,10 @@ export function AnalyticsFilterMenus({
 				<FilterMenu
 					align="end"
 					allLabel="全部"
-					label="调用身份"
+					label="用户"
 					multiple={false}
 					onChange={(values) => onChange({ ...filters, downstream: decode(values) })}
-					options={[
-						...state.apiKeys.map((entry) => ({ value: `api_key:${entry.id}`, label: entry.name, text: entry.name, hint: "API Key" })),
-						...state.authProxyAccounts.map((entry) => ({ value: `auth_proxy:${entry.id}`, label: entry.name, text: entry.name, hint: "下游账户" })),
-					]}
+					options={state.users.map((user) => ({ value: `user:${user.id}`, label: user.name, text: user.name }))}
 					selected={encode(filters.downstream)}
 				/>
 			) : null}

@@ -38,7 +38,7 @@ function HeatCell({ value, max, label, title, color = VIZ.blue }: { value: numbe
 
 type Metric = "tokens" | "cost" | "requests";
 
-/** Figma "card · 身份 × 模型". */
+/** Figma "card · 用户 × 模型". */
 export function IdentityModelCard({ analytics, className = "" }: { analytics: UsageAnalytics; className?: string }) {
 	const [metric, setMetric] = useState<Metric>("tokens");
 	const pick = (cell: { totalTokens: number; costUsd: number; requests: number }) =>
@@ -48,15 +48,15 @@ export function IdentityModelCard({ analytics, className = "" }: { analytics: Us
 	const identities = [...analytics.identities].sort((left, right) => pick(right) - pick(left));
 	const rows = identities.slice(0, TOP_ROWS);
 	const rest = identities.slice(TOP_ROWS);
-	const lookup = new Map(analytics.identityModels.map((cell) => [`${cell.identityType}:${cell.identityId}:${cell.model}`, cell]));
+	const lookup = new Map(analytics.identityModels.map((cell) => [`${cell.userId}:${cell.model}`, cell]));
 	const valueOf = (keys: string[], model: string) =>
 		keys.reduce((sum, key) => {
 			const cell = lookup.get(`${key}:${model}`);
 			return sum + (cell ? pick(cell) : 0);
 		}, 0);
 	const matrix = [
-		...rows.map((row) => ({ label: row.identityName || row.identityId, keys: [`${row.identityType}:${row.identityId}`] })),
-		...(rest.length ? [{ label: `其他 ${rest.length} 个`, keys: rest.map((row) => `${row.identityType}:${row.identityId}`) }] : []),
+		...rows.map((row) => ({ label: row.userName || row.userId, keys: [row.userId] })),
+		...(rest.length ? [{ label: `其他 ${rest.length} 个`, keys: rest.map((row) => row.userId) }] : []),
 	].map((row) => ({ ...row, values: columns.map((model) => valueOf(row.keys, model)) }));
 	const max = Math.max(0, ...matrix.flatMap((row) => row.values));
 	const unit = metric === "tokens" ? "Token 用量" : metric === "cost" ? "成本" : "请求数";
@@ -76,7 +76,7 @@ export function IdentityModelCard({ analytics, className = "" }: { analytics: Us
 			}
 			className={className}
 			description={`${unit}，颜色越深越多`}
-			title="身份 × 模型"
+			title="用户 × 模型"
 		>
 			{matrix.length === 0 || columns.length === 0 ? (
 				<NoData />

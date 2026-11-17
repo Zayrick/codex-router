@@ -12,12 +12,7 @@ use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::{
-    auth::{AuthProxyAccount, ClientApiKey},
-    core::ApiError,
-    http::parse_json_body,
-    protocol::openai,
-};
+use crate::{auth::AuthenticatedUser, core::ApiError, http::parse_json_body, protocol::openai};
 
 use super::{
     oauth::current_time_ms,
@@ -32,16 +27,18 @@ const ACTIVITY_BUCKET_COUNT: i64 = 7 * 24;
 const MAX_ERROR_CODE_CHARS: usize = 128;
 
 /// Bumped whenever the table layout changes; tables from other versions are dropped and rebuilt.
-const USAGE_SCHEMA_VERSION: i64 = 2;
+const USAGE_SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS usage_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recorded_at_ms INTEGER NOT NULL,
     request_id TEXT NOT NULL,
-    identity_type TEXT NOT NULL,
-    identity_id TEXT NOT NULL,
-    identity_name TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    credential_type TEXT NOT NULL,
+    credential_id TEXT NOT NULL,
+    credential_name TEXT NOT NULL,
     codex_account_id TEXT NOT NULL,
     codex_account_name TEXT NOT NULL,
     account_group_id TEXT NOT NULL,
@@ -75,8 +72,10 @@ CREATE TABLE IF NOT EXISTS usage_events (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_recorded_at
     ON usage_events(recorded_at_ms DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_usage_events_identity
-    ON usage_events(identity_type, identity_id, recorded_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_events_user
+    ON usage_events(user_id, recorded_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_events_credential
+    ON usage_events(credential_id, recorded_at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_model
     ON usage_events(model, recorded_at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_codex_account
@@ -114,9 +113,11 @@ const FAILURE_SQL: &str = "(status IN ('failed', 'interrupted'))";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageIdentity {
-    pub kind: UsageIdentityKind,
-    pub id: String,
-    pub name: String,
+    pub user_id: String,
+    pub user_name: String,
+    pub credential_type: &'static str,
+    pub credential_id: String,
+    pub credential_name: String,
     pub codex_account_id: String,
     pub codex_account_name: String,
     pub account_group_id: String,
@@ -125,8 +126,8 @@ pub struct UsageIdentity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageIdentityKind {
-    ApiKey,
-    AuthProxy,
+    User,
+    Credential,
     CodexAccount,
     AccountGroup,
 }
@@ -134,8 +135,8 @@ pub enum UsageIdentityKind {
 impl UsageIdentityKind {
     const fn as_str(self) -> &'static str {
         match self {
-            Self::ApiKey => "api_key",
-            Self::AuthProxy => "auth_proxy",
+            Self::User => "user",
+            Self::Credential => "credential",
             Self::CodexAccount => "codex_account",
             Self::AccountGroup => "account_group",
         }
@@ -151,8 +152,8 @@ pub struct UsageIdentityFilter {
 impl UsageIdentityFilter {
     pub fn parse_any(kind: &str, id: &str) -> Option<Self> {
         let kind = match kind {
-            "api_key" => UsageIdentityKind::ApiKey,
-            "auth_proxy" => UsageIdentityKind::AuthProxy,
+            "user" => UsageIdentityKind::User,
+            "credential" => UsageIdentityKind::Credential,
             "codex_account" => UsageIdentityKind::CodexAccount,
             "account_group" => UsageIdentityKind::AccountGroup,
             _ => return None,
@@ -170,7 +171,7 @@ impl UsageIdentityFilter {
         Self::parse_any(kind, id).filter(|filter| {
             matches!(
                 filter.kind,
-                UsageIdentityKind::ApiKey | UsageIdentityKind::AuthProxy
+                UsageIdentityKind::User | UsageIdentityKind::Credential
             )
         })
     }
@@ -212,7 +213,7 @@ impl UsageFilters {
 
     pub fn from_identity(filter: UsageIdentityFilter) -> Self {
         match filter.kind {
-            UsageIdentityKind::ApiKey | UsageIdentityKind::AuthProxy => {
+            UsageIdentityKind::User | UsageIdentityKind::Credential => {
                 Self::new(Some(filter), None)
             }
             UsageIdentityKind::CodexAccount | UsageIdentityKind::AccountGroup => {
@@ -228,26 +229,14 @@ impl UsageFilters {
     }
 }
 
-impl From<&ClientApiKey> for UsageIdentity {
-    fn from(value: &ClientApiKey) -> Self {
+impl From<&AuthenticatedUser> for UsageIdentity {
+    fn from(value: &AuthenticatedUser) -> Self {
         Self {
-            kind: UsageIdentityKind::ApiKey,
-            id: value.id.clone(),
-            name: value.name.clone(),
-            codex_account_id: String::new(),
-            codex_account_name: String::new(),
-            account_group_id: String::new(),
-            account_group_name: String::new(),
-        }
-    }
-}
-
-impl From<&AuthProxyAccount> for UsageIdentity {
-    fn from(value: &AuthProxyAccount) -> Self {
-        Self {
-            kind: UsageIdentityKind::AuthProxy,
-            id: value.id.clone(),
-            name: value.name.clone(),
+            user_id: value.user.id.clone(),
+            user_name: value.user.name.clone(),
+            credential_type: value.credential.kind.as_str(),
+            credential_id: value.credential.id.clone(),
+            credential_name: value.credential.display_name(),
             codex_account_id: String::new(),
             codex_account_name: String::new(),
             account_group_id: String::new(),
@@ -288,9 +277,11 @@ struct TokenUsage {
 struct UsageEvent {
     recorded_at_ms: i64,
     request_id: String,
-    identity_type: String,
-    identity_id: String,
-    identity_name: String,
+    user_id: String,
+    user_name: String,
+    credential_type: String,
+    credential_id: String,
+    credential_name: String,
     codex_account_id: String,
     codex_account_name: String,
     account_group_id: String,
@@ -505,8 +496,8 @@ fn insert_event(connection: &Connection, event: &UsageEvent) -> Result<()> {
     connection.execute(
         r#"
         INSERT OR IGNORE INTO usage_events (
-            recorded_at_ms, request_id, identity_type, identity_id, identity_name,
-            codex_account_id, codex_account_name, account_group_id, account_group_name,
+            recorded_at_ms, request_id, user_id, user_name,
+            credential_type, credential_id, credential_name, codex_account_id, codex_account_name, account_group_id, account_group_name,
             requested_model, model, transport, endpoint, stream,
             status, status_code, error_code, response_id,
             reasoning_effort, service_tier, response_service_tier,
@@ -516,15 +507,18 @@ fn insert_event(connection: &Connection, event: &UsageEvent) -> Result<()> {
             output_tokens, reasoning_output_tokens, total_tokens
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-            ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35
+            ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
+            ?36, ?37
         )
         "#,
         params![
             event.recorded_at_ms,
             event.request_id,
-            event.identity_type,
-            event.identity_id,
-            event.identity_name,
+            event.user_id,
+            event.user_name,
+            event.credential_type,
+            event.credential_id,
+            event.credential_name,
             event.codex_account_id,
             event.codex_account_name,
             event.account_group_id,
@@ -968,9 +962,11 @@ impl UsageTrackerInner {
         UsageEvent {
             recorded_at_ms: current_time_ms(),
             request_id: attempt.request_id,
-            identity_type: self.identity.kind.as_str().into(),
-            identity_id: self.identity.id.clone(),
-            identity_name: self.identity.name.clone(),
+            user_id: self.identity.user_id.clone(),
+            user_name: self.identity.user_name.clone(),
+            credential_type: self.identity.credential_type.into(),
+            credential_id: self.identity.credential_id.clone(),
+            credential_name: self.identity.credential_name.clone(),
             codex_account_id: self.identity.codex_account_id.clone(),
             codex_account_name: self.identity.codex_account_name.clone(),
             account_group_id: self.identity.account_group_id.clone(),
@@ -1387,9 +1383,8 @@ pub struct UsageDimensionRow {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageIdentityRow {
-    pub identity_type: String,
-    pub identity_id: String,
-    pub identity_name: String,
+    pub user_id: String,
+    pub user_name: String,
     #[serde(flatten)]
     pub totals: UsageTotals,
 }
@@ -1401,9 +1396,11 @@ pub struct UsageEventRow {
     pub recorded_at: i64,
     pub request_id: String,
     pub response_id: String,
-    pub identity_type: String,
-    pub identity_id: String,
-    pub identity_name: String,
+    pub user_id: String,
+    pub user_name: String,
+    pub credential_type: String,
+    pub credential_id: String,
+    pub credential_name: String,
     pub codex_account_id: String,
     pub codex_account_name: String,
     pub account_group_id: String,
@@ -1538,8 +1535,8 @@ pub(super) fn filter_parameters(
 fn identity_filter_sql(kind_parameter: usize, id_parameter: usize) -> String {
     format!(
         "(?{kind_parameter} IS NULL \
-         OR (?{kind_parameter} IN ('api_key', 'auth_proxy') \
-             AND identity_type = ?{kind_parameter} AND identity_id = ?{id_parameter}) \
+         OR (?{kind_parameter} = 'user' AND user_id = ?{id_parameter}) \
+         OR (?{kind_parameter} = 'credential' AND credential_id = ?{id_parameter}) \
          OR (?{kind_parameter} = 'codex_account' AND codex_account_id = ?{id_parameter}) \
          OR (?{kind_parameter} = 'account_group' AND account_group_id = ?{id_parameter}))"
     )
@@ -1638,11 +1635,11 @@ fn query_identities(
 ) -> Result<Vec<UsageIdentityRow>> {
     let usage_filters = usage_filters_sql(3, 4, 5, 6);
     let sql = format!(
-        "SELECT identity_type, identity_id, identity_name, {TOTAL_COLUMNS} FROM usage_events \
+        "SELECT user_id, MAX(user_name), {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
          AND {usage_filters} \
-         GROUP BY identity_type, identity_id, identity_name \
-         ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, identity_name LIMIT ?7"
+         GROUP BY user_id \
+         ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, 2 LIMIT ?7"
     );
     let mut statement = connection.prepare(&sql)?;
     let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
@@ -1658,10 +1655,9 @@ fn query_identities(
         ],
         |row| {
             Ok(UsageIdentityRow {
-                identity_type: row.get(0)?,
-                identity_id: row.get(1)?,
-                identity_name: row.get(2)?,
-                totals: totals_from_row_at(row, 3)?,
+                user_id: row.get(0)?,
+                user_name: row.get(1)?,
+                totals: totals_from_row_at(row, 2)?,
             })
         },
     )?;
@@ -1974,10 +1970,10 @@ fn apply_identity_costs(
 ) -> Result<()> {
     let usage_filters = usage_filters_sql(3, 4, 5, 6);
     let sql = format!(
-        "SELECT identity_type, identity_id, model, {FAST_SQL}, {TOTAL_COLUMNS} FROM usage_events \
+        "SELECT user_id, model, {FAST_SQL}, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
          AND {usage_filters} \
-         GROUP BY identity_type, identity_id, model, 4"
+         GROUP BY user_id, model, 3"
     );
     let mut statement = connection.prepare(&sql)?;
     let (downstream_type, downstream_id, upstream_type, upstream_id) = filter_parameters(filters);
@@ -1994,20 +1990,19 @@ fn apply_identity_costs(
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, bool>(3)?,
-                totals_from_row_at(row, 4)?,
+                row.get::<_, bool>(2)?,
+                totals_from_row_at(row, 3)?,
             ))
         },
     )?;
-    let mut identity_costs = BTreeMap::<(String, String), f64>::new();
+    let mut identity_costs = BTreeMap::<String, f64>::new();
     for row in rows {
-        let (kind, id, model, fast, totals) = row?;
-        *identity_costs.entry((kind, id)).or_default() += costs.cost(&model, fast, &totals);
+        let (id, model, fast, totals) = row?;
+        *identity_costs.entry(id).or_default() += costs.cost(&model, fast, &totals);
     }
     for row in identities {
         row.totals.cost_usd = identity_costs
-            .get(&(row.identity_type.clone(), row.identity_id.clone()))
+            .get(&row.user_id)
             .copied()
             .unwrap_or_default();
     }
@@ -2060,13 +2055,14 @@ pub(super) fn event_cost(event: &UsageEventRow, costs: &CostIndex) -> f64 {
 
 /// Columns read by [`event_from_row`], in order.
 pub(super) const EVENT_COLUMNS: &str = r#"
-    id, recorded_at_ms, request_id, response_id, identity_type, identity_id, identity_name,
+    id, recorded_at_ms, request_id, response_id, credential_type, user_id, user_name,
     codex_account_id, codex_account_name, account_group_id, account_group_name,
     requested_model, model, transport, endpoint, stream, status, status_code,
     error_code, reasoning_effort, service_tier, response_service_tier,
     session_id, parent_session_id, session_kind, client_ip, x_forwarded_for,
     user_agent, latency_ms, ttft_ms, input_tokens, cached_input_tokens,
-    cache_creation_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
+    cache_creation_input_tokens, output_tokens, reasoning_output_tokens, total_tokens,
+    credential_id, credential_name
 "#;
 
 pub(super) fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageEventRow> {
@@ -2075,9 +2071,9 @@ pub(super) fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageE
         recorded_at: row.get(1)?,
         request_id: row.get(2)?,
         response_id: row.get(3)?,
-        identity_type: row.get(4)?,
-        identity_id: row.get(5)?,
-        identity_name: row.get(6)?,
+        credential_type: row.get(4)?,
+        user_id: row.get(5)?,
+        user_name: row.get(6)?,
         codex_account_id: row.get(7)?,
         codex_account_name: row.get(8)?,
         account_group_id: row.get(9)?,
@@ -2107,6 +2103,8 @@ pub(super) fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageE
         output_tokens: row.get(33)?,
         reasoning_output_tokens: row.get(34)?,
         total_tokens: row.get(35)?,
+        credential_id: row.get(36)?,
+        credential_name: row.get(37)?,
         cost_usd: 0.0,
     })
 }
@@ -2165,9 +2163,11 @@ mod tests {
 
     fn identity() -> UsageIdentity {
         UsageIdentity {
-            kind: UsageIdentityKind::ApiKey,
-            id: "key-1".into(),
-            name: "laptop".into(),
+            user_id: "user-1".into(),
+            user_name: "alice".into(),
+            credential_type: "api_key",
+            credential_id: "key-1".into(),
+            credential_name: "laptop".into(),
             codex_account_id: "codex-1".into(),
             codex_account_name: "primary".into(),
             account_group_id: "group-1".into(),
@@ -2180,11 +2180,11 @@ mod tests {
     }
 
     /// A completed event with the given tokens; tests override the fields they check.
-    fn completed(identity_type: &str, identity_id: &str, total_tokens: i64) -> UsageEvent {
+    fn completed(credential_type: &str, user_id: &str, total_tokens: i64) -> UsageEvent {
         UsageEvent {
             recorded_at_ms: current_time_ms().saturating_sub(1),
-            identity_type: identity_type.into(),
-            identity_id: identity_id.into(),
+            credential_type: credential_type.into(),
+            user_id: user_id.into(),
             transport: "http".into(),
             endpoint: "/v1/responses".into(),
             status: STATUS_COMPLETED.into(),
@@ -2300,9 +2300,9 @@ mod tests {
         let (store, path) = temporary_store();
         let event = UsageEvent {
             recorded_at_ms: current_time_ms().saturating_sub(1),
-            identity_type: "api_key".into(),
-            identity_id: "key-1".into(),
-            identity_name: "laptop".into(),
+            credential_type: "api_key".into(),
+            user_id: "key-1".into(),
+            user_name: "laptop".into(),
             model: "gpt-5.6-sol".into(),
             transport: "http".into(),
             endpoint: "/v1/responses".into(),
@@ -2327,7 +2327,7 @@ mod tests {
         assert_eq!(dashboard.totals.requests, 1);
         assert_eq!(dashboard.totals.total_tokens, 15);
         assert_eq!(dashboard.models[0].model, "gpt-5.6-sol");
-        assert_eq!(dashboard.identities[0].identity_name, "laptop");
+        assert_eq!(dashboard.identities[0].user_name, "laptop");
         assert_eq!(dashboard.recent_events[0].transport, "http");
         drop(store);
         remove_temporary_store(&path);
@@ -2347,9 +2347,9 @@ mod tests {
             store
                 .insert(UsageEvent {
                     recorded_at_ms,
-                    identity_type: "api_key".into(),
-                    identity_id: "key-1".into(),
-                    identity_name: "laptop".into(),
+                    credential_type: "api_key".into(),
+                    user_id: "key-1".into(),
+                    user_name: "laptop".into(),
                     model: "gpt-test".into(),
                     transport: "http".into(),
                     endpoint: "/v1/responses".into(),
@@ -2448,9 +2448,11 @@ mod tests {
         for event in [
             UsageEvent {
                 recorded_at_ms: now,
-                identity_type: "api_key".into(),
-                identity_id: "key-1".into(),
-                identity_name: "laptop".into(),
+                user_id: "user-1".into(),
+                user_name: "alice".into(),
+                credential_type: "api_key".into(),
+                credential_id: "key-1".into(),
+                credential_name: "laptop".into(),
                 codex_account_id: "codex-1".into(),
                 codex_account_name: "personal".into(),
                 account_group_id: "group-1".into(),
@@ -2472,9 +2474,11 @@ mod tests {
             },
             UsageEvent {
                 recorded_at_ms: now,
-                identity_type: "auth_proxy".into(),
-                identity_id: "account-1".into(),
-                identity_name: "production".into(),
+                user_id: "user-2".into(),
+                user_name: "bob".into(),
+                credential_type: "account_id".into(),
+                credential_id: "account-1".into(),
+                credential_name: "···nt-1".into(),
                 codex_account_id: "codex-2".into(),
                 codex_account_name: "team".into(),
                 account_group_id: "group-1".into(),
@@ -2494,11 +2498,40 @@ mod tests {
                 },
                 ..UsageEvent::default()
             },
+            // A second credential of the first user, routed outside the group.
+            UsageEvent {
+                recorded_at_ms: now,
+                user_id: "user-1".into(),
+                user_name: "alice".into(),
+                credential_type: "account_id".into(),
+                credential_id: "account-2".into(),
+                codex_account_id: "codex-3".into(),
+                model: "gpt-5.6-sol".into(),
+                transport: "http".into(),
+                endpoint: "/v1/responses".into(),
+                status: "completed".into(),
+                response_id: "resp_filter_second_credential".into(),
+                tokens: TokenUsage {
+                    total_tokens: 5,
+                    ..TokenUsage::default()
+                },
+                ..UsageEvent::default()
+            },
         ] {
             store.insert(event).await.unwrap();
         }
 
-        let filter = UsageIdentityFilter::parse_downstream("auth_proxy", "account-1").unwrap();
+        let user_filter = UsageIdentityFilter::parse_downstream("user", "user-1").unwrap();
+        let user_dashboard = store
+            .dashboard(UsageRange::Week, UsageFilters::new(Some(user_filter), None))
+            .await
+            .unwrap();
+        assert_eq!(user_dashboard.totals.requests, 2);
+        assert_eq!(user_dashboard.identities.len(), 1);
+        assert_eq!(user_dashboard.identities[0].user_name, "alice");
+        assert_eq!(user_dashboard.identities[0].totals.requests, 2);
+
+        let filter = UsageIdentityFilter::parse_downstream("user", "user-2").unwrap();
         let dashboard = store
             .dashboard(UsageRange::Week, UsageFilters::new(Some(filter), None))
             .await
@@ -2509,9 +2542,10 @@ mod tests {
         assert_eq!(dashboard.models.len(), 1);
         assert_eq!(dashboard.models[0].model, "gpt-5.6-terra");
         assert_eq!(dashboard.identities.len(), 1);
-        assert_eq!(dashboard.identities[0].identity_id, "account-1");
+        assert_eq!(dashboard.identities[0].user_id, "user-2");
         assert_eq!(dashboard.recent_events.len(), 1);
-        assert_eq!(dashboard.recent_events[0].identity_type, "auth_proxy");
+        assert_eq!(dashboard.recent_events[0].credential_type, "account_id");
+        assert_eq!(dashboard.recent_events[0].credential_id, "account-1");
         assert_eq!(
             dashboard
                 .series
@@ -2546,7 +2580,8 @@ mod tests {
             .unwrap();
         assert_eq!(group_dashboard.totals.requests, 2);
 
-        let downstream_filter = UsageIdentityFilter::parse_downstream("api_key", "key-1").unwrap();
+        let downstream_filter =
+            UsageIdentityFilter::parse_downstream("credential", "key-1").unwrap();
         let combined_dashboard = store
             .dashboard(
                 UsageRange::Week,
@@ -2555,16 +2590,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(combined_dashboard.totals.requests, 1);
-        assert_eq!(combined_dashboard.recent_events[0].identity_id, "key-1");
+        assert_eq!(combined_dashboard.recent_events[0].user_id, "user-1");
         assert_eq!(
             combined_dashboard.recent_events[0].codex_account_id,
             "codex-1"
         );
 
         assert!(UsageIdentityFilter::parse_downstream("codex_account", "codex-1").is_none());
-        assert!(UsageIdentityFilter::parse_upstream("api_key", "key-1").is_none());
-        assert!(UsageIdentityFilter::parse_downstream("unknown", "account-1").is_none());
-        assert!(UsageIdentityFilter::parse_downstream("api_key", "").is_none());
+        assert!(UsageIdentityFilter::parse_upstream("user", "user-1").is_none());
+        assert!(UsageIdentityFilter::parse_downstream("api_key", "key-1").is_none());
+        assert!(UsageIdentityFilter::parse_downstream("user", "").is_none());
         drop(store);
         remove_temporary_store(&path);
     }

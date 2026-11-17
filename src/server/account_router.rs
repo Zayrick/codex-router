@@ -10,9 +10,8 @@ use tokio::sync::Mutex;
 use crate::{
     application::CodexUsageMonitorState,
     auth::{
-        AccountGroup, CodexAccount, FALLBACK_STRATEGY, OAuthRepository, RouteConsumerKind,
-        RouteTargetKind, RoutingRepository, StateStore, WEIGHTED_ROUND_ROBIN_STRATEGY,
-        session_affinity_ttl,
+        AccountGroup, CodexAccount, FALLBACK_STRATEGY, OAuthRepository, RouteTargetKind,
+        RoutingRepository, StateStore, WEIGHTED_ROUND_ROBIN_STRATEGY, session_affinity_ttl,
     },
     core::{ApiError, AppResult},
     upstream::codex::{CodexQuotaCategory, CodexSubscriptionInfo},
@@ -70,30 +69,24 @@ impl AccountRouter {
     pub async fn resolve(
         &self,
         store: &dyn StateStore,
-        consumer_type: RouteConsumerKind,
-        consumer_id: &str,
+        user_id: &str,
         headers: &HeaderMap,
         now_ms: i64,
     ) -> AppResult<Option<ResolvedAccountRoute>> {
-        self.resolve_internal(store, consumer_type, consumer_id, headers, now_ms, true)
+        self.resolve_internal(store, user_id, headers, now_ms, true)
             .await
     }
 
     async fn resolve_internal(
         &self,
         store: &dyn StateStore,
-        consumer_type: RouteConsumerKind,
-        consumer_id: &str,
+        user_id: &str,
         headers: &HeaderMap,
         now_ms: i64,
         advance_schedule: bool,
     ) -> AppResult<Option<ResolvedAccountRoute>> {
         let routing = RoutingRepository::new(store).read().await?;
-        let Some(assignment) = routing
-            .routes
-            .iter()
-            .find(|route| route.consumer_type == consumer_type && route.consumer_id == consumer_id)
-        else {
+        let Some(assignment) = routing.routes.iter().find(|route| route.user_id == user_id) else {
             return Ok(None);
         };
         match assignment.target_type {
@@ -144,8 +137,7 @@ impl AccountRouter {
                     self.select_group_account(
                         &group,
                         &available,
-                        consumer_type,
-                        consumer_id,
+                        user_id,
                         session_id.as_deref(),
                         now_ms,
                     )
@@ -293,21 +285,14 @@ impl AccountRouter {
         &self,
         group: &AccountGroup,
         available: &[CodexAccount],
-        consumer_type: RouteConsumerKind,
-        consumer_id: &str,
+        user_id: &str,
         session_id: Option<&str>,
         now_ms: i64,
     ) -> Option<CodexAccount> {
         let ttl = session_affinity_ttl(&group.session_affinity_ttl);
         let mut runtime = self.runtime.lock().await;
         if group.strategy == FALLBACK_STRATEGY {
-            return Some(select_fallback(
-                &mut runtime,
-                group,
-                consumer_type,
-                consumer_id,
-                available,
-            ));
+            return Some(select_fallback(&mut runtime, group, user_id, available));
         }
         if let Some(session_id) = session_id {
             let cache_key = format!("{}::{session_id}", group.id);
@@ -370,11 +355,10 @@ fn select_unbound(
 fn select_fallback(
     runtime: &mut RouterRuntime,
     group: &AccountGroup,
-    consumer_type: RouteConsumerKind,
-    consumer_id: &str,
+    user_id: &str,
     available: &[CodexAccount],
 ) -> CodexAccount {
-    let binding_key = format!("{}::{}::{consumer_id}", group.id, consumer_type.as_str());
+    let binding_key = format!("{}::{user_id}", group.id);
     if let Some(account_id) = runtime.fallback.get(&binding_key)
         && let Some(account) = available.iter().find(|account| account.id == *account_id)
     {
@@ -724,53 +708,28 @@ mod tests {
         let mut runtime = RouterRuntime::default();
         let available = vec![first.clone(), second.clone()];
         assert_eq!(
-            select_fallback(
-                &mut runtime,
-                &group,
-                RouteConsumerKind::ApiKey,
-                "consumer-a",
-                &available,
-            ),
+            select_fallback(&mut runtime, &group, "consumer-a", &available,),
             first
         );
         assert_eq!(
-            select_fallback(
-                &mut runtime,
-                &group,
-                RouteConsumerKind::ApiKey,
-                "consumer-a",
-                &available,
-            ),
+            select_fallback(&mut runtime, &group, "consumer-a", &available,),
             first
         );
         assert_eq!(
-            select_fallback(
-                &mut runtime,
-                &group,
-                RouteConsumerKind::ApiKey,
-                "consumer-b",
-                &available,
-            ),
+            select_fallback(&mut runtime, &group, "consumer-b", &available,),
             second
         );
         assert_eq!(
             select_fallback(
                 &mut runtime,
                 &group,
-                RouteConsumerKind::ApiKey,
                 "consumer-a",
                 std::slice::from_ref(&second),
             ),
             second
         );
         assert_eq!(
-            select_fallback(
-                &mut runtime,
-                &group,
-                RouteConsumerKind::ApiKey,
-                "consumer-a",
-                &available,
-            ),
+            select_fallback(&mut runtime, &group, "consumer-a", &available,),
             second
         );
     }

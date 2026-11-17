@@ -4,7 +4,6 @@ import {
 	CircleDollarSignIcon,
 	GaugeIcon,
 	HomeIcon,
-	KeyRoundIcon,
 	Layers3Icon,
 	LogOutIcon,
 	MenuIcon,
@@ -26,8 +25,7 @@ const PAGE_ICONS: Record<ManagementPage, ReactNode> = {
 	performance: <GaugeIcon aria-hidden="true" />,
 	codex: <UserRoundIcon aria-hidden="true" />,
 	groups: <Layers3Icon aria-hidden="true" />,
-	"api-keys": <KeyRoundIcon aria-hidden="true" />,
-	downstream: <UsersIcon aria-hidden="true" />,
+	users: <UsersIcon aria-hidden="true" />,
 	pricing: <CircleDollarSignIcon aria-hidden="true" />,
 	settings: <Settings2Icon aria-hidden="true" />,
 };

@@ -5,7 +5,7 @@ import type { UsageEventStatus, UsageSessionKind } from "@/admin-api";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
-import { STATUS_META, identityTypeLabel } from "./viz";
+import { STATUS_META } from "./viz";
 
 /** Figma Log/Status: colored dot + label. */
 export function LogStatus({ status, className, label }: { status: UsageEventStatus; className?: string; label?: ReactNode }) {
@@ -74,9 +74,6 @@ export function Tag({ children, className, tone = "neutral" }: { children: React
 	);
 }
 
-export function IdentityTypeTag({ type }: { type: string }) {
-	return <Tag>{identityTypeLabel(type)}</Tag>;
-}
 
 /** HTTP status / error code chip: 429, 502, 中断. */
 export function CodeChip({ children, tone = "danger" }: { children: ReactNode; tone?: "danger" | "warning" | "neutral" }) {

@@ -5,9 +5,7 @@ import { AdminApiClient, AdminSessionExpiredError } from "@/admin-api";
 import { AdminProvider, useAdmin } from "@/admin/context";
 import { errorMessage, loadInitialData } from "@/admin/load";
 import type { ManagementPage } from "@/admin/pages";
-import ApiKeysPage, { PageAction as ApiKeysAction } from "@/admin/pages/ApiKeysPage";
 import CodexAccountsPage, { PageAction as CodexAccountsAction } from "@/admin/pages/CodexAccountsPage";
-import DownstreamPage, { PageAction as DownstreamAction } from "@/admin/pages/DownstreamPage";
 import GroupsPage, { PageAction as GroupsAction } from "@/admin/pages/GroupsPage";
 import LogsPage, { PageAction as LogsAction } from "@/admin/pages/LogsPage";
 import OverviewPage from "@/admin/pages/OverviewPage";
@@ -15,6 +13,7 @@ import PerformancePage from "@/admin/pages/PerformancePage";
 import PricingPage, { PageAction as PricingAction } from "@/admin/pages/PricingPage";
 import SettingsPage from "@/admin/pages/SettingsPage";
 import UsagePage from "@/admin/pages/UsagePage";
+import UsersPage, { PageAction as UsersAction } from "@/admin/pages/UsersPage";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -30,8 +29,7 @@ const PAGES: Record<ManagementPage, { Page: ComponentType; Action?: ComponentTyp
 	performance: { Page: PerformancePage },
 	codex: { Page: CodexAccountsPage, Action: CodexAccountsAction },
 	groups: { Page: GroupsPage, Action: GroupsAction },
-	"api-keys": { Page: ApiKeysPage, Action: ApiKeysAction },
-	downstream: { Page: DownstreamPage, Action: DownstreamAction },
+	users: { Page: UsersPage, Action: UsersAction },
 	pricing: { Page: PricingPage, Action: PricingAction },
 	settings: { Page: SettingsPage },
 };

@@ -59,24 +59,32 @@ export interface CodexCredentialImport {
 	credentials: Record<string, unknown>;
 }
 
-export interface ClientApiKeyInput {
+/** API key, or the ChatGPT account id of a client relaying its own sign-in. */
+export type CredentialType = "api_key" | "account_id";
+
+export interface UserCredentialInput {
+	/** Omitted for new credentials. */
+	id?: string;
+	type: CredentialType;
+	value: string;
+	/** Optional label, e.g. the device using it. */
 	name: string;
-	key: string;
 	enabled: boolean;
 }
 
-export interface ClientApiKey extends ClientApiKeyInput {
+export interface UserCredential extends UserCredentialInput {
 	id: string;
 }
 
-export interface AuthProxyAccountInput {
+export interface UserInput {
 	name: string;
-	accountId: string;
 	enabled: boolean;
+	credentials: UserCredentialInput[];
 }
 
-export interface AuthProxyAccount extends AuthProxyAccountInput {
+export interface User extends UserInput {
 	id: string;
+	credentials: UserCredential[];
 }
 
 export type AccountGroupStrategy =
@@ -93,12 +101,10 @@ export interface AccountGroup {
 	sessionAffinityTtl: string;
 }
 
-export type RouteConsumerType = "api_key" | "auth_proxy";
 export type RouteTargetType = "account" | "group";
 
 export interface RouteAssignment {
-	consumerType: RouteConsumerType;
-	consumerId: string;
+	userId: string;
 	targetType: RouteTargetType;
 	targetId: string;
 }
@@ -110,8 +116,7 @@ export interface AccountRoutingConfiguration {
 
 export interface AdminState extends AccountRoutingConfiguration {
 	codexAccounts: CodexAccount[];
-	apiKeys: ClientApiKey[];
-	authProxyAccounts: AuthProxyAccount[];
+	users: User[];
 }
 
 export interface AdminSettings {
@@ -144,8 +149,8 @@ export interface AdminSettings {
 export type UsageRange = "cycle" | "24h" | "7d" | "30d" | "all";
 
 export type UsageIdentityType =
-	| "api_key"
-	| "auth_proxy"
+	| "user"
+	| "credential"
 	| "codex_account"
 	| "account_group";
 
@@ -191,9 +196,8 @@ export interface UsageDimensionRow extends UsageTotals {
 }
 
 export interface UsageIdentityRow extends UsageTotals {
-	identityType: "api_key" | "auth_proxy";
-	identityId: string;
-	identityName: string;
+	userId: string;
+	userName: string;
 }
 
 export type UsageEventStatus = "completed" | "incomplete" | "failed" | "cancelled" | "interrupted";
@@ -206,9 +210,12 @@ export interface UsageEvent extends Omit<UsageTotals, "requests"> {
 	recordedAt: number;
 	requestId: string;
 	responseId: string;
-	identityType: "api_key" | "auth_proxy";
-	identityId: string;
-	identityName: string;
+	userId: string;
+	userName: string;
+	credentialType: CredentialType;
+	credentialId: string;
+	/** Credential label, or the last characters of its value. */
+	credentialName: string;
 	codexAccountId: string;
 	codexAccountName: string;
 	accountGroupId: string;
@@ -364,9 +371,8 @@ export interface ModelStats extends OutcomeCounts, TokenCounts {
 }
 
 export interface IdentityStats extends OutcomeCounts, TokenCounts {
-	identityType: "api_key" | "auth_proxy";
-	identityId: string;
-	identityName: string;
+	userId: string;
+	userName: string;
 	sessions: number;
 	lastAt: number;
 	lastUserAgent: string;
@@ -374,9 +380,8 @@ export interface IdentityStats extends OutcomeCounts, TokenCounts {
 }
 
 export interface ConsumerShare {
-	identityType: "api_key" | "auth_proxy";
-	identityId: string;
-	identityName: string;
+	userId: string;
+	userName: string;
 	requests: number;
 	totalTokens: number;
 }
@@ -412,9 +417,8 @@ export interface UpstreamGroupStats extends OutcomeCounts, TokenCounts {
 }
 
 export interface IdentityModelCell {
-	identityType: "api_key" | "auth_proxy";
-	identityId: string;
-	identityName: string;
+	userId: string;
+	userName: string;
 	model: string;
 	requests: number;
 	totalTokens: number;
@@ -463,7 +467,7 @@ export interface SessionSummary {
 	sessionId: string;
 	sessionKind: UsageSessionKind;
 	parentSessionId: string;
-	identityName: string;
+	userName: string;
 	requests: number;
 	childSessions: number;
 	totalTokens: number;
@@ -590,9 +594,8 @@ export interface SessionChild extends OutcomeCounts {
 export interface SessionGroup extends OutcomeCounts {
 	/** Root session; empty for requests without a session (grouped per identity). */
 	sessionId: string;
-	identityType: "api_key" | "auth_proxy";
-	identityId: string;
-	identityName: string;
+	userId: string;
+	userName: string;
 	accountGroupName: string;
 	accounts: string[];
 	userAgent: string;
@@ -695,7 +698,8 @@ export type NotificationChannel = "bark" | "dingtalk";
 /** When each model and identity was last used, across all recorded events. */
 export interface LastSeen {
 	models: { model: string; firstAt: number; lastAt: number }[];
-	identities: { identityType: "api_key" | "auth_proxy"; identityId: string; lastAt: number; userAgent: string }[];
+	identities: { userId: string; lastAt: number; userAgent: string }[];
+	credentials: { credentialId: string; lastAt: number; userAgent: string }[];
 }
 
 /** Query string shared by analytics and the request log. */
@@ -950,60 +954,19 @@ export class AdminApiClient {
 		});
 	}
 
-	async createApiKey(value: ClientApiKeyInput): Promise<ClientApiKey[]> {
-		const result = await this.requestJson<{ apiKeys: ClientApiKey[] }>(
-			"/api-keys",
-			jsonRequest("POST", value),
-		);
-		return result.apiKeys;
+	async createUser(value: UserInput): Promise<User[]> {
+		const result = await this.requestJson<{ users: User[] }>("/users", jsonRequest("POST", value));
+		return result.users;
 	}
 
-	async updateApiKey(
-		id: string,
-		value: ClientApiKeyInput,
-	): Promise<ClientApiKey[]> {
-		const result = await this.requestJson<{ apiKeys: ClientApiKey[] }>(
-			"/api-keys",
-			jsonRequest("PUT", { id, ...value }),
-		);
-		return result.apiKeys;
+	async updateUser(id: string, value: UserInput): Promise<User[]> {
+		const result = await this.requestJson<{ users: User[] }>("/users", jsonRequest("PUT", { id, ...value }));
+		return result.users;
 	}
 
-	async deleteApiKey(id: string): Promise<ClientApiKey[]> {
-		const result = await this.requestJson<{ apiKeys: ClientApiKey[] }>(
-			"/api-keys",
-			jsonRequest("DELETE", { id }),
-		);
-		return result.apiKeys;
-	}
-
-	async createAuthProxyAccount(
-		value: AuthProxyAccountInput,
-	): Promise<AuthProxyAccount[]> {
-		const result = await this.requestJson<{ authProxyAccounts: AuthProxyAccount[] }>(
-			"/auth-proxy",
-			jsonRequest("POST", value),
-		);
-		return result.authProxyAccounts;
-	}
-
-	async updateAuthProxyAccount(
-		id: string,
-		value: AuthProxyAccountInput,
-	): Promise<AuthProxyAccount[]> {
-		const result = await this.requestJson<{ authProxyAccounts: AuthProxyAccount[] }>(
-			"/auth-proxy",
-			jsonRequest("PUT", { id, ...value }),
-		);
-		return result.authProxyAccounts;
-	}
-
-	async deleteAuthProxyAccount(id: string): Promise<AuthProxyAccount[]> {
-		const result = await this.requestJson<{ authProxyAccounts: AuthProxyAccount[] }>(
-			"/auth-proxy",
-			jsonRequest("DELETE", { id }),
-		);
-		return result.authProxyAccounts;
+	async deleteUser(id: string): Promise<User[]> {
+		const result = await this.requestJson<{ users: User[] }>("/users", jsonRequest("DELETE", { id }));
+		return result.users;
 	}
 
 	private async requestJson<T>(path: string, init?: RequestInit): Promise<T> {

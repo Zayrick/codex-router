@@ -138,13 +138,10 @@ pub enum AdminRoute {
     CodexAccountOAuthPoll,
     AccountRoutingGet,
     AccountRoutingUpdate,
-    ApiKeysGet,
-    ApiKeysCreate,
-    ApiKeysUpdate,
-    ApiKeysDelete,
-    AuthProxyCreate,
-    AuthProxyUpdate,
-    AuthProxyDelete,
+    UsersGet,
+    UsersCreate,
+    UsersUpdate,
+    UsersDelete,
 }
 
 /// Every request below `/admin` is answered locally; it never reaches the relay.
@@ -246,13 +243,10 @@ fn match_admin_api(method: &str, relative: &str) -> Option<AdminRoute> {
         ("POST", "codex-accounts/oauth/device/poll") => AdminRoute::CodexAccountOAuthPoll,
         ("GET", "account-routing") => AdminRoute::AccountRoutingGet,
         ("PUT", "account-routing") => AdminRoute::AccountRoutingUpdate,
-        ("GET", "api-keys") => AdminRoute::ApiKeysGet,
-        ("POST", "api-keys") => AdminRoute::ApiKeysCreate,
-        ("PUT", "api-keys") => AdminRoute::ApiKeysUpdate,
-        ("DELETE", "api-keys") => AdminRoute::ApiKeysDelete,
-        ("POST", "auth-proxy") => AdminRoute::AuthProxyCreate,
-        ("PUT", "auth-proxy") => AdminRoute::AuthProxyUpdate,
-        ("DELETE", "auth-proxy") => AdminRoute::AuthProxyDelete,
+        ("GET", "users") => AdminRoute::UsersGet,
+        ("POST", "users") => AdminRoute::UsersCreate,
+        ("PUT", "users") => AdminRoute::UsersUpdate,
+        ("DELETE", "users") => AdminRoute::UsersDelete,
         _ => return None,
     })
 }

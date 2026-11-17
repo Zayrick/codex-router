@@ -1,5 +1,5 @@
-// API of the signed-in API key / downstream account views. Every endpoint is
-// limited to the signed-in identity by the server.
+// API of the signed-in user's views. Every endpoint is limited to the
+// signed-in user (across all their credentials) by the server.
 
 import {
 	AdminApiError,
@@ -15,10 +15,7 @@ import {
 import { CONSOLE_API_BASE } from "./session-api";
 
 export interface UserIdentity {
-	identityType: "api_key" | "auth_proxy";
 	name: string;
-	/** Last characters of the API key or account_id. */
-	credentialHint: string;
 }
 
 export interface UserGroupSettings {

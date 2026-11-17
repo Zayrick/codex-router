@@ -42,7 +42,7 @@ export function SessionTable({
 				<TableRow className="hover:bg-transparent">
 					<TableHead className="w-8" />
 					<TableHead className="h-10 px-2 text-xs font-normal text-muted-foreground">会话 / 请求</TableHead>
-					<TableHead className="h-10 px-2 text-xs font-normal text-muted-foreground">{showIdentity ? "调用身份 · 路由" : "路由"}</TableHead>
+					<TableHead className="h-10 px-2 text-xs font-normal text-muted-foreground">{showIdentity ? "用户 · 路由" : "路由"}</TableHead>
 					<TableHead className="h-10 px-2 text-xs font-normal text-muted-foreground">构成 · 状态</TableHead>
 					<TableHead className="h-10 px-2 text-xs font-normal text-muted-foreground">时间线</TableHead>
 					<TableHead className="h-10 px-2 text-right text-xs font-normal text-muted-foreground">请求 · 耗时</TableHead>
@@ -71,13 +71,13 @@ export function SessionTable({
 										<span className="text-[11.5px] leading-4 text-faint tabular-nums">
 											{group.sessionId
 												? `${formatDay(group.firstAt)} ${formatClock(group.firstAt, false)} – ${formatClock(group.lastAt, false)} · ${formatDuration(group.lastAt - group.firstAt)}`
-												: `${formatClock(group.firstAt, false)} – ${formatClock(group.lastAt, false)} · 按调用身份聚合`}
+												: `${formatClock(group.firstAt, false)} – ${formatClock(group.lastAt, false)} · 按用户聚合`}
 										</span>
 									</div>
 								</TableCell>
 								<TableCell className="px-2">
 									<div className="flex max-w-44 flex-col gap-1">
-										{showIdentity ? <span className="truncate text-[13px] leading-5 font-medium">{group.identityName || "—"}</span> : null}
+										{showIdentity ? <span className="truncate text-[13px] leading-5 font-medium">{group.userName || "—"}</span> : null}
 										<span className={cn("truncate leading-4", showIdentity ? "text-[11.5px] text-faint" : "text-[13px] leading-5")}>{routeText(group)}</span>
 									</div>
 								</TableCell>
@@ -289,7 +289,7 @@ function OutcomeText({ outcomes }: { outcomes: OutcomeCounts }) {
 }
 
 function groupKey(group: SessionGroup): string {
-	return group.sessionId || `identity:${group.identityType}:${group.identityId}`;
+	return group.sessionId || `user:${group.userId}`;
 }
 
 function rootKind(group: SessionGroup): UsageSessionKind {

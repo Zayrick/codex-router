@@ -15,7 +15,7 @@ function identityParam(params: URLSearchParams, kind: string, id: string): Usage
 	const type = params.get(kind);
 	const value = params.get(id);
 	if (!type || !value) return null;
-	if (!["api_key", "auth_proxy", "codex_account", "account_group"].includes(type)) return null;
+	if (!["user", "credential", "codex_account", "account_group"].includes(type)) return null;
 	return { identityType: type as UsageIdentityType, identityId: value };
 }
 

@@ -70,16 +70,16 @@ fast_cost_multiplier = 2.0
 相对路径以配置文件所在目录为基准；绝对路径原样使用。服务启动时会自动创建父目录和数据库，启用
 WAL 模式，并在 Unix 上将数据库、`-wal` 和 `-shm` 文件权限设置为 `0600`。修改路径后需要重启。
 
-数据库按终止响应事件记录身份类型、身份 ID/名称、模型、HTTP/WebSocket 传输、端点、状态以及
+数据库按终止响应事件记录用户 ID/名称、所用凭据的类型/ID/备注、模型、HTTP/WebSocket 传输、端点、状态以及
 输入、缓存命中、缓存创建、输出、推理和总 Token。缓存与推理字段是输入/输出的子集，不应再次
 加到总量中。数据库不保存 API Key、OAuth 凭据、请求正文或响应正文，当前也不会自动清理历史
 事件；备份时应将数据库及其 WAL sidecar 视为一组私有运行数据。
 
 ## 明文状态格式
 
-账户目录、账户组与调用身份分配统一保存在 `state.account_routing`。账户组在 Codex 账户页维护；
-创建或编辑 API Key、下游账户时可以直接选择单个账户或账户组。以下示例展示字段形状，实际运行
-建议交给管理 API 写入：
+账户目录、账户组与用户路由统一保存在 `state.account_routing`，用户及其凭据保存在 `state.users`。
+账户组在账户组页维护；创建或编辑用户时可以直接选择单个账户或账户组。以下示例展示字段形状，
+实际运行建议交给管理 API 写入：
 
 ```toml
 [[state.account_routing.accounts]]
@@ -96,15 +96,30 @@ sessionAffinity = true
 sessionAffinityTtl = "1h" # 或 "unlimited"
 
 [[state.account_routing.routes]]
-consumerType = "api_key" # 或 "auth_proxy"
-consumerId = "00000000-0000-4000-8000-000000000003"
+userId = "00000000-0000-4000-8000-000000000003"
 targetType = "group" # 或 "account"
 targetId = "00000000-0000-4000-8000-000000000002"
+
+[[state.users]]
+id = "00000000-0000-4000-8000-000000000003"
+name = "张三"
+enabled = true
+
+[[state.users.credentials]]
+id = "00000000-0000-4000-8000-000000000004"
+type = "api_key" # 或 "account_id"
+value = "sk-..."
+name = "laptop" # 可选备注
+enabled = true
 ```
+
+一个用户可以有多个 API Key 和账户 ID，任一凭据的请求都按该用户路由、计入该用户的用量，也都能
+登录到该用户的看板。凭据值在全部用户之间唯一。旧版的 `state.api_keys`、`state.auth_proxy_accounts`
+和不带 `userId` 的路由不再读取，启动时会被丢弃，需要在“用户”页重新录入。
 
 `strategy` 可设为 `round-robin`、`weighted-round-robin` 或 `fallback`。加权轮询的权重无需手工配置，
 由每账户额度快照中各 Codex 窗口的平均“剩余百分比 ÷ 距离刷新剩余分钟”计算。`round-robin` 和
-`weighted-round-robin` 可配置 `sessionAffinity` 与 TTL；`fallback` 按调用身份固定账户。
+`weighted-round-robin` 可配置 `sessionAffinity` 与 TTL；`fallback` 按用户固定账户。
 
 `server.maintenance_interval_seconds` 控制 OAuth 与额度巡检间隔，默认值为 300 秒。
 
@@ -123,7 +138,7 @@ expiresAt = 1800003600000
 updatedAt = "2027-01-15T09:00:00.000Z"
 ```
 
-手工录入的 Codex 账户、账户组、API Key 和下游账户必须使用合法 UUID，名称在各自集合内唯一。
+手工录入的 Codex 账户、账户组、用户和凭据必须使用合法 UUID，名称在各自集合内唯一。
 管理 API 会校验引用并把更新原子写回配置文件。旧版 OAuth 与额度字段会在启动时自动迁移。
 
 ## 配置文件写入语义

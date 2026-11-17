@@ -1,5 +1,5 @@
 //! The unified web console below `/admin`: one sign-in for administrators and
-//! API key / downstream account users, backed by server-side sessions.
+//! downstream users (with any of their credentials), backed by server-side sessions.
 
 use axum::{
     body::Body,
@@ -15,7 +15,7 @@ use url::Url;
 
 use crate::{
     application::{CONSOLE_BASE_PATH, ConsoleRoute},
-    auth::{ApiKeyRepository, AuthProxyAccount, ClientApiKey, constant_time_equal},
+    auth::{CredentialKind, User, UserRepository, constant_time_equal},
     core::{ApiError, AppResult},
 };
 
@@ -157,9 +157,12 @@ async fn authenticate(
     let binding_key = binding_key(config)?;
     let identities = Identities::load(config, state).await?;
     let still_bound = identities
-        .current_credential(&record.principal)
+        .current_credentials(&record.principal)
+        .into_iter()
         .map(|credential| credential_tag(&binding_key, &record.principal, credential))
-        .is_some_and(|tag| bool::from(tag.ct_eq(&record.credential_tag)));
+        .fold(false, |bound, tag| {
+            bound | bool::from(tag.ct_eq(&record.credential_tag))
+        });
     if !still_bound {
         if let Err(error) = state.sessions.revoke(record.token_hash).await {
             tracing::warn!(event = "console_session_revoke", status = "failed", error = %error);
@@ -221,8 +224,8 @@ async fn sign_in(
     let _credentials = state.credential_lock.lock().await;
     let config = state.config.snapshot().await;
     let identities = Identities::load(&config, state).await?;
-    let principal = match identities.identify(&credential) {
-        Identified::One(principal) => principal,
+    let (principal, stored_credential) = match identities.identify(&credential) {
+        Identified::One(principal, stored) => (principal, stored),
         Identified::Ambiguous => {
             tracing::error!(
                 event = "console_sign_in",
@@ -246,10 +249,7 @@ async fn sign_in(
     }
 
     let binding_key = binding_key(&config)?;
-    let stored_credential = identities
-        .current_credential(&principal)
-        .ok_or_else(invalid_credentials)?;
-    let tag = credential_tag(&binding_key, &principal, stored_credential);
+    let tag = credential_tag(&binding_key, &principal, &stored_credential);
     let (token, record) = state
         .sessions
         .create(principal, tag, now_ms)
@@ -290,87 +290,75 @@ async fn sign_out(
 #[derive(Debug, PartialEq, Eq)]
 enum Identified {
     None,
-    One(Principal),
-    /// The same string is configured for more than one identity type. Signing
-    /// in is refused rather than silently preferring the most privileged one.
+    /// The principal and the stored credential value that matched.
+    One(Principal, String),
+    /// The same string is configured for the administrator and a user.
+    /// Signing in is refused rather than silently preferring the admin.
     Ambiguous,
 }
 
-/// Current sign-in credentials, read through the repositories so that legacy
-/// records receive their stable derived ids.
+/// Current sign-in credentials.
 struct Identities {
     admin_secret: String,
-    api_keys: Vec<ClientApiKey>,
-    accounts: Vec<AuthProxyAccount>,
+    users: Vec<User>,
 }
 
 impl Identities {
     async fn load(config: &AppConfig, state: &AppState) -> AppResult<Self> {
-        let repository = ApiKeyRepository::new(state.config.as_ref());
         Ok(Self {
             admin_secret: config.admin.secret.clone(),
-            api_keys: repository.read().await?,
-            accounts: repository.read_auth_proxy_accounts().await?,
+            users: UserRepository::new(state.config.as_ref()).read().await?,
         })
     }
 
-    /// Identifies a credential as the admin secret, an API key, or a downstream
-    /// account id. Disabled records still count towards ambiguity.
+    /// Identifies a credential as the admin secret or one of a user's API
+    /// keys or account ids. Disabled records still count towards ambiguity.
     fn identify(&self, credential: &str) -> Identified {
         let admin = constant_time_equal(credential, &self.admin_secret);
-        let mut api_key: Option<&ClientApiKey> = None;
-        for key in &self.api_keys {
-            if constant_time_equal(credential, &key.key) && api_key.is_none() {
-                api_key = Some(key);
-            }
-        }
         let trimmed = credential.trim();
-        let mut account: Option<&AuthProxyAccount> = None;
-        for entry in &self.accounts {
-            if !trimmed.is_empty()
-                && constant_time_equal(trimmed, &entry.account_id)
-                && account.is_none()
-            {
-                account = Some(entry);
+        let mut matched = None;
+        for user in &self.users {
+            for entry in &user.credentials {
+                let candidate = match entry.kind {
+                    CredentialKind::ApiKey => credential,
+                    CredentialKind::AccountId => trimmed,
+                };
+                if !candidate.is_empty()
+                    && constant_time_equal(candidate, &entry.value)
+                    && matched.is_none()
+                {
+                    matched = Some((user, entry));
+                }
             }
         }
-        let matches =
-            usize::from(admin) + usize::from(api_key.is_some()) + usize::from(account.is_some());
-        if matches > 1 {
-            return Identified::Ambiguous;
+        match (admin, matched) {
+            (true, Some(_)) => Identified::Ambiguous,
+            (true, None) => Identified::One(Principal::Admin, self.admin_secret.clone()),
+            (false, Some((user, entry))) if user.enabled && entry.enabled => {
+                Identified::One(Principal::User(user.id.clone()), entry.value.clone())
+            }
+            (false, _) => Identified::None,
         }
-        if admin {
-            return Identified::One(Principal::Admin);
-        }
-        if let Some(key) = api_key.filter(|key| key.enabled && !key.id.is_empty()) {
-            return Identified::One(Principal::ApiKey(key.id.clone()));
-        }
-        if let Some(entry) = account.filter(|entry| entry.enabled && !entry.id.is_empty()) {
-            return Identified::One(Principal::AuthProxy(entry.id.clone()));
-        }
-        Identified::None
     }
 
-    /// The credential currently configured for an enabled principal.
-    fn current_credential(&self, principal: &Principal) -> Option<&str> {
+    /// Credentials that may currently back a session of the principal.
+    fn current_credentials(&self, principal: &Principal) -> Vec<&str> {
         match principal {
-            Principal::Admin => Some(self.admin_secret.as_str()),
-            Principal::ApiKey(id) => self
-                .api_keys
+            Principal::Admin => vec![self.admin_secret.as_str()],
+            Principal::User(id) => self
+                .users
                 .iter()
-                .find(|key| !id.is_empty() && key.id == *id && key.enabled)
-                .map(|key| key.key.as_str()),
-            Principal::AuthProxy(id) => self
-                .accounts
-                .iter()
-                .find(|entry| !id.is_empty() && entry.id == *id && entry.enabled)
-                .map(|entry| entry.account_id.as_str()),
+                .filter(|user| !id.is_empty() && user.id == *id)
+                .flat_map(User::active_credentials)
+                .map(|credential| credential.value.as_str())
+                .collect(),
         }
     }
 }
 
 /// Binds a session to the exact credential that created it, so rotating the
-/// admin secret, an API key, or an account id ends existing sessions.
+/// admin secret or removing, disabling, or changing a user credential ends the
+/// sessions it created.
 fn credential_tag(key: &[u8; 32], principal: &Principal, credential: &str) -> [u8; 32] {
     let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("HMAC accepts any key");
     for part in [
@@ -413,7 +401,6 @@ pub fn insecure_public_origin(config: &AppConfig) -> bool {
 #[serde(rename_all = "camelCase")]
 struct SessionView {
     role: &'static str,
-    identity_type: &'static str,
     created_at: i64,
     expires_at: i64,
     absolute_expires_at: i64,
@@ -427,7 +414,6 @@ impl From<&SessionRecord> for SessionView {
             } else {
                 "user"
             },
-            identity_type: record.principal.kind(),
             created_at: record.created_at_ms,
             expires_at: record.expires_at_ms(),
             absolute_expires_at: record.absolute_expires_at_ms,
@@ -527,14 +513,15 @@ mod tests {
     fn identities(config: &AppConfig) -> Identities {
         Identities {
             admin_secret: config.admin.secret.clone(),
-            api_keys: config.state.api_keys.clone(),
-            accounts: config.state.auth_proxy_accounts.clone(),
+            users: config.state.users.clone(),
         }
     }
 
     fn identify(credential: &str, config: &AppConfig) -> Identified {
         identities(config).identify(credential)
     }
+
+    const USER: &str = "00000000-0000-4000-8000-000000000001";
 
     fn config() -> AppConfig {
         toml::from_str(
@@ -544,20 +531,24 @@ mod tests {
             [upstream]
             [state]
             session_binding_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-            [[state.api_keys]]
+            [[state.users]]
             id = "00000000-0000-4000-8000-000000000001"
-            name = "enabled"
-            key = "sk-enabled-123!"
+            name = "alice"
             enabled = true
-            [[state.api_keys]]
-            id = "00000000-0000-4000-8000-000000000002"
-            name = "disabled"
-            key = "sk-disabled-123!"
+            [[state.users.credentials]]
+            id = "00000000-0000-4000-8000-000000000011"
+            type = "api_key"
+            value = "sk-enabled-123!"
+            enabled = true
+            [[state.users.credentials]]
+            id = "00000000-0000-4000-8000-000000000012"
+            type = "api_key"
+            value = "sk-disabled-123!"
             enabled = false
-            [[state.auth_proxy_accounts]]
-            id = "00000000-0000-4000-8000-000000000003"
-            name = "proxy"
-            accountId = "account-123"
+            [[state.users.credentials]]
+            id = "00000000-0000-4000-8000-000000000013"
+            type = "account_id"
+            value = "account-123"
             enabled = true
             "#,
         )
@@ -565,49 +556,67 @@ mod tests {
     }
 
     #[test]
-    fn identifies_each_credential_type() {
+    fn every_credential_signs_in_as_its_user() {
         let config = config();
         assert_eq!(
             identify("admin-secret", &config),
-            Identified::One(Principal::Admin)
+            Identified::One(Principal::Admin, "admin-secret".into())
         );
         assert_eq!(
             identify("sk-enabled-123!", &config),
-            Identified::One(Principal::ApiKey(
-                "00000000-0000-4000-8000-000000000001".into()
-            ))
+            Identified::One(Principal::User(USER.into()), "sk-enabled-123!".into())
         );
         assert_eq!(
             identify(" account-123 ", &config),
-            Identified::One(Principal::AuthProxy(
-                "00000000-0000-4000-8000-000000000003".into()
-            ))
+            Identified::One(Principal::User(USER.into()), "account-123".into())
         );
         assert_eq!(identify("sk-disabled-123!", &config), Identified::None);
         assert_eq!(identify("nope", &config), Identified::None);
+
+        let mut disabled = config.clone();
+        disabled.state.users[0].enabled = false;
+        assert_eq!(identify("sk-enabled-123!", &disabled), Identified::None);
     }
 
     #[test]
-    fn refuses_credentials_shared_across_identity_types() {
+    fn sessions_stay_bound_to_active_credentials() {
         let mut config = config();
-        config.state.api_keys[1].key = "admin-secret".into();
+        let principal = Principal::User(USER.into());
+        assert_eq!(
+            identities(&config).current_credentials(&principal),
+            vec!["sk-enabled-123!", "account-123"]
+        );
+        config.state.users[0].credentials[0].enabled = false;
+        assert_eq!(
+            identities(&config).current_credentials(&principal),
+            vec!["account-123"]
+        );
+        config.state.users[0].enabled = false;
+        assert!(
+            identities(&config)
+                .current_credentials(&principal)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn refuses_credentials_shared_with_the_admin() {
+        let mut config = config();
+        config.state.users[0].credentials[1].value = "admin-secret".into();
         assert_eq!(identify("admin-secret", &config), Identified::Ambiguous);
-        let mut config = self::config();
-        config.state.auth_proxy_accounts[0].account_id = "sk-enabled-123!".into();
-        assert_eq!(identify("sk-enabled-123!", &config), Identified::Ambiguous);
     }
 
     #[test]
     fn binding_tag_changes_with_the_credential() {
         let key = [9; 32];
-        let principal = Principal::ApiKey("id".into());
+        let principal = Principal::User("id".into());
         let tag = credential_tag(&key, &principal, "secret");
         assert_eq!(tag, credential_tag(&key, &principal, "secret"));
         assert_ne!(tag, credential_tag(&key, &principal, "rotated"));
         assert_ne!(tag, credential_tag(&[8; 32], &principal, "secret"));
         assert_ne!(
             tag,
-            credential_tag(&key, &Principal::AuthProxy("id".into()), "secret")
+            credential_tag(&key, &Principal::User("other".into()), "secret")
         );
     }
 

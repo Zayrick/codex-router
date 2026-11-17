@@ -103,8 +103,11 @@ export function transportLabel(transport: string): string {
 	return transport === "websocket" ? "WebSocket" : transport === "http" ? "HTTP" : transport || "—";
 }
 
+const IDENTITY_TYPE_LABEL: Record<string, string> = { user: "用户", credential: "凭据", api_key: "API Key", account_id: "账户 ID" };
+
+/** Label of a usage filter type (用户 / 凭据) or credential type (API Key / 账户 ID). */
 export function identityTypeLabel(type: string): string {
-	return type === "api_key" ? "API Key" : type === "auth_proxy" ? "下游账户" : type;
+	return IDENTITY_TYPE_LABEL[type] ?? type;
 }
 
 export function planLabel(plan: string | null | undefined): string {

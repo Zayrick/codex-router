@@ -16,10 +16,14 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
+/// Bumped whenever the table layout changes; sessions from other versions are
+/// dropped, signing everyone out once.
+const SESSION_SCHEMA_VERSION: i64 = 2;
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS web_sessions (
     token_hash BLOB PRIMARY KEY CHECK(length(token_hash) = 32),
-    principal_kind TEXT NOT NULL CHECK(principal_kind IN ('admin', 'api_key', 'auth_proxy')),
+    principal_kind TEXT NOT NULL CHECK(principal_kind IN ('admin', 'user')),
     principal_id TEXT NOT NULL,
     credential_tag BLOB NOT NULL CHECK(length(credential_tag) = 32),
     created_at_ms INTEGER NOT NULL,
@@ -48,23 +52,22 @@ const MAX_TOKEN_CHARS: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Principal {
     Admin,
-    ApiKey(String),
-    AuthProxy(String),
+    /// A downstream user, signed in with any of their credentials.
+    User(String),
 }
 
 impl Principal {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::Admin => "admin",
-            Self::ApiKey(_) => "api_key",
-            Self::AuthProxy(_) => "auth_proxy",
+            Self::User(_) => "user",
         }
     }
 
     pub fn id(&self) -> &str {
         match self {
             Self::Admin => "root",
-            Self::ApiKey(id) | Self::AuthProxy(id) => id,
+            Self::User(id) => id,
         }
     }
 
@@ -75,8 +78,7 @@ impl Principal {
     fn from_parts(kind: &str, id: String) -> Option<Self> {
         match kind {
             "admin" => Some(Self::Admin),
-            "api_key" => Some(Self::ApiKey(id)),
-            "auth_proxy" => Some(Self::AuthProxy(id)),
+            "user" => Some(Self::User(id)),
             _ => None,
         }
     }
@@ -92,7 +94,7 @@ impl Principal {
                 absolute_ms: 7 * DAY,
             },
             // Read-only usage views: remember the browser for a long time.
-            Self::ApiKey(_) | Self::AuthProxy(_) => SessionLifetime {
+            Self::User(_) => SessionLifetime {
                 idle_ms: 30 * DAY,
                 absolute_ms: 90 * DAY,
             },
@@ -154,8 +156,18 @@ impl SessionStore {
         connection
             .pragma_update(None, "synchronous", "FULL")
             .context("failed to configure session database synchronization")?;
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .context("failed to read session database version")?;
+        let reset = if version == SESSION_SCHEMA_VERSION {
+            ""
+        } else {
+            "DROP TABLE IF EXISTS web_sessions;"
+        };
         connection
-            .execute_batch(SCHEMA)
+            .execute_batch(&format!(
+                "BEGIN; {reset} {SCHEMA} PRAGMA user_version = {SESSION_SCHEMA_VERSION}; COMMIT;"
+            ))
             .context("failed to initialize session database schema")?;
         restrict_permissions(&path)?;
         Ok(Self {
@@ -386,7 +398,7 @@ mod tests {
     async fn creates_finds_renews_and_revokes_sessions() {
         let (store, path) = store();
         let now = 1_800_000_000_000;
-        let principal = Principal::ApiKey("00000000-0000-4000-8000-000000000001".into());
+        let principal = Principal::User("00000000-0000-4000-8000-000000000001".into());
         let (token, created) = store.create(principal.clone(), [7; 32], now).await.unwrap();
         assert_eq!(token.len(), 43);
 
@@ -435,7 +447,7 @@ mod tests {
     async fn revokes_all_sessions_of_a_principal() {
         let (store, path) = store();
         let now = 1_800_000_000_000;
-        let principal = Principal::AuthProxy("00000000-0000-4000-8000-000000000002".into());
+        let principal = Principal::User("00000000-0000-4000-8000-000000000002".into());
         let (first, _) = store.create(principal.clone(), [1; 32], now).await.unwrap();
         let (second, _) = store.create(principal.clone(), [1; 32], now).await.unwrap();
         let (admin, _) = store.create(Principal::Admin, [2; 32], now).await.unwrap();

@@ -1,32 +1,18 @@
-// View model shared by the API Keys and 下游账户 pages.
+// View model of the 用户 page.
 
-import type { AccountGroup, AuthProxyAccount, ClientApiKey, CodexAccount, OutcomeCounts, RouteAssignment } from "@/admin-api";
+import type { AccountGroup, CodexAccount, CredentialType, OutcomeCounts, RouteAssignment, User } from "@/admin-api";
 
-export type IdentityKind = "api_key" | "auth_proxy";
+export const CREDENTIAL_LABEL: Record<CredentialType, string> = { api_key: "API Key", account_id: "账户 ID" };
 
-export interface IdentityEntry {
-	kind: IdentityKind;
-	id: string;
-	name: string;
-	/** API key or account_id. */
-	credential: string;
-	enabled: boolean;
-	raw: ClientApiKey | AuthProxyAccount;
-}
-
-export function apiKeyEntries(keys: ClientApiKey[]): IdentityEntry[] {
-	return keys.map((key) => ({ kind: "api_key", id: key.id, name: key.name, credential: key.key, enabled: key.enabled, raw: key }));
-}
-
-export function proxyEntries(accounts: AuthProxyAccount[]): IdentityEntry[] {
-	return accounts.map((account) => ({
-		kind: "auth_proxy",
-		id: account.id,
-		name: account.name,
-		credential: account.accountId,
-		enabled: account.enabled,
-		raw: account,
-	}));
+/** "2 个 API Key · 1 个账户 ID". */
+export function credentialSummary(user: User): string {
+	return (["api_key", "account_id"] as const)
+		.map((type) => {
+			const count = user.credentials.filter((credential) => credential.type === type).length;
+			return count ? `${count} 个${CREDENTIAL_LABEL[type]}` : null;
+		})
+		.filter(Boolean)
+		.join(" · ");
 }
 
 export interface RouteInfo {
@@ -35,8 +21,8 @@ export interface RouteInfo {
 	group: AccountGroup | null;
 }
 
-export function routeInfo(routes: RouteAssignment[], groups: AccountGroup[], accounts: CodexAccount[], entry: IdentityEntry): RouteInfo {
-	const route = routes.find((item) => item.consumerType === entry.kind && item.consumerId === entry.id);
+export function routeInfo(routes: RouteAssignment[], groups: AccountGroup[], accounts: CodexAccount[], userId: string): RouteInfo {
+	const route = routes.find((item) => item.userId === userId);
 	if (!route) return { type: "unassigned", label: "未分配", group: null };
 	if (route.targetType === "group") {
 		const group = groups.find((item) => item.id === route.targetId) ?? null;

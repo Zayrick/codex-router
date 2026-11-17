@@ -11,10 +11,6 @@ import {
 	type AccountGroup,
 	type AdminSettings,
 	type AdminState,
-	type AuthProxyAccount,
-	type AuthProxyAccountInput,
-	type ClientApiKey,
-	type ClientApiKeyInput,
 	type CodexAccount,
 	type CodexAccountDeviceAuthorization,
 	type CodexAccountUpdate,
@@ -24,11 +20,13 @@ import {
 	type PricingSyncStatus,
 	type QuotaOverview,
 	type RouteAssignment,
+	type User,
+	type UserInput,
 } from "@/admin-api";
 import { CONSOLE_API_BASE, signOut } from "@/session-api";
 
-import { ApiKeyEditor, CredentialImportDialog, DeviceLoginDialog, ProxyEditor } from "./dialogs";
-import { consumerRoute, replaceConsumerRoute, routeTargetValue, type RouteTargetSelection } from "./routing-model";
+import { CredentialImportDialog, DeviceLoginDialog, UserEditor } from "./dialogs";
+import { replaceUserRoute, routeTargetValue, userRoute, type RouteTargetSelection } from "./routing-model";
 import { errorMessage, type InitialData } from "./load";
 import { pageFromSearch, type ManagementPage } from "./pages";
 
@@ -65,12 +63,9 @@ export interface AdminContextValue {
 	refreshQuota: (sample?: boolean | string) => Promise<void>;
 	quotaRefreshing: boolean;
 
-	openApiKeyEditor: (entry: ClientApiKey | "new") => void;
-	toggleApiKey: (entry: ClientApiKey) => Promise<void>;
-	deleteApiKey: (entry: ClientApiKey) => Promise<void>;
-	openProxyEditor: (entry: AuthProxyAccount | "new") => void;
-	toggleProxy: (entry: AuthProxyAccount) => Promise<void>;
-	deleteProxy: (entry: AuthProxyAccount) => Promise<void>;
+	openUserEditor: (entry: User | "new") => void;
+	toggleUser: (entry: User) => Promise<void>;
+	deleteUser: (entry: User) => Promise<void>;
 
 	updateCodexAccount: (account: CodexAccount, value: CodexAccountUpdate) => Promise<void>;
 	deleteCodexAccount: (account: CodexAccount) => Promise<void>;
@@ -115,8 +110,7 @@ export function AdminProvider({
 	const [now, setNow] = useState(() => Date.now());
 	const [location, setLocation] = useState(() => ({ page: pageFromSearch(window.location.search), search: window.location.search }));
 	const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
-	const [keyEditor, setKeyEditor] = useState<ClientApiKey | "new" | null>(null);
-	const [proxyEditor, setProxyEditor] = useState<AuthProxyAccount | "new" | null>(null);
+	const [userEditor, setUserEditor] = useState<User | "new" | null>(null);
 	const [editorSaving, setEditorSaving] = useState(false);
 	const [deviceFlow, setDeviceFlow] = useState<CodexAccountDeviceAuthorization | null>(null);
 	const [deviceOpen, setDeviceOpen] = useState(false);
@@ -256,114 +250,60 @@ export function AdminProvider({
 		[api, refreshQuota, reportError],
 	);
 
-	async function saveIdentityRoute(kind: "api_key" | "auth_proxy", id: string, target: RouteTargetSelection) {
-		const current = consumerRoute(state.routes, kind, id);
-		if (routeTargetValue(current) === routeTargetValue(target)) return;
-		const routing = await api.updateAccountRouting(state.accountGroups, replaceConsumerRoute(state.routes, kind, id, target));
+	async function saveUserRoute(id: string, target: RouteTargetSelection) {
+		if (routeTargetValue(userRoute(state.routes, id)) === routeTargetValue(target)) return;
+		const routing = await api.updateAccountRouting(state.accountGroups, replaceUserRoute(state.routes, id, target));
 		if (mounted.current) setState((value) => ({ ...value, ...routing }));
 	}
 
-	async function saveApiKey(value: ClientApiKeyInput, target: RouteTargetSelection) {
-		if (!keyEditor) return;
-		const editor = keyEditor;
+	async function saveUser(value: UserInput, target: RouteTargetSelection) {
+		if (!userEditor) return;
+		const editor = userEditor;
 		let saved = false;
 		setEditorSaving(true);
 		try {
-			const next = editor === "new" ? await api.createApiKey(value) : await api.updateApiKey(editor.id, value);
-			const entry = editor === "new" ? next.find((item) => item.key === value.key) : next.find((item) => item.id === editor.id);
+			const next = editor === "new" ? await api.createUser(value) : await api.updateUser(editor.id, value);
+			const entry = next.find((item) => (editor === "new" ? item.name === value.name : item.id === editor.id));
 			if (!entry) throw new AdminApiError("管理服务返回了无法识别的数据。", 502);
 			saved = true;
-			setState((current) => ({ ...current, apiKeys: next }));
-			await saveIdentityRoute("api_key", entry.id, target);
-			setKeyEditor(null);
-			toast.success(editor === "new" ? "API Key 已创建。" : "API Key 已更新。");
+			setState((current) => ({ ...current, users: next }));
+			await saveUserRoute(entry.id, target);
+			setUserEditor(null);
+			toast.success(editor === "new" ? "用户已添加。" : "用户已更新。");
 		} catch (error) {
-			reportError(error, saved ? "API Key 已保存，但路由分配失败，请重试。" : "保存 API Key 失败。");
+			reportError(error, saved ? "用户已保存，但路由分配失败，请重试。" : "保存用户失败。");
 		} finally {
 			if (mounted.current) setEditorSaving(false);
 		}
 	}
 
-	async function saveProxy(value: AuthProxyAccountInput, target: RouteTargetSelection) {
-		if (!proxyEditor) return;
-		const editor = proxyEditor;
-		let saved = false;
-		setEditorSaving(true);
-		try {
-			const next = editor === "new" ? await api.createAuthProxyAccount(value) : await api.updateAuthProxyAccount(editor.id, value);
-			const entry = editor === "new" ? next.find((item) => item.accountId === value.accountId) : next.find((item) => item.id === editor.id);
-			if (!entry) throw new AdminApiError("管理服务返回了无法识别的数据。", 502);
-			saved = true;
-			setState((current) => ({ ...current, authProxyAccounts: next }));
-			await saveIdentityRoute("auth_proxy", entry.id, target);
-			setProxyEditor(null);
-			toast.success(editor === "new" ? "下游账户已添加。" : "下游账户已更新。");
-		} catch (error) {
-			reportError(error, saved ? "下游账户已保存，但路由分配失败，请重试。" : "保存下游账户失败。");
-		} finally {
-			if (mounted.current) setEditorSaving(false);
-		}
-	}
-
-	const toggleApiKey = useCallback(
-		(entry: ClientApiKey) =>
-			withBusy(`api_key:${entry.id}`, async () => {
+	const toggleUser = useCallback(
+		(entry: User) =>
+			withBusy(`user:${entry.id}`, async () => {
 				try {
-					const next = await api.updateApiKey(entry.id, { name: entry.name, key: entry.key, enabled: !entry.enabled });
-					if (mounted.current) setState((current) => ({ ...current, apiKeys: next }));
+					const next = await api.updateUser(entry.id, { name: entry.name, enabled: !entry.enabled, credentials: entry.credentials });
+					if (mounted.current) setState((current) => ({ ...current, users: next }));
 				} catch (error) {
-					reportError(error, "更新 API Key 失败。");
+					reportError(error, "更新用户失败。");
 				}
 			}),
 		[api, reportError, withBusy],
 	);
 
-	const deleteApiKey = useCallback(
-		(entry: ClientApiKey) =>
-			withBusy(`api_key:${entry.id}`, async () => {
+	const deleteUser = useCallback(
+		(entry: User) =>
+			withBusy(`user:${entry.id}`, async () => {
 				try {
-					const next = await api.deleteApiKey(entry.id);
+					const next = await api.deleteUser(entry.id);
 					if (!mounted.current) return;
 					setState((current) => ({
 						...current,
-						apiKeys: next,
-						routes: current.routes.filter((route) => route.consumerType !== "api_key" || route.consumerId !== entry.id),
+						users: next,
+						routes: current.routes.filter((route) => route.userId !== entry.id),
 					}));
-					toast.success("API Key 已删除。");
+					toast.success("用户已删除。");
 				} catch (error) {
-					reportError(error, "删除 API Key 失败。");
-				}
-			}),
-		[api, reportError, withBusy],
-	);
-
-	const toggleProxy = useCallback(
-		(entry: AuthProxyAccount) =>
-			withBusy(`auth_proxy:${entry.id}`, async () => {
-				try {
-					const next = await api.updateAuthProxyAccount(entry.id, { name: entry.name, accountId: entry.accountId, enabled: !entry.enabled });
-					if (mounted.current) setState((current) => ({ ...current, authProxyAccounts: next }));
-				} catch (error) {
-					reportError(error, "更新下游账户失败。");
-				}
-			}),
-		[api, reportError, withBusy],
-	);
-
-	const deleteProxy = useCallback(
-		(entry: AuthProxyAccount) =>
-			withBusy(`auth_proxy:${entry.id}`, async () => {
-				try {
-					const next = await api.deleteAuthProxyAccount(entry.id);
-					if (!mounted.current) return;
-					setState((current) => ({
-						...current,
-						authProxyAccounts: next,
-						routes: current.routes.filter((route) => route.consumerType !== "auth_proxy" || route.consumerId !== entry.id),
-					}));
-					toast.success("下游账户已删除。");
-				} catch (error) {
-					reportError(error, "删除下游账户失败。");
+					reportError(error, "删除用户失败。");
 				}
 			}),
 		[api, reportError, withBusy],
@@ -572,12 +512,9 @@ export function AdminProvider({
 		refreshState,
 		refreshQuota,
 		quotaRefreshing,
-		openApiKeyEditor: setKeyEditor,
-		toggleApiKey,
-		deleteApiKey,
-		openProxyEditor: setProxyEditor,
-		toggleProxy,
-		deleteProxy,
+		openUserEditor: setUserEditor,
+		toggleUser,
+		deleteUser,
 		updateCodexAccount,
 		deleteCodexAccount,
 		startDeviceLogin: () => void startDeviceLogin(),
@@ -595,26 +532,15 @@ export function AdminProvider({
 	return (
 		<AdminContext.Provider value={value}>
 			{children}
-			{keyEditor ? (
-				<ApiKeyEditor
+			{userEditor ? (
+				<UserEditor
 					accounts={state.codexAccounts}
-					entry={keyEditor}
+					entry={userEditor}
 					groups={state.accountGroups}
 					loading={editorSaving}
-					onCancel={() => setKeyEditor(null)}
-					onSave={(input, target) => void saveApiKey(input, target)}
-					route={keyEditor === "new" ? null : consumerRoute(state.routes, "api_key", keyEditor.id)}
-				/>
-			) : null}
-			{proxyEditor ? (
-				<ProxyEditor
-					accounts={state.codexAccounts}
-					entry={proxyEditor}
-					groups={state.accountGroups}
-					loading={editorSaving}
-					onCancel={() => setProxyEditor(null)}
-					onSave={(input, target) => void saveProxy(input, target)}
-					route={proxyEditor === "new" ? null : consumerRoute(state.routes, "auth_proxy", proxyEditor.id)}
+					onCancel={() => setUserEditor(null)}
+					onSave={(input, target) => void saveUser(input, target)}
+					route={userEditor === "new" ? null : userRoute(state.routes, userEditor.id)}
 				/>
 			) : null}
 			{deviceOpen ? (

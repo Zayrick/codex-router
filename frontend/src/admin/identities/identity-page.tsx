@@ -4,17 +4,13 @@ import {
 	CheckCircle2Icon,
 	ChevronDownIcon,
 	ChevronUpIcon,
-	CopyIcon,
-	EyeIcon,
-	EyeOffIcon,
-	KeyRoundIcon,
 	RefreshCwIcon,
 	SearchIcon,
 	TriangleAlertIcon,
 	UsersIcon,
 } from "lucide-react";
 
-import type { IdentityStats } from "@/admin-api";
+import type { IdentityStats, User } from "@/admin-api";
 import { useAdmin } from "@/admin/context";
 import { DeleteConfirmationDialog } from "@/admin/dialogs";
 import { useAnalytics } from "@/admin/hooks";
@@ -33,12 +29,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { DAY_MS, formatCost, formatCount, formatDateTime, formatPercent, formatTokens, maskSecret, ratio } from "@/lib/format";
+import { DAY_MS, formatCost, formatCount, formatDateTime, formatPercent, formatTokens, ratio } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 import { IdentityDetail } from "./identity-detail";
 import { useLastSeen } from "./use-last-seen";
-import { apiKeyEntries, clientSummary, proxyEntries, routeInfo, successRate, type IdentityEntry, type IdentityKind, type RouteInfo } from "./model";
+import { clientSummary, credentialSummary, routeInfo, successRate, type RouteInfo } from "./model";
 
 type StatusFilter = "all" | "enabled" | "disabled" | "unassigned";
 type Period = "24h" | "7d" | "30d";
@@ -47,39 +43,17 @@ const WINDOW_LABEL: Record<Period, string> = { "24h": "24 小时", "7d": "7 天"
 const ALL_TARGETS = "__all__";
 const UNASSIGNED = "__unassigned__";
 
-const COPY: Record<IdentityKind, { noun: string; title: string; keyLabel: string; search: string; unassignedHint: string; activeUnit: string; empty: string }> = {
-	api_key: {
-		noun: "API Key",
-		title: "全部 API Key",
-		keyLabel: "名称 · Key",
-		search: "搜索名称、Key 或客户端",
-		unassignedHint: "未分配时请求不可用",
-		activeUnit: "个 Key",
-		empty: "还没有 API Key",
-	},
-	auth_proxy: {
-		noun: "下游账户",
-		title: "全部下游账户",
-		keyLabel: "名称 · account_id",
-		search: "搜索名称、account_id 或客户端",
-		unassignedHint: "透传客户端自带的上游凭据",
-		activeUnit: "个账户",
-		empty: "还没有下游账户",
-	},
-};
-
 interface Row {
-	entry: IdentityEntry;
+	user: User;
 	route: RouteInfo;
 	stats: IdentityStats | null;
 	/** Last use across all recorded events. */
 	lastSeen: { lastAt: number; userAgent: string } | null;
 }
 
-/** API Keys / 下游账户 page body: summary, toolbar and the shared identity table. */
-export function IdentityPage({ kind }: { kind: IdentityKind }) {
+/** 用户 page body: summary, toolbar and the user table. */
+export function IdentityPage() {
 	const { state, now } = useAdmin();
-	const copy = COPY[kind];
 	const [period, setPeriod] = useState<Period>("7d");
 	const [status, setStatus] = useState<StatusFilter>("all");
 	const [target, setTarget] = useState(ALL_TARGETS);
@@ -89,26 +63,22 @@ export function IdentityPage({ kind }: { kind: IdentityKind }) {
 	const day = useAnalytics({ range: "24h" });
 	const lastSeen = useLastSeen();
 
-	const entries = useMemo(
-		() => (kind === "api_key" ? apiKeyEntries(state.apiKeys) : proxyEntries(state.authProxyAccounts)),
-		[kind, state.apiKeys, state.authProxyAccounts],
-	);
 	const rows: Row[] = useMemo(
 		() =>
-			entries.map((entry) => ({
-				entry,
-				route: routeInfo(state.routes, state.accountGroups, state.codexAccounts, entry),
-				stats: usage.data?.identities.find((item) => item.identityType === kind && item.identityId === entry.id) ?? null,
-				lastSeen: lastSeen.data?.identities.find((item) => item.identityType === kind && item.identityId === entry.id) ?? null,
+			state.users.map((user) => ({
+				user,
+				route: routeInfo(state.routes, state.accountGroups, state.codexAccounts, user.id),
+				stats: usage.data?.identities.find((item) => item.userId === user.id) ?? null,
+				lastSeen: lastSeen.data?.identities.find((item) => item.userId === user.id) ?? null,
 			})),
-		[entries, kind, lastSeen.data, state.accountGroups, state.codexAccounts, state.routes, usage.data],
+		[lastSeen.data, state.accountGroups, state.codexAccounts, state.routes, state.users, usage.data],
 	);
 
-	const kindTokens = rows.reduce((sum, row) => sum + (row.stats?.totalTokens ?? 0), 0);
-	const kindCost = rows.reduce((sum, row) => sum + (row.stats?.costUsd ?? 0), 0);
-	const enabled = rows.filter((row) => row.entry.enabled).length;
+	const totalTokens = rows.reduce((sum, row) => sum + (row.stats?.totalTokens ?? 0), 0);
+	const totalCost = rows.reduce((sum, row) => sum + (row.stats?.costUsd ?? 0), 0);
+	const enabled = rows.filter((row) => row.user.enabled).length;
 	const unassigned = rows.filter((row) => row.route.type === "unassigned");
-	const dayRows = (day.data?.identities ?? []).filter((item) => item.identityType === kind && entries.some((entry) => entry.id === item.identityId));
+	const dayRows = (day.data?.identities ?? []).filter((item) => state.users.some((user) => user.id === item.userId));
 	const activeDay = dayRows.filter((item) => item.lastAt >= now - DAY_MS);
 	const dayRequests = dayRows.reduce((sum, item) => sum + item.requests, 0);
 	const daySuccess = successRate(
@@ -129,20 +99,22 @@ export function IdentityPage({ kind }: { kind: IdentityKind }) {
 	const query = search.trim().toLowerCase();
 	const visible = rows
 		.filter((row) => {
-			if (status === "enabled" && !row.entry.enabled) return false;
-			if (status === "disabled" && row.entry.enabled) return false;
+			if (status === "enabled" && !row.user.enabled) return false;
+			if (status === "disabled" && row.user.enabled) return false;
 			if (status === "unassigned" && row.route.type !== "unassigned") return false;
 			if (target === UNASSIGNED && row.route.type !== "unassigned") return false;
 			if (target !== ALL_TARGETS && target !== UNASSIGNED) {
-				const route = state.routes.find((item) => item.consumerType === kind && item.consumerId === row.entry.id);
+				const route = state.routes.find((item) => item.userId === row.user.id);
 				if (!route || `${route.targetType}:${route.targetId}` !== target) return false;
 			}
 			if (!query) return true;
-			return [row.entry.name, row.entry.credential, row.stats?.lastUserAgent ?? ""].some((value) => value.toLowerCase().includes(query));
+			return [row.user.name, ...row.user.credentials.flatMap((credential) => [credential.value, credential.name]), row.stats?.lastUserAgent ?? ""].some((value) =>
+				value.toLowerCase().includes(query),
+			);
 		})
 		.sort((left, right) => {
 			const difference = (right.stats?.totalTokens ?? -1) - (left.stats?.totalTokens ?? -1);
-			const ordered = difference !== 0 ? difference : left.entry.name.localeCompare(right.entry.name);
+			const ordered = difference !== 0 ? difference : left.user.name.localeCompare(right.user.name);
 			return ascending ? -ordered : ordered;
 		});
 
@@ -150,10 +122,10 @@ export function IdentityPage({ kind }: { kind: IdentityKind }) {
 		<div className="flex flex-col gap-4">
 			<div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
 				<StatCard
-					aside={kind === "api_key" ? <KeyRoundIcon className="size-4 text-faint" /> : <UsersIcon className="size-4 text-faint" />}
+					aside={<UsersIcon className="size-4 text-faint" />}
 					className="gap-1 py-4"
-					detail={<span className="text-[11.5px] text-faint">{usage.data ? `${WINDOW_LABEL[period]} ${formatTokens(kindTokens)} Token · ${formatCost(kindCost)}` : "—"}</span>}
-					label={copy.noun}
+					detail={<span className="text-[11.5px] text-faint">{usage.data ? `${WINDOW_LABEL[period]} ${formatTokens(totalTokens)} Token · ${formatCost(totalCost)}` : "—"}</span>}
+					label="用户"
 					size="sm"
 					value={rows.length}
 				/>
@@ -175,12 +147,10 @@ export function IdentityPage({ kind }: { kind: IdentityKind }) {
 						<span className="text-[11.5px] text-faint">
 							{unassigned.length === 0
 								? "全部已分配路由"
-								: kind === "api_key"
-									? `${unassigned.every((row) => !row.entry.enabled) ? "均已停用 · " : ""}${copy.unassignedHint}`
-									: `${unassigned
-											.slice(0, 2)
-											.map((row) => row.entry.name)
-											.join("、")} · ${copy.unassignedHint}`}
+								: `${unassigned
+										.slice(0, 2)
+										.map((row) => row.user.name)
+										.join("、")}${unassigned.length > 2 ? " 等" : ""} · API Key 不可用`}
 						</span>
 					}
 					label="未分配"
@@ -198,7 +168,7 @@ export function IdentityPage({ kind }: { kind: IdentityKind }) {
 					}
 					label="24 小时活跃"
 					size="sm"
-					unit={copy.activeUnit}
+					unit="个用户"
 					value={day.data ? activeDay.length : "—"}
 				/>
 			</div>
@@ -209,7 +179,7 @@ export function IdentityPage({ kind }: { kind: IdentityKind }) {
 						<InputGroupAddon>
 							<SearchIcon />
 						</InputGroupAddon>
-						<InputGroupInput aria-label={copy.search} onChange={(event) => setSearch(event.target.value)} placeholder={copy.search} value={search} />
+						<InputGroupInput aria-label="搜索" onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称、凭据或客户端" value={search} />
 					</InputGroup>
 					<Segmented
 						label="状态"
@@ -289,7 +259,7 @@ export function IdentityPage({ kind }: { kind: IdentityKind }) {
 			<Card className="gap-0 overflow-hidden py-0">
 				<CardHeader className="flex flex-wrap items-start justify-between gap-3 px-6 py-5">
 					<div className="flex flex-col gap-1">
-						<CardTitle className="text-[15px] leading-5 font-semibold tracking-[-0.01em]">{copy.title}</CardTitle>
+						<CardTitle className="text-[15px] leading-5 font-semibold tracking-[-0.01em]">全部用户</CardTitle>
 						<CardDescription className="text-[12.5px] leading-5">按 Token 降序 · 展开行查看明细</CardDescription>
 					</div>
 					<Legend className="pt-1">
@@ -301,9 +271,11 @@ export function IdentityPage({ kind }: { kind: IdentityKind }) {
 				{rows.length === 0 ? (
 					<Empty className="border-t py-12">
 						<EmptyHeader>
-							<EmptyMedia variant="icon">{kind === "api_key" ? <KeyRoundIcon /> : <UsersIcon />}</EmptyMedia>
-							<EmptyTitle>{copy.empty}</EmptyTitle>
-							<EmptyDescription>点击右上角添加{copy.noun}。</EmptyDescription>
+							<EmptyMedia variant="icon">
+								<UsersIcon />
+							</EmptyMedia>
+							<EmptyTitle>还没有用户</EmptyTitle>
+							<EmptyDescription>点击右上角添加用户。</EmptyDescription>
 						</EmptyHeader>
 					</Empty>
 				) : (
@@ -323,7 +295,7 @@ export function IdentityPage({ kind }: { kind: IdentityKind }) {
 							<TableHeader className="bg-surface-subtle/60">
 								<TableRow className="hover:bg-transparent">
 									<TableHead className="h-8" />
-									<HeadCell>{copy.keyLabel}</HeadCell>
+									<HeadCell>名称 · 凭据</HeadCell>
 									<HeadCell>路由目标</HeadCell>
 									<HeadCell>状态</HeadCell>
 									<HeadCell>
@@ -343,13 +315,13 @@ export function IdentityPage({ kind }: { kind: IdentityKind }) {
 								</TableRow>
 							</TableHeader>
 							{visible.map((row) => (
-								<IdentityRow kindTokens={kindTokens} key={row.entry.id} loading={!usage.data} row={row} period={period} />
+								<IdentityRow totalTokens={totalTokens} key={row.user.id} loading={!usage.data} row={row} period={period} />
 							))}
 							{visible.length === 0 ? (
 								<TableBody>
 									<TableRow className="hover:bg-transparent">
 										<TableCell className="py-10 text-center text-sm text-muted-foreground" colSpan={9}>
-											没有匹配的{copy.noun}
+											没有匹配的用户
 										</TableCell>
 									</TableRow>
 								</TableBody>
@@ -366,40 +338,15 @@ function HeadCell({ children, className }: { children?: React.ReactNode; classNa
 	return <TableHead className={cn("h-8 px-2 text-[11.5px] font-medium text-faint", className)}>{children}</TableHead>;
 }
 
-function IdentityRow({ row, period, kindTokens, loading }: { row: Row; period: Period; kindTokens: number; loading: boolean }) {
-	const { busy, now, notify, openApiKeyEditor, openProxyEditor, toggleApiKey, toggleProxy, deleteApiKey, deleteProxy } = useAdmin();
+function IdentityRow({ row, period, totalTokens, loading }: { row: Row; period: Period; totalTokens: number; loading: boolean }) {
+	const { busy, now, openUserEditor, toggleUser, deleteUser } = useAdmin();
 	const [open, setOpen] = useState(false);
-	const [revealed, setRevealed] = useState(false);
-	const { entry, route, stats } = row;
+	const { user, route, stats } = row;
 	const lastAt = stats?.lastAt ?? row.lastSeen?.lastAt ?? null;
 	const lastAgent = stats?.lastUserAgent || row.lastSeen?.userAgent || "";
-	const pending = busy.has(`${entry.kind}:${entry.id}`);
-	const dim = entry.enabled ? undefined : "opacity-55";
+	const pending = busy.has(`user:${user.id}`);
+	const dim = user.enabled ? undefined : "opacity-55";
 	const active = lastAt !== null && lastAt >= now - DAY_MS;
-	const noun = entry.kind === "api_key" ? "API Key" : "下游账户";
-
-	function edit() {
-		if (entry.raw && entry.kind === "api_key") openApiKeyEditor(entry.raw as Parameters<typeof openApiKeyEditor>[0]);
-		else openProxyEditor(entry.raw as Parameters<typeof openProxyEditor>[0]);
-	}
-	function toggle() {
-		if (entry.kind === "api_key") void toggleApiKey(entry.raw as Parameters<typeof toggleApiKey>[0]);
-		else void toggleProxy(entry.raw as Parameters<typeof toggleProxy>[0]);
-	}
-	function remove() {
-		if (entry.kind === "api_key") void deleteApiKey(entry.raw as Parameters<typeof deleteApiKey>[0]);
-		else void deleteProxy(entry.raw as Parameters<typeof deleteProxy>[0]);
-	}
-	async function copyCredential() {
-		try {
-			await navigator.clipboard.writeText(entry.credential);
-			notify(entry.kind === "api_key" ? "Key 已复制。" : "account_id 已复制。");
-		} catch {
-			notify("复制失败，请手动复制。", "error");
-		}
-	}
-
-	const credential = entry.kind === "api_key" && !revealed ? maskSecret(entry.credential) : entry.credential;
 	const success = stats ? successRate(stats) : null;
 
 	return (
@@ -414,30 +361,18 @@ function IdentityRow({ row, period, kindTokens, loading }: { row: Row; period: P
 						</CollapsibleTrigger>
 					</TableCell>
 					<TableCell className={cn("px-2", dim)}>
-						<div className="truncate text-[13.5px] leading-5 font-semibold" title={entry.name}>
-							{entry.name}
+						<div className="truncate text-[13.5px] leading-5 font-semibold" title={user.name}>
+							{user.name}
 						</div>
-						<div className="flex min-w-0 items-center gap-0.5">
-							<span className="truncate font-mono text-[11.5px] leading-4 text-muted-foreground" title={entry.kind === "api_key" ? undefined : entry.credential}>
-								{credential}
-							</span>
-							{entry.kind === "api_key" ? (
-								<Button aria-label={revealed ? "隐藏 Key" : "显示 Key"} className="text-muted-foreground" onClick={() => setRevealed((value) => !value)} size="icon-xs" type="button" variant="ghost">
-									{revealed ? <EyeOffIcon /> : <EyeIcon />}
-								</Button>
-							) : null}
-							<Button aria-label="复制" className="text-muted-foreground" onClick={() => void copyCredential()} size="icon-xs" type="button" variant="ghost">
-								<CopyIcon />
-							</Button>
-						</div>
+						<div className="truncate text-[11.5px] leading-4 text-muted-foreground">{credentialSummary(user)}</div>
 					</TableCell>
 					<TableCell className={cn("px-2", dim)}>
 						<RouteTarget label={route.label} type={route.type} />
 					</TableCell>
 					<TableCell className="px-2">
 						<label className="inline-flex items-center gap-2">
-							<Switch aria-label={`${entry.enabled ? "停用" : "启用"} ${entry.name}`} checked={entry.enabled} disabled={pending} onCheckedChange={toggle} />
-							<span className={cn("text-xs", entry.enabled ? "text-muted-foreground" : "text-faint")}>{entry.enabled ? "启用" : "停用"}</span>
+							<Switch aria-label={`${user.enabled ? "停用" : "启用"} ${user.name}`} checked={user.enabled} disabled={pending} onCheckedChange={() => void toggleUser(user)} />
+							<span className={cn("text-xs", user.enabled ? "text-muted-foreground" : "text-faint")}>{user.enabled ? "启用" : "停用"}</span>
 						</label>
 					</TableCell>
 					<TableCell className={cn("px-2", dim)}>
@@ -448,7 +383,7 @@ function IdentityRow({ row, period, kindTokens, loading }: { row: Row; period: P
 								<div className="flex w-16 flex-col">
 									<span className="text-[13px] leading-5 font-semibold tabular-nums">{stats ? formatTokens(stats.totalTokens) : "—"}</span>
 									<span className="truncate text-[11px] leading-4 text-faint">
-										{stats ? `占 ${formatPercent(ratio(stats.totalTokens, kindTokens))}` : `${WINDOW_LABEL[period]}无请求`}
+										{stats ? `占 ${formatPercent(ratio(stats.totalTokens, totalTokens))}` : `${WINDOW_LABEL[period]}无请求`}
 									</span>
 								</div>
 								<SparkBars values={stats?.trend ?? [0, 0, 0, 0, 0, 0, 0]} />
@@ -471,13 +406,13 @@ function IdentityRow({ row, period, kindTokens, loading }: { row: Row; period: P
 					</TableCell>
 					<TableCell className="px-2">
 						<div className="flex justify-end gap-2">
-							<Button disabled={pending} onClick={edit} size="sm" type="button" variant="outline">
+							<Button disabled={pending} onClick={() => openUserEditor(user)} size="sm" type="button" variant="outline">
 								编辑
 							</Button>
 							<DeleteConfirmationDialog
-								description={`删除后使用「${entry.name}」的请求将立即失效，路由分配也会移除。`}
-								onConfirm={remove}
-								title={`删除${noun}？`}
+								description={`删除后「${user.name}」的全部凭据立即失效，路由分配也会移除。`}
+								onConfirm={() => void deleteUser(user)}
+								title="删除用户？"
 								trigger={
 									<Button disabled={pending} size="sm" type="button" variant="destructive">
 										删除
@@ -490,7 +425,7 @@ function IdentityRow({ row, period, kindTokens, loading }: { row: Row; period: P
 				<CollapsibleContent asChild>
 					<tr>
 						<td className="p-0" colSpan={9}>
-							{open ? <IdentityDetail entry={entry} range={period} route={route} /> : null}
+							{open ? <IdentityDetail range={period} route={route} user={user} /> : null}
 						</td>
 					</tr>
 				</CollapsibleContent>

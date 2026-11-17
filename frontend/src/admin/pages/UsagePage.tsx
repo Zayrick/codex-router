@@ -74,7 +74,7 @@ export default function UsagePage() {
 					<div className="grid gap-4 xl:grid-cols-2">
 						<DownstreamCard
 							analytics={data}
-							onSelect={(identity) => setFilters({ ...filters, downstream: { identityType: identity.identityType, identityId: identity.identityId } })}
+							onSelect={(identity) => setFilters({ ...filters, downstream: { identityType: "user", identityId: identity.userId } })}
 						/>
 						<UpstreamCard
 							analytics={data}

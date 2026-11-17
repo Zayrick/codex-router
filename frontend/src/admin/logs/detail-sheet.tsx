@@ -92,7 +92,7 @@ function SheetBody({
 	const sessionFilter = event.parentSessionId || event.sessionId;
 	const summary = [
 		formatTimestamp(event.recordedAt).slice(5, 19).replace("-", "/"),
-		event.identityName ? `${event.identityName} → ${upstreamName(event)}${event.codexAccountName ? ` / ${event.codexAccountName}` : ""}` : null,
+		event.userName ? `${event.userName} → ${upstreamName(event)}${event.codexAccountName ? ` / ${event.codexAccountName}` : ""}` : null,
 		event.model || null,
 		formatSeconds(event.latencyMs, 1),
 		event.totalTokens ? formatCost(event.costUsd) : null,
@@ -140,10 +140,10 @@ function SheetBody({
 						<FileJsonIcon data-icon="inline-start" />
 						复制 JSON
 					</Button>
-					{onIdentityFilter && event.identityId ? (
+					{onIdentityFilter && event.userId ? (
 						<Button onClick={() => onIdentityFilter(event)} size="sm" type="button" variant="ghost">
 							<ListFilterIcon data-icon="inline-start" />
-							按此身份筛选
+							按此用户筛选
 						</Button>
 					) : null}
 				</div>
@@ -158,8 +158,9 @@ function SheetBody({
 						<Field label="状态" value={`${event.status}${event.statusCode ? ` · ${event.statusCode}` : ""}`} />
 						<Field label="错误码" mono value={event.errorCode} valueClassName={event.errorCode ? "text-danger" : undefined} />
 					</Section>
-					<Section icon={<GitBranchIcon />} title="身份与路由">
-						<Field label={`调用身份 · ${identityTypeLabel(event.identityType)}`} value={event.identityName} />
+					<Section icon={<GitBranchIcon />} title="用户与路由">
+						<Field label="用户" value={event.userName} />
+						<Field label={`凭据 · ${identityTypeLabel(event.credentialType)}`} value={event.credentialName} />
 						<Field label="账户组" value={event.accountGroupName || (event.codexAccountName ? "直连" : "")} />
 						<Field label="Codex 账户" value={event.codexAccountName} />
 					</Section>

@@ -1,10 +1,9 @@
-// Unified console session: one sign-in for administrators and API key / account users.
+// Unified console session: one sign-in for administrators and users (with any of their credentials).
 
 export const CONSOLE_API_BASE = "/admin/api";
 
 export interface ConsoleSession {
 	role: "admin" | "user";
-	identityType: "admin" | "api_key" | "auth_proxy";
 	createdAt: number;
 	expiresAt: number;
 	absoluteExpiresAt: number;

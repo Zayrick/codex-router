@@ -13,7 +13,7 @@ use crate::{
         is_known_api_path, is_legacy_admin_path_family, legacy_admin_base_path, match_api_route,
         match_console_route,
     },
-    auth::{ApiKeyRepository, RouteConsumerKind, client_token},
+    auth::{UserRepository, client_token},
     upstream::relay::is_backend_api_path,
 };
 
@@ -123,22 +123,21 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
                 .get("x-goog-api-key")
                 .and_then(|value| value.to_str().ok());
             let token = client_token(authorization, api_key, google_api_key);
-            let keys = ApiKeyRepository::new(state.config.as_ref());
-            match keys.authenticate_key(token.as_deref()).await {
-                Ok(key) => {
+            let users = UserRepository::new(state.config.as_ref());
+            match users.authenticate_api_key(token.as_deref()).await {
+                Ok(authenticated) => {
                     match state
                         .account_router
                         .resolve(
                             state.config.as_ref(),
-                            RouteConsumerKind::ApiKey,
-                            &key.id,
+                            &authenticated.user.id,
                             request.headers(),
                             current_time_ms(),
                         )
                         .await
                     {
                         Ok(Some(account_route)) => {
-                            let identity = super::usage::UsageIdentity::from(&key)
+                            let identity = super::usage::UsageIdentity::from(&authenticated)
                                 .with_account_route(
                                     &account_route.account.id,
                                     &account_route.account.name,
@@ -201,8 +200,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::auth::{
-        AccountRoutingState, AuthProxyAccount, ClientApiKey, CodexAccount, RouteAssignment,
-        RouteConsumerKind, RouteTargetKind,
+        AccountRoutingState, CodexAccount, CredentialKind, RouteAssignment, RouteTargetKind, User,
+        UserCredential,
     };
 
     use super::super::config::{
@@ -256,26 +255,27 @@ mod tests {
             frontend: FrontendConfig { dir: "web".into() },
             session: SessionConfig::default(),
             state: PersistentState {
-                api_keys: vec![
-                    ClientApiKey {
-                        id: "00000000-0000-4000-8000-000000000001".into(),
+                users: vec![
+                    User {
+                        id: USER_ID.into(),
                         name: "test".into(),
-                        key: "sk-test-value-123!".into(),
                         enabled: true,
+                        credentials: vec![
+                            credential(API_KEY_ID, CredentialKind::ApiKey, "sk-test-value-123!"),
+                            credential(ACCOUNT_ID_ID, CredentialKind::AccountId, "account-test"),
+                        ],
                     },
-                    ClientApiKey {
+                    User {
                         id: "00000000-0000-4000-8000-000000000004".into(),
                         name: "unassigned".into(),
-                        key: "sk-unassigned-123!".into(),
                         enabled: true,
+                        credentials: vec![credential(
+                            "00000000-0000-4000-8000-000000000014",
+                            CredentialKind::ApiKey,
+                            "sk-unassigned-123!",
+                        )],
                     },
                 ],
-                auth_proxy_accounts: vec![AuthProxyAccount {
-                    id: "00000000-0000-4000-8000-000000000002".into(),
-                    name: "proxy-test".into(),
-                    account_id: "account-test".into(),
-                    enabled: true,
-                }],
                 account_routing: AccountRoutingState {
                     accounts: vec![CodexAccount {
                         id: "00000000-0000-4000-8000-000000000003".into(),
@@ -283,20 +283,11 @@ mod tests {
                         enabled: true,
                     }],
                     groups: vec![],
-                    routes: vec![
-                        RouteAssignment {
-                            consumer_type: RouteConsumerKind::ApiKey,
-                            consumer_id: "00000000-0000-4000-8000-000000000001".into(),
-                            target_type: RouteTargetKind::Account,
-                            target_id: "00000000-0000-4000-8000-000000000003".into(),
-                        },
-                        RouteAssignment {
-                            consumer_type: RouteConsumerKind::AuthProxy,
-                            consumer_id: "00000000-0000-4000-8000-000000000002".into(),
-                            target_type: RouteTargetKind::Account,
-                            target_id: "00000000-0000-4000-8000-000000000003".into(),
-                        },
-                    ],
+                    routes: vec![RouteAssignment {
+                        user_id: USER_ID.into(),
+                        target_type: RouteTargetKind::Account,
+                        target_id: "00000000-0000-4000-8000-000000000003".into(),
+                    }],
                 },
                 ..PersistentState::default()
             },
@@ -449,11 +440,9 @@ mod tests {
         assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
         assert!(wrong.headers().get("set-cookie").is_none());
 
-        // A user session sees only its own usage and cannot use management APIs.
-        for (credential, identity_type) in [
-            ("sk-test-value-123!", "api_key"),
-            ("account-test", "auth_proxy"),
-        ] {
+        // Every credential of a user opens that user's console, which sees only
+        // the user's own usage and cannot use management APIs.
+        for credential in ["sk-test-value-123!", "account-test"] {
             let signed_in = sign_in(&app, credential).await;
             assert_eq!(signed_in.status(), StatusCode::OK);
             let cookie = session_cookie(&signed_in);
@@ -467,7 +456,6 @@ mod tests {
             }
             let session = json_body(signed_in).await;
             assert_eq!(session["session"]["role"], "user");
-            assert_eq!(session["session"]["identityType"], identity_type);
 
             let account = send(
                 &app,
@@ -477,9 +465,17 @@ mod tests {
             assert_eq!(account.status(), StatusCode::OK);
             assert_eq!(account.headers()["cache-control"], "no-store");
             let payload = json_body(account).await;
-            assert!(payload["account"].get("name").is_none());
-            assert_eq!(payload["account"]["identityType"], identity_type);
             assert_eq!(payload["usage"]["range"], "7d");
+
+            let quota = send(
+                &app,
+                Request::get("/admin/api/account/quota").header("cookie", &cookie),
+            )
+            .await;
+            assert_eq!(quota.status(), StatusCode::OK);
+            let quota = json_body(quota).await;
+            assert_eq!(quota["identity"]["name"], "test");
+            assert_eq!(quota["route"]["targetType"], "account");
             let cycle = send(
                 &app,
                 Request::get("/admin/api/account?range=cycle").header("cookie", &cookie),
@@ -519,16 +515,11 @@ mod tests {
         for enabled in [false, true] {
             let update = send(
                 &app,
-                Request::put("/admin/api/api-keys")
+                Request::put("/admin/api/users")
                     .header("cookie", &admin_cookie)
                     .header("origin", ORIGIN)
                     .header("content-type", "application/json")
-                    .body_json(serde_json::json!({
-                        "id": "00000000-0000-4000-8000-000000000001",
-                        "name": "test",
-                        "key": "sk-test-value-123!",
-                        "enabled": enabled,
-                    })),
+                    .body_json(user_body("test", "sk-test-value-123!", enabled)),
             )
             .await;
             assert_eq!(update.status(), StatusCode::OK);
@@ -545,16 +536,11 @@ mod tests {
         let user_cookie = session_cookie(&user);
         let rotate = send(
             &app,
-            Request::put("/admin/api/api-keys")
+            Request::put("/admin/api/users")
                 .header("cookie", &admin_cookie)
                 .header("origin", ORIGIN)
                 .header("content-type", "application/json")
-                .body_json(serde_json::json!({
-                    "id": "00000000-0000-4000-8000-000000000001",
-                    "name": "test",
-                    "key": "sk-rotated-value-123!",
-                    "enabled": true,
-                })),
+                .body_json(user_body("test", "sk-rotated-value-123!", true)),
         )
         .await;
         assert_eq!(rotate.status(), StatusCode::OK);
@@ -571,16 +557,11 @@ mod tests {
         for key in ["sk-test-value-123!", "sk-rotated-value-123!"] {
             let restore = send(
                 &app,
-                Request::put("/admin/api/api-keys")
+                Request::put("/admin/api/users")
                     .header("cookie", &admin_cookie)
                     .header("origin", ORIGIN)
                     .header("content-type", "application/json")
-                    .body_json(serde_json::json!({
-                        "id": "00000000-0000-4000-8000-000000000001",
-                        "name": "test",
-                        "key": key,
-                        "enabled": true,
-                    })),
+                    .body_json(user_body("test", key, true)),
             )
             .await;
             assert_eq!(restore.status(), StatusCode::OK);
@@ -598,16 +579,11 @@ mod tests {
         let kept_cookie = session_cookie(&user);
         let rename = send(
             &app,
-            Request::put("/admin/api/api-keys")
+            Request::put("/admin/api/users")
                 .header("cookie", &admin_cookie)
                 .header("origin", ORIGIN)
                 .header("content-type", "application/json")
-                .body_json(serde_json::json!({
-                    "id": "00000000-0000-4000-8000-000000000001",
-                    "name": "renamed",
-                    "key": "sk-rotated-value-123!",
-                    "enabled": true,
-                })),
+                .body_json(user_body("renamed", "sk-rotated-value-123!", true)),
         )
         .await;
         assert_eq!(rename.status(), StatusCode::OK);
@@ -618,17 +594,49 @@ mod tests {
         .await;
         assert_eq!(json_body(kept).await["session"]["role"], "user");
 
-        // A key equal to the admin secret is refused.
+        // A session opened with the account id survives changes to the API key
+        // only when they do not touch it; removing it ends the session.
+        let relay_user = sign_in(&app, "account-test").await;
+        let relay_cookie = session_cookie(&relay_user);
+        let mut without_account_id = user_body("renamed", "sk-rotated-value-123!", true);
+        without_account_id["credentials"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        let removed = send(
+            &app,
+            Request::put("/admin/api/users")
+                .header("cookie", &admin_cookie)
+                .header("origin", ORIGIN)
+                .header("content-type", "application/json")
+                .body_json(without_account_id),
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::OK);
+        let ended = send(
+            &app,
+            Request::get("/admin/api/session").header("cookie", &relay_cookie),
+        )
+        .await;
+        assert_eq!(json_body(ended).await["session"], serde_json::Value::Null);
+        assert_eq!(
+            sign_in(&app, "account-test").await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        // A credential equal to the admin secret is refused.
         let conflict = send(
             &app,
-            Request::post("/admin/api/api-keys")
+            Request::post("/admin/api/users")
                 .header("cookie", &admin_cookie)
                 .header("origin", ORIGIN)
                 .header("content-type", "application/json")
                 .body_json(serde_json::json!({
                     "name": "conflict",
-                    "key": "admin-secret",
                     "enabled": true,
+                    "credentials": [
+                        { "type": "api_key", "value": "admin-secret", "enabled": true }
+                    ],
                 })),
         )
         .await;
@@ -660,6 +668,32 @@ mod tests {
     }
 
     const ORIGIN: &str = "https://router.example";
+    const USER_ID: &str = "00000000-0000-4000-8000-000000000001";
+    const API_KEY_ID: &str = "00000000-0000-4000-8000-000000000011";
+    const ACCOUNT_ID_ID: &str = "00000000-0000-4000-8000-000000000012";
+
+    fn credential(id: &str, kind: CredentialKind, value: &str) -> UserCredential {
+        UserCredential {
+            id: id.into(),
+            kind,
+            value: value.into(),
+            name: String::new(),
+            enabled: true,
+        }
+    }
+
+    /// The test user with its API key set to `key` and its account id kept.
+    fn user_body(name: &str, key: &str, enabled: bool) -> serde_json::Value {
+        serde_json::json!({
+            "id": USER_ID,
+            "name": name,
+            "enabled": enabled,
+            "credentials": [
+                { "id": API_KEY_ID, "type": "api_key", "value": key, "enabled": true },
+                { "id": ACCOUNT_ID_ID, "type": "account_id", "value": "account-test", "enabled": true },
+            ],
+        })
+    }
 
     trait JsonBody {
         fn body_json(self, value: serde_json::Value) -> Request<Body>;

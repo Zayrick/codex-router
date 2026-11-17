@@ -100,7 +100,7 @@ async fn earliest(url: &Url, scope: &AnalyticsScope, state: &AppState) -> AppRes
         })
 }
 
-const CSV_COLUMNS: &str = "recorded_at,request_id,response_id,identity_type,identity_name,\
+const CSV_COLUMNS: &str = "recorded_at,request_id,response_id,user_name,credential_type,credential_name,\
 codex_account,account_group,requested_model,model,status,status_code,error_code,\
 reasoning_effort,service_tier,response_service_tier,transport,stream,endpoint,session_id,\
 parent_session_id,session_kind,client_ip,x_forwarded_for,user_agent,ttft_ms,latency_ms,\
@@ -115,8 +115,9 @@ fn csv_response(events: &[UsageEventRow]) -> Response {
             event.recorded_at.to_string(),
             event.request_id.clone(),
             event.response_id.clone(),
-            event.identity_type.clone(),
-            event.identity_name.clone(),
+            event.user_name.clone(),
+            event.credential_type.clone(),
+            event.credential_name.clone(),
             event.codex_account_name.clone(),
             event.account_group_name.clone(),
             event.requested_model.clone(),

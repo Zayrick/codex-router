@@ -3,7 +3,6 @@ import { InfoIcon, RefreshCwIcon } from "lucide-react";
 import type { WindowForecast } from "@/admin-api";
 import { useAdmin } from "@/admin/context";
 import { Meter, StackedBar, Legend, LegendItem } from "@/components/app/bars";
-import { IdentityTypeTag } from "@/components/app/badges";
 import { SectionCard } from "@/components/app/section-card";
 import { VIZ, planLabel, seriesColor } from "@/components/app/viz";
 import { Button } from "@/components/ui/button";
@@ -169,7 +168,7 @@ function ExhaustChip({ tone, children }: { tone: "danger" | "warning"; children:
 const TOP_IDENTITIES = 5;
 const OTHER_COLOR = "#d5d1c8";
 
-/** Figma "card · 今日调用身份": identities by cost plus today's model token mix. */
+/** Figma "card · 今日用户": identities by cost plus today's model token mix. */
 export function IdentitiesCard({ data }: { data: OverviewData }) {
 	const { navigate } = useAdmin();
 	const today = data.today;
@@ -180,7 +179,7 @@ export function IdentitiesCard({ data }: { data: OverviewData }) {
 	);
 	if (!today) {
 		return (
-			<SectionCard actions={actions} description="按成本排序 · 今日 00:00 起" title="今日调用身份">
+			<SectionCard actions={actions} description="按成本排序 · 今日 00:00 起" title="今日用户">
 				<Skeleton className="h-72" />
 			</SectionCard>
 		);
@@ -191,10 +190,9 @@ export function IdentitiesCard({ data }: { data: OverviewData }) {
 	const totalCost = today.totals.costUsd;
 	const rows = [
 		...top.map((identity, index) => ({
-			key: `${identity.identityType}:${identity.identityId}`,
+			key: identity.userId,
 			color: seriesColor(index),
-			name: identity.identityName,
-			type: identity.identityType as string | null,
+			name: identity.userName,
 			tokens: identity.totalTokens,
 			requests: identity.requests,
 			cost: identity.costUsd,
@@ -204,8 +202,7 @@ export function IdentitiesCard({ data }: { data: OverviewData }) {
 					{
 						key: "rest",
 						color: OTHER_COLOR,
-						name: `其他 ${rest.length} 个身份`,
-						type: null,
+						name: `其他 ${rest.length} 个用户`,
 						tokens: rest.reduce((sum, item) => sum + item.totalTokens, 0),
 						requests: rest.reduce((sum, item) => sum + item.requests, 0),
 						cost: rest.reduce((sum, item) => sum + item.costUsd, 0),
@@ -217,7 +214,7 @@ export function IdentitiesCard({ data }: { data: OverviewData }) {
 	const models = today.models.slice(0, 6);
 
 	return (
-		<SectionCard actions={actions} description="按成本排序 · 今日 00:00 起" title="今日调用身份">
+		<SectionCard actions={actions} description="按成本排序 · 今日 00:00 起" title="今日用户">
 			{rows.length === 0 ? (
 				<Empty className="py-8">
 					<EmptyHeader>
@@ -234,7 +231,6 @@ export function IdentitiesCard({ data }: { data: OverviewData }) {
 								<div className="flex min-w-0 flex-1 flex-col">
 									<span className="flex items-center gap-1.5">
 										<span className="truncate text-[12.5px] leading-5 font-medium">{row.name}</span>
-										{row.type ? <IdentityTypeTag type={row.type} /> : null}
 									</span>
 									<span className="text-[11px] leading-4 text-faint tabular-nums">
 										{formatTokens(row.tokens)} Token · {formatCount(row.requests)} 请求
@@ -249,7 +245,7 @@ export function IdentitiesCard({ data }: { data: OverviewData }) {
 					</ul>
 					<div className="flex items-center justify-between text-[11.5px] text-muted-foreground">
 						<span>
-							合计 {identities.length} 个身份 · {formatCount(today.totals.requests)} 请求
+							合计 {identities.length} 个用户 · {formatCount(today.totals.requests)} 请求
 						</span>
 						<span className="font-mono text-[12.5px] font-bold text-foreground">{formatCost(totalCost)}</span>
 					</div>

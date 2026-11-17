@@ -71,12 +71,10 @@ export default function CodexAccountsPage() {
 		});
 
 	function sourcesFor(account: CodexAccount): RoutingSource[] {
-		const identityName = (type: "api_key" | "auth_proxy", id: string) =>
-			(type === "api_key" ? state.apiKeys.find((entry) => entry.id === id)?.name : state.authProxyAccounts.find((entry) => entry.id === id)?.name) ?? id;
 		const identitiesFor = (targetType: "group" | "account", targetId: string): RouteIdentity[] =>
 			state.routes
 				.filter((route) => route.targetType === targetType && route.targetId === targetId)
-				.map((route) => ({ type: route.consumerType, id: route.consumerId, name: identityName(route.consumerType, route.consumerId) }));
+				.map((route) => ({ id: route.userId, name: state.users.find((user) => user.id === route.userId)?.name ?? route.userId }));
 		const sources: RoutingSource[] = state.accountGroups
 			.filter((group) => group.accountIds.includes(account.id))
 			.map((group) => ({ group, identities: identitiesFor("group", group.id) }));

@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import type { IdentityStats, UpstreamAccountStats, UpstreamGroupStats, UsageAnalytics } from "@/admin-api";
 import { Legend, LegendItem, StackedBar } from "@/components/app/bars";
-import { IdentityTypeTag, Tag } from "@/components/app/badges";
+import { Tag } from "@/components/app/badges";
 import { SectionCard } from "@/components/app/section-card";
 import { Segmented } from "@/components/app/segmented";
 import { STATUS_META, TOKEN_PARTS, VIZ, tokenSplit } from "@/components/app/viz";
@@ -85,11 +85,10 @@ export function DownstreamCard({ analytics, onSelect }: { analytics: UsageAnalyt
 								? `${formatCost(row.costUsd)} · ${formatCount(row.requests)} 请求 · 成功 ${formatPercent(successRate(row))} · 缓存 ${formatPercent(cacheRate(row))}`
 								: `${formatTokens(row.totalTokens)} Token · ${formatCount(row.requests)} 请求 · 每请求 ${formatCost(row.requests ? row.costUsd / row.requests : 0)}`
 						}
-						key={`${row.identityType}:${row.identityId}`}
-						name={row.identityName || row.identityId}
+						key={row.userId}
+						name={row.userName || row.userId}
 						rank={index + 1}
 						share={total > 0 ? formatPercent(value(row) / total) : undefined}
-						tag={<IdentityTypeTag type={row.identityType} />}
 						value={format(value(row))}
 						{...(onSelect ? { onClick: () => onSelect(row) } : {})}
 					/>
@@ -98,7 +97,7 @@ export function DownstreamCard({ analytics, onSelect }: { analytics: UsageAnalyt
 					<RankRow
 						bar={<StackedBar height={6} segments={metric === "tokens" ? tokenSegments(restTotals) : [{ key: "cost", value: restTotals.costUsd, color: VIZ.teal }]} total={max} />}
 						detail={`${formatCost(restTotals.costUsd)} · ${formatCount(restTotals.requests)} 请求`}
-						name={`其他 ${rest.length} 个身份`}
+						name={`其他 ${rest.length} 个用户`}
 						rank="·"
 						share={total > 0 ? formatPercent(value(restTotals) / total) : undefined}
 						value={format(value(restTotals))}

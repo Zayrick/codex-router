@@ -20,7 +20,7 @@ Codex Router 通过协议转换、Codex 原生映射和透明传输提供多种�
 
 ## 2. 鉴权与通用行为
 
-明确注册的公开协议 API 要求一个已启用的下游 API Key；健康检查、已知 API 的预检请求、管理
+明确注册的公开协议 API 要求一个已启用用户的已启用 API Key；健康检查、已知 API 的预检请求、管理
 入口、`/backend-api` 路径族和其他未注册路径不使用该鉴权。公开 API 支持以下 header，选择
 优先级固定：
 
@@ -70,9 +70,9 @@ Query、流式正文和端到端 header 转发到固定的 `https://chatgpt.com`
 WebSocket 响应。配置 `upstream.chatgpt_proxy` 时这些连接通过 SOCKS5 建立。该路径族不执行下游
 API Key 鉴权或协议转换。
 
-仅路径以 `/backend-api/codex/` 开头，且请求中的 `ChatGPT-Account-ID` 精确匹配一条已启用下游
-账户记录时，服务查询该调用身份的账户路由。分配到单个账户或账户组时，会使用调度得到的有效
-Codex OAuth 替换原请求中已有的 `Authorization` 和 `ChatGPT-Account-ID`；尚未分配、记录已停用
+仅路径以 `/backend-api/codex/` 开头，且请求中的 `ChatGPT-Account-ID` 精确匹配某个已启用用户的
+已启用账户 ID 凭据时，服务查询该用户的账户路由。分配到单个账户或账户组时，会使用调度得到的有效
+Codex OAuth 替换原请求中已有的 `Authorization` 和 `ChatGPT-Account-ID`；尚未分配、用户或凭据已停用
 或未匹配时按原认证信息透明转发。已配置路由但目标没有可用账户时返回本地错误。
 其他 `/backend-api` 路径（包括不带尾部斜杠的 `/backend-api/codex`）保留原始凭据，不查询账户路由。
 
@@ -81,7 +81,7 @@ Codex OAuth 替换原请求中已有的 `Authorization` 和 `ChatGPT-Account-ID`
 - `round-robin`：按稳定账户顺序平均轮询；
 - `weighted-round-robin`：按 Codex 额度窗口的平均
   `remainingPercent / 距离 resetAt 的剩余分钟` 平滑加权，未知额度按组内平均权重处理；
-- `fallback`：按 API Key 或下游 account id 固定账户，并在该账户不可用时切换。
+- `fallback`：按用户固定账户（同一用户的所有凭据共用），并在该账户不可用时切换。
 
 `round-robin` 和 `weighted-round-robin` 支持 `sessionAffinity` 与 `sessionAffinityTtl`。TTL 接受
 `humantime` 时长（如 `30m`、`1h`、`7d`）或 `unlimited`。启用亲和后依次识别
@@ -196,7 +196,7 @@ suffix、seed、user 等传统 Completions 控件不会转发。
 
 Anthropic 与 Gemini token-count 路径使用本地 `cl100k_base` tokenizer，对转换后的 Codex
 input、工具 schema 和工具结果进行估算。结果适用于预检和预算，不保证与供应商 tokenizer
-逐 token 一致，也不应用于账单核对。这两个路径仍要求下游 API Key，但不要求有效 OAuth 或
+逐 token 一致，也不应用于账单核对。这两个路径仍要求用户 API Key，但不要求有效 OAuth 或
 访问 ChatGPT 上游。
 
 ## 8. 正文、流与 WebSocket
@@ -216,7 +216,7 @@ URL 或自定义子协议。
 
 ## 9. 错误、CORS 与缓存
 
-- 本地路由和已注册协议路径的错误方法、无效下游 API Key 返回空正文 `404`；
+- 本地路由和已注册协议路径的错误方法、无效 API Key 返回空正文 `404`；
 - 未注册路径透明转发；
 - 服务生成的协议错误分别使用 OpenAI、Anthropic 或 Google envelope；
 - 只有已确认的公开 API 响应添加 CORS header；管理响应不添加 CORS；
@@ -260,10 +260,11 @@ ChatGPT；未知路径或方法返回空 `404`。
 
 ### 登录识别
 
-登录接口依次比较 `admin.secret`、已启用的 API Key 和已启用下游账户的 `account_id`（去除首尾
-空白），命中管理员即获得管理员会话，命中后两者获得只读用户会话。同一字符串同时配置为多种身份
-（含已停用记录）时拒绝登录并记录错误日志；创建或修改 API Key、下游账户时也会拒绝与
-`admin.secret` 相同的值。失败统一返回 `401 invalid_credentials`，不透露命中了哪类记录。
+登录接口比较 `admin.secret` 与所有用户的凭据：API Key 按原值比较，账户 ID 去除首尾空白后比较。
+命中管理员即获得管理员会话；命中某个用户已启用的凭据（且用户已启用）获得该用户的只读会话，
+同一用户的任一凭据登录后看到的是同一个看板。凭据值在全部用户之间唯一；某个用户凭据（含已停用
+记录）与 `admin.secret` 相同时拒绝登录并记录错误日志，创建或修改用户时也会拒绝这样的值。失败统一
+返回 `401 invalid_credentials`，不透露命中了哪类记录。
 
 `server.public_origin` 为非回环地址的 HTTP 时，管理员登录返回 `403 insecure_admin_origin`，除非
 配置 `session.allow_insecure_http = true`；用户登录不受此限制。
@@ -275,20 +276,21 @@ ChatGPT；未知路径或方法返回空 `404`。
 ### 会话
 
 会话保存在 `session.database_path` 指定的 SQLite 中。Cookie 只包含 32 字节随机 token，数据库只
-保存其 SHA-256。会话不保存登录凭据，而是保存凭据的 HMAC 绑定值（密钥为自动生成的
-`state.session_binding_key`），每个请求都会重新确认身份仍存在、已启用且凭据未变。
+保存其 SHA-256。会话不保存登录凭据，而是保存登录所用凭据的 HMAC 绑定值（密钥为自动生成的
+`state.session_binding_key`），每个请求都会重新确认用户仍存在、已启用，且该凭据仍启用、值未变。
 
 | 身份 | 空闲过期 | 绝对过期 |
 | --- | --- | --- |
 | 管理员 | 24 小时 | 7 天 |
-| API Key / 下游账户 | 30 天 | 90 天 |
+| 用户 | 30 天 | 90 天 |
 
 已登录请求距上次续期超过 5 分钟时，服务端顺延空闲期限（不超过绝对期限）并重新下发 Cookie；
-token 不轮换。每个身份最多保留 20 个会话，超出时删除最旧的会话。以下情况会使会话失效：
+token 不轮换。管理员与每个用户各最多保留 20 个会话，超出时删除最旧的会话。以下情况会使会话失效：
 
 - 退出登录；
-- 修改 `admin.secret`、API Key 值或下游账户 `account_id`；
-- 停用或删除 API Key、下游账户（重新启用后旧会话不会恢复，需要重新登录）；
+- 修改 `admin.secret`；
+- 停用或删除用户，或修改、停用、删除用户已启用的凭据：该用户的全部会话失效（重新启用或改回原值后
+  旧会话不会恢复，需要重新登录）；仅改名称、备注或新增凭据不影响已有会话；
 - 更换 `state.session_binding_key`（全部会话失效）。
 
 `public_origin` 为 HTTPS 时 Cookie 为 `__Host-codex-session`（`Path=/; Secure; HttpOnly;
@@ -301,17 +303,17 @@ SameSite=Lax`）；HTTP 时为 `codex-session`（`Path=/admin; HttpOnly; SameSit
 
 ### 用户用量
 
-`GET /admin/api/account?range=24h` 的查询身份只取自会话，不接受客户端指定。`range` 支持 `24h`、
-`7d`、`30d` 和 `all`。返回身份类型、请求次数、Token、成本、时间序列、模型占比与额度时间条，
-但不会回显 account id、API Key、OAuth、邮箱或 Cookie。管理员会话调用返回 `403`。
+`GET /admin/api/account?range=24h` 的查询用户只取自会话，不接受客户端指定，统计范围是该用户的全部
+凭据。`range` 支持 `24h`、`7d`、`30d` 和 `all`。返回请求次数、Token、成本、时间序列、模型占比与
+额度时间条，但不会回显账户 ID、API Key、OAuth、邮箱或 Cookie。管理员会话调用返回 `403`。
 
-额度根据该调用身份当前映射的单个账户或账户组可用成员读取，不会推进组的轮询游标；无法读取额度
-时仍返回 Token 用量，`quota` 为 `null`。未分配路由的身份仍可查询既有 Token 记录，但没有账户额度。
+额度根据该用户当前映射的单个账户或账户组可用成员读取，不会推进组的轮询游标；无法读取额度
+时仍返回 Token 用量，`quota` 为 `null`。未分配路由的用户仍可查询既有 Token 记录，但没有账户额度。
 
 `/account/analytics` 与 `/account/events` 拒绝 `downstreamType`/`downstreamId` 参数（`400`），
-下游身份只取自会话。`/account/quota` 返回 `identity`（身份类型、名称、凭据末 4 位）、`route`、
-`group`（账户组名称与策略）和 `visible`；仅当 `public_account.show_quota` 开启时才附带 `quota`
-（结构同管理端 `/quota`，仅含该身份路由到的账户）。
+用户只取自会话。`/account/quota` 返回 `identity`（用户名称）、`route`、`group`（账户组名称与策略）
+和 `visible`；仅当 `public_account.show_quota` 开启时才附带 `quota`（结构同管理端 `/quota`，仅含
+该用户路由到的账户）。
 
 ### 旧路径
 
@@ -320,8 +322,9 @@ SameSite=Lax`）；HTTP 时为 `codex-session`（`Path=/admin; HttpOnly; SameSit
 
 ## 12. Token 用量统计
 
-API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Responses 请求，每次上游尝试
-恰好写入一条 SQLite 记录，失败的请求同样记录。HTTP 请求是一次尝试；WebSocket 连接中每个
+API Key 鉴权的 Codex Responses 请求，以及按账户 ID 转发的 Codex Responses 请求，每次上游尝试
+恰好写入一条 SQLite 记录。记录包含用户（`userId`、`userName`）和本次使用的凭据（`credentialType`
+为 `api_key` 或 `account_id`、`credentialId`、`credentialName`；未设备注时为值的末 4 位）。失败的请求同样记录。HTTP 请求是一次尝试；WebSocket 连接中每个
 `response.create`/`response.append` 各是一次尝试，相同 response ID 只落库一次。`status` 取值：
 
 - `completed`、`incomplete`：上游返回 `response.completed`/`response.incomplete`；
@@ -341,7 +344,7 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 
 管理员会话可读取 `GET /admin/api/usage?range=7d`。`range` 支持 `cycle`、`24h`、`7d`、
 `30d` 和 `all`，省略时使用 `7d`。下游筛选使用 `downstreamType` 与 `downstreamId`，类型支持
-`api_key` 和 `auth_proxy`；上游筛选使用 `upstreamType` 与 `upstreamId`，类型支持
+`user`（用户的全部凭据）和 `credential`（单个凭据）；上游筛选使用 `upstreamType` 与 `upstreamId`，类型支持
 `codex_account` 和 `account_group`。两个维度可以单独使用，也可以同时使用；同时使用时按逻辑与
 重新计算全部聚合结果。ID 使用 `/state` 返回的稳定记录 ID，每组类型与 ID 参数必须一起出现。
 
@@ -351,7 +354,7 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 - `startAt`、`endAt` 和所选 `range`；
 - `totals`：请求数以及输入、缓存命中、缓存创建、输出、推理和总 Token；
 - `series`：按小时或天填充的趋势时间桶；`successfulRequests` 统计 `completed`/`incomplete`，`failedRequests` 统计 `failed`/`interrupted`，`cancelled` 不计入两者；
-- `models`、`identities`：按模型及 API Key/代理账户聚合；
+- `models`、`identities`：按模型及用户聚合；
 - `reasoningEfforts`、`serviceTiers`：按思考强度（`reasoning.effort`）及服务等级聚合，`value` 取自实际发往上游的请求体；未显式设置思考强度时为 `default`，未设置服务等级时为 `auto`（由上游决定），`priority` 即 Codex 的 Fast 模式，空字符串表示请求在读取请求体之前就失败了；
 - `recentEvents`：最多 50 条事件，包含上述全部字段、身份与路由目标、端点、HTTP/WebSocket、思考强度、请求与响应服务等级（`reasoningEffort`、`serviceTier`、`responseServiceTier`）及 Token 明细。
 
@@ -374,7 +377,7 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 - `totals`：结果计数（`completed`、`incomplete`、`failed`、`cancelled`、`interrupted`、`rateLimited` 为 HTTP 429）、Token 与成本、未定价 Token、Fast 请求数及其未乘倍率的成本、会话数、`ttft`/`latency` 的 P50/P95/最大值（仅统计成功请求），以及输出速度中位数（`outputTokens × 1000 ÷ latencyMs`）；
 - `previous`：等长的上一周期、截至相同经过时间的 `totals`（`all` 为 `null`）；
 - `series`：按桶的结果计数、Token 构成、成本、TTFT/延迟分位数和 Fast 降级数；
-- `models`、`identities`、`upstreamAccounts`、`upstreamGroups`：按模型、调用身份、Codex 账户、账户组聚合，含分位数、7 段 Token 趋势、429 按桶分布、会话保持率与使用方；
+- `models`、`identities`、`upstreamAccounts`、`upstreamGroups`：按模型、用户、Codex 账户、账户组聚合，含分位数、7 段 Token 趋势、429 按桶分布、会话保持率与使用方；
 - `identityModels`、`effortTiers`：身份 × 模型、思考强度 × 实际服务等级的交叉矩阵；
 - `fast`：Fast 请求、兑现与降级次数，按账户和模型细分；
 - `errors`：按状态、HTTP 状态码、错误码分组的未完成请求，含最近时间与涉及账户；
@@ -387,7 +390,7 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
   `downgraded`（请求 Fast 但上游返回其他等级）、`subagent`、`rate_limited`（HTTP 429）；
 - `offset`、`limit`（1–500，默认 50），按时间倒序分页；
 - `group=session`：按会话树分组，`total` 为组数，`sessions` 每组含根会话的最新请求和子会话摘要；
-  无会话的请求按调用身份成组；
+  无会话的请求按用户成组；
 - `format=csv`：导出匹配的请求（最多 50 000 条），字段含全部记录列与成本，公式前缀会被转义。
 
 分页响应还包含区间内未筛选的总数 `rangeTotal`、匹配请求的 `summary` 与 `series`、各视图计数
@@ -397,21 +400,21 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 
 管理 JSON API 位于 `/admin/api`，需要管理员会话：未登录返回 `401 invalid_session`，用户会话返回
 `403 admin_required`。控制台页面通过 `/admin?page=<页面>` 切换视图，页面为 `logs`、`usage`、
-`performance`、`codex`、`groups`、`api-keys`、`downstream`、`pricing` 和 `settings`（旧的
-`account`、`routing`、`accounts` 会映射到新页面）。以下为相对 `/admin/api` 的端点：
+`performance`、`codex`、`groups`、`users`、`pricing` 和 `settings`（旧的
+`account`、`routing`、`accounts`、`api-keys`、`downstream` 会映射到新页面）。以下为相对 `/admin/api` 的端点：
 
 | 方法与相对路径 | 用途 |
 | --- | --- |
-| `GET /state` | 读取 Codex 账户、账户组、路由、API Key 和下游账户 |
+| `GET /state` | 读取 Codex 账户、账户组、路由和用户 |
 | `GET /codex-accounts/subscription?id=<id>` | 实时读取指定 Codex 账户订阅与额度 |
 | `POST /codex-accounts/oauth/device` | 为新 Codex 账户创建设备授权请求 |
 | `POST /codex-accounts/oauth/device/poll` | 轮询设备授权，并在成功后加入统一账户池 |
 | `POST /codex-accounts/import` | 通过 JSON 或手动凭据添加 Codex 账户，无需设备登录 |
 | `PUT /codex-accounts` | 更新账户名称或启用状态；禁用会释放直连路由 |
 | `DELETE /codex-accounts` | 删除账户、OAuth、组成员关系和直连路由 |
-| `GET /account-routing` | 读取账户组与调用身份路由 |
+| `GET /account-routing` | 读取账户组与用户路由 |
 | `PUT /account-routing` | 原子替换经校验的账户组与路由配置 |
-| `GET /usage?range=7d&upstreamType=codex_account&upstreamId=<id>&downstreamType=api_key&downstreamId=<id>` | 读取 SQLite 用量，可分别或组合筛选上游与下游 |
+| `GET /usage?range=7d&upstreamType=codex_account&upstreamId=<id>&downstreamType=user&downstreamId=<id>` | 读取 SQLite 用量，可分别或组合筛选上游与下游 |
 | `GET /usage/analytics` | 用量分析聚合，见第 12 节 |
 | `GET /usage/events` | 分页调用日志、会话分组与 CSV 导出，见第 12 节 |
 | `GET /quota` | 各账户缓存的额度快照与耗尽预测；`?refresh=1` 先立即采样全部启用账户 |
@@ -419,18 +422,34 @@ API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Res
 | `PUT /pricing` | 替换模型价格配置 |
 | `POST /pricing/sync` | 从价格源同步模型价格，并记录同步状态 |
 | `POST /settings/notifications/test` | 通过已保存并启用的通道发送测试通知，正文 `{"channel": "bark"}` 或 `"dingtalk"`；通道未启用返回 `409` |
-| `GET /api-keys` | 读取 API Key 列表 |
-| `POST /api-keys` | 创建 API Key |
-| `PUT /api-keys` | 更新名称、值或启用状态 |
-| `DELETE /api-keys` | 删除 API Key |
-| `POST /auth-proxy` | 创建下游账户，默认不分配路由 |
-| `PUT /auth-proxy` | 更新下游账户的名称、`account_id` 或启用状态 |
-| `DELETE /auth-proxy` | 删除下游账户并释放其路由 |
+| `GET /users` | 读取用户及其凭据 |
+| `POST /users` | 创建用户，默认不分配路由 |
+| `PUT /users` | 整体更新用户的名称、启用状态与凭据列表 |
+| `DELETE /users` | 删除用户及其全部凭据，并释放其路由 |
 
-所有管理写请求必须带有与 `server.public_origin` 完全一致的 `Origin`。停用或删除 API Key、下游
-账户前会先撤销其全部控制台会话；撤销失败时返回 `503` 且不修改配置。
+用户正文形如：
 
-Codex 账户、API Key、下游账户和账户组使用 UUID 格式的稳定 `id`。禁用 Codex 账户会暂停其路由，
+```json
+{
+  "id": "<更新时必填>",
+  "name": "张三",
+  "enabled": true,
+  "credentials": [
+    { "id": "<已有凭据的 id，新凭据省略>", "type": "api_key", "value": "sk-…", "name": "laptop", "enabled": true },
+    { "type": "account_id", "value": "<ChatGPT 账户 ID>", "name": "", "enabled": true }
+  ]
+}
+```
+
+每个用户需要 1 到 20 个凭据。API Key 需 11–512 个字符并包含字母、数字与符号；账户 ID 为 1–256 个
+可见 ASCII 字符，保存前去除首尾空白。凭据值在全部用户和类型之间唯一。`PUT` 时与已有凭据 `id`
+匹配的条目保留原 `id`，其余条目分配新 `id`。
+
+所有管理写请求必须带有与 `server.public_origin` 完全一致的 `Origin`。若更新停用了用户，或修改、
+停用、删除了其已启用的凭据，或删除用户，会先撤销该用户的全部控制台会话；撤销失败时返回 `503`
+且不修改配置。
+
+Codex 账户、用户、凭据和账户组使用 UUID 格式的稳定 `id`。禁用 Codex 账户会暂停其路由，
 删除账户会同时移除组成员关系和直连路由。
 
 ### 额度预测
@@ -475,4 +494,4 @@ Codex 账户、API Key、下游账户和账户组使用 UUID 格式的稳定 `id
   错误返回 `400 invalid_json`。格式检查不代表 Token 已通过上游鉴权，实际有效性以刷新或上游请求结果为准。
 
 凭据与账户目录在一次配置写入中保存。此接口不支持仅含 `OPENAI_API_KEY` 的 API Key 登录文件；
-下游 API Key 仍通过“API Key”页面单独管理。
+下游 API Key 仍在“用户”页面管理。

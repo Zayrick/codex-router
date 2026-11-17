@@ -1,19 +1,18 @@
-// Dialogs shared by the console pages: identity editors, account group
-// editor, Codex account rename and device login.
+// Dialogs shared by the console pages: user editor, account group editor,
+// Codex account rename and device login.
 
 import { useState, type FormEvent } from "react";
-import { CopyIcon, ExternalLinkIcon, EyeIcon, EyeOffIcon, TriangleAlertIcon } from "lucide-react";
+import { CopyIcon, ExternalLinkIcon, EyeIcon, EyeOffIcon, PlusIcon, RefreshCwIcon, Trash2Icon, TriangleAlertIcon } from "lucide-react";
 
 import type {
 	AccountGroup,
 	AccountGroupStrategy,
-	AuthProxyAccount,
-	AuthProxyAccountInput,
-	ClientApiKey,
-	ClientApiKeyInput,
 	CodexAccount,
 	CodexAccountDeviceAuthorization,
+	CredentialType,
 	RouteAssignment,
+	User,
+	UserInput,
 } from "@/admin-api";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -70,13 +69,33 @@ import {
 	validApiKey,
 	type RouteTargetSelection,
 } from "./routing-model";
+import { CREDENTIAL_LABEL } from "./identities/model";
 
 export { default as CredentialImportDialog } from "@/CredentialImportDialog";
 export { default as DeleteConfirmationDialog } from "@/DeleteConfirmationDialog";
 
 const UNASSIGNED_ROUTE_TARGET_VALUE = "__unassigned_route_target__";
+const MAX_CREDENTIALS = 20;
 
-export function ApiKeyEditor({
+interface CredentialDraft {
+	/** Stable React key; new credentials have no server id yet. */
+	key: string;
+	id?: string;
+	type: CredentialType;
+	value: string;
+	name: string;
+	enabled: boolean;
+}
+
+function newCredential(type: CredentialType): CredentialDraft {
+	return { key: crypto.randomUUID(), type, value: type === "api_key" ? generateApiKey() : "", name: "", enabled: true };
+}
+
+function validCredential(credential: CredentialDraft): boolean {
+	return credential.type === "api_key" ? validApiKey(credential.value) : validAccountId(credential.value.trim());
+}
+
+export function UserEditor({
 	accounts,
 	entry,
 	groups,
@@ -86,65 +105,105 @@ export function ApiKeyEditor({
 	route,
 }: {
 	accounts: CodexAccount[];
-	entry: ClientApiKey | "new";
+	entry: User | "new";
 	groups: AccountGroup[];
 	loading: boolean;
 	onCancel: () => void;
-	onSave: (value: ClientApiKeyInput, target: RouteTargetSelection) => void;
+	onSave: (value: UserInput, target: RouteTargetSelection) => void;
 	route: RouteAssignment | null;
 }) {
-	const initial = entry === "new" ? { name: "", key: generateApiKey(), enabled: true } : entry;
-	const [name, setName] = useState(initial.name);
-	const [key, setKey] = useState(initial.key);
-	const [enabled, setEnabled] = useState(initial.enabled);
-	const [visible, setVisible] = useState(entry === "new");
+	const [name, setName] = useState(entry === "new" ? "" : entry.name);
+	const [enabled, setEnabled] = useState(entry === "new" ? true : entry.enabled);
+	const [credentials, setCredentials] = useState<CredentialDraft[]>(() =>
+		entry === "new" ? [newCredential("api_key")] : entry.credentials.map((credential) => ({ ...credential, key: credential.id })),
+	);
 	const [target, setTarget] = useState<RouteTargetSelection>(route);
+
+	const values = credentials.map((credential) => (credential.type === "api_key" ? credential.value : credential.value.trim()));
+	const duplicate = new Set(values).size !== values.length;
+	const valid = Boolean(name.trim()) && credentials.length > 0 && credentials.length <= MAX_CREDENTIALS && credentials.every(validCredential) && !duplicate;
+
+	function update(key: string, patch: Partial<CredentialDraft>): void {
+		setCredentials((current) => current.map((credential) => (credential.key === key ? { ...credential, ...patch } : credential)));
+	}
 
 	function submit(event: FormEvent<HTMLFormElement>): void {
 		event.preventDefault();
-		if (validApiKey(key) && name.trim()) onSave({ name: name.trim(), key, enabled }, target);
+		if (!valid) return;
+		onSave(
+			{
+				name: name.trim(),
+				enabled,
+				credentials: credentials.map(({ id, type, value, name: label, enabled: active }) => ({
+					...(id ? { id } : {}),
+					type,
+					value: type === "api_key" ? value : value.trim(),
+					name: label.trim(),
+					enabled: active,
+				})),
+			},
+			target,
+		);
 	}
 
 	return (
 		<Dialog open onOpenChange={(open) => { if (!open && !loading) onCancel(); }}>
-			<DialogContent className="flex h-[min(40rem,calc(100svh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg" showCloseButton={!loading}>
+			<DialogContent className="flex h-[min(44rem,calc(100svh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl" showCloseButton={!loading}>
 				<DialogHeader className="shrink-0 border-b px-4 py-4 pr-12 text-left sm:px-6 sm:pr-14">
-					<DialogTitle>{entry === "new" ? "添加 API Key" : "编辑 API Key"}</DialogTitle>
-					<DialogDescription>配置 API Key、路由目标与启用状态。</DialogDescription>
+					<DialogTitle>{entry === "new" ? "添加用户" : "编辑用户"}</DialogTitle>
+					<DialogDescription>用户的任一凭据都可调用服务和登录控制台，用量合并统计。</DialogDescription>
 				</DialogHeader>
 				<form className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={submit}>
 					<ScrollArea className="h-full min-h-0 flex-1">
 						<FieldGroup className="p-4 sm:p-6">
 							<Field>
-								<FieldLabel htmlFor="api-key-name">名称</FieldLabel>
-								<Input autoFocus disabled={loading} id="api-key-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：my-laptop" required type="text" value={name} />
+								<FieldLabel htmlFor="user-name">名称</FieldLabel>
+								<Input autoFocus disabled={loading} id="user-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：张三" required type="text" value={name} />
 							</Field>
-							<Field>
-								<FieldLabel htmlFor="api-key-value">Key</FieldLabel>
-								<InputGroup>
-									<InputGroupInput autoComplete="off" disabled={loading} id="api-key-value" maxLength={MAX_API_KEY_LENGTH} minLength={MIN_API_KEY_LENGTH} onChange={(event) => setKey(event.target.value)} required spellCheck={false} type={visible ? "text" : "password"} value={key} />
-									<InputGroupAddon align="inline-end">
-										<InputGroupButton aria-label={visible ? "隐藏" : "显示"} onClick={() => setVisible((value) => !value)} size="icon-xs">
-											{visible ? <EyeOffIcon /> : <EyeIcon />}
-										</InputGroupButton>
-									</InputGroupAddon>
-								</InputGroup>
-								<FieldDescription>至少 {MIN_API_KEY_LENGTH} 个字符，并包含字母、数字与符号。</FieldDescription>
-							</Field>
-							<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，该 API Key 的请求将不可用。" />
+							<FieldSet>
+								<FieldLegend variant="label">凭据</FieldLegend>
+								<div className="flex flex-col gap-2">
+									{credentials.map((credential) => (
+										<CredentialRow
+											credential={credential}
+											duplicate={values.filter((value) => value === (credential.type === "api_key" ? credential.value : credential.value.trim())).length > 1}
+											key={credential.key}
+											loading={loading}
+											onChange={(patch) => update(credential.key, patch)}
+											onRemove={credentials.length > 1 ? () => setCredentials((current) => current.filter((item) => item.key !== credential.key)) : undefined}
+										/>
+									))}
+								</div>
+								<div className="flex flex-wrap gap-2">
+									{(["api_key", "account_id"] as const).map((type) => (
+										<Button
+											disabled={loading || credentials.length >= MAX_CREDENTIALS}
+											key={type}
+											onClick={() => setCredentials((current) => [...current, newCredential(type)])}
+											size="sm"
+											type="button"
+											variant="outline"
+										>
+											<PlusIcon data-icon="inline-start" />
+											{CREDENTIAL_LABEL[type]}
+										</Button>
+									))}
+								</div>
+								<FieldDescription>API Key 至少 {MIN_API_KEY_LENGTH} 位，含字母、数字与符号。账户 ID 是 auth proxy 请求携带的 ChatGPT 账户 ID。</FieldDescription>
+							</FieldSet>
+							<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时 API Key 无法调用，账户 ID 透传客户端自带的上游凭据。" />
 							<Field className="rounded-lg border p-3" orientation="horizontal">
 								<FieldContent>
-									<FieldLabel htmlFor="api-key-enabled">启用</FieldLabel>
-									<FieldDescription>允许客户端使用这个 API Key 调用服务。</FieldDescription>
+									<FieldLabel htmlFor="user-enabled">启用</FieldLabel>
+									<FieldDescription>停用后该用户的全部凭据失效。</FieldDescription>
 								</FieldContent>
-								<Switch checked={enabled} disabled={loading} id="api-key-enabled" onCheckedChange={setEnabled} />
+								<Switch checked={enabled} disabled={loading} id="user-enabled" onCheckedChange={setEnabled} />
 							</Field>
-							<Button className="w-fit" disabled={loading} onClick={() => setKey(generateApiKey())} type="button" variant="outline">重新生成 Key</Button>
 						</FieldGroup>
 					</ScrollArea>
 					<DialogFooter className="m-0 shrink-0 rounded-none px-4 py-3 sm:px-6 sm:py-4">
 						<DialogClose asChild><Button disabled={loading} type="button" variant="outline">取消</Button></DialogClose>
-						<Button disabled={loading || !name.trim() || !validApiKey(key)} type="submit">{loading ? <Spinner /> : null}{loading ? "保存中…" : "保存"}</Button>
+						<Button disabled={loading || !valid} type="submit">{loading ? <Spinner /> : null}{loading ? "保存中…" : "保存"}</Button>
 					</DialogFooter>
 				</form>
 			</DialogContent>
@@ -152,70 +211,63 @@ export function ApiKeyEditor({
 	);
 }
 
-export function ProxyEditor({
-	accounts,
-	entry,
-	groups,
+function CredentialRow({
+	credential,
+	duplicate,
 	loading,
-	onCancel,
-	onSave,
-	route,
+	onChange,
+	onRemove,
 }: {
-	accounts: CodexAccount[];
-	entry: AuthProxyAccount | "new";
-	groups: AccountGroup[];
+	credential: CredentialDraft;
+	duplicate: boolean;
 	loading: boolean;
-	onCancel: () => void;
-	onSave: (value: AuthProxyAccountInput, target: RouteTargetSelection) => void;
-	route: RouteAssignment | null;
+	onChange: (patch: Partial<CredentialDraft>) => void;
+	onRemove: (() => void) | undefined;
 }) {
-	const initial = entry === "new" ? { name: "", accountId: "", enabled: true } : entry;
-	const [name, setName] = useState(initial.name);
-	const [accountId, setAccountId] = useState(initial.accountId);
-	const [enabled, setEnabled] = useState(initial.enabled);
-	const [target, setTarget] = useState<RouteTargetSelection>(route);
-
-	function submit(event: FormEvent<HTMLFormElement>): void {
-		event.preventDefault();
-		if (name.trim() && validAccountId(accountId)) onSave({ name: name.trim(), accountId, enabled }, target);
-	}
-
+	const isKey = credential.type === "api_key";
+	const [visible, setVisible] = useState(!credential.id);
+	const invalid = Boolean(credential.value) && (!validCredential(credential) || duplicate);
 	return (
-		<Dialog open onOpenChange={(open) => { if (!open && !loading) onCancel(); }}>
-			<DialogContent className="flex h-[min(36rem,calc(100svh-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg" showCloseButton={!loading}>
-				<DialogHeader className="shrink-0 border-b px-4 py-4 pr-12 text-left sm:px-6 sm:pr-14">
-					<DialogTitle>{entry === "new" ? "添加下游账户" : "编辑下游账户"}</DialogTitle>
-					<DialogDescription>配置 account_id、路由目标与启用状态。</DialogDescription>
-				</DialogHeader>
-				<form className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={submit}>
-					<ScrollArea className="h-full min-h-0 flex-1">
-						<FieldGroup className="p-4 sm:p-6">
-							<Field>
-								<FieldLabel htmlFor="proxy-name">名称</FieldLabel>
-								<Input autoFocus disabled={loading} id="proxy-name" maxLength={100} onChange={(event) => setName(event.target.value)} placeholder="例如：production" required type="text" value={name} />
-							</Field>
-							<Field>
-								<FieldLabel htmlFor="proxy-account-id">account_id</FieldLabel>
-								<Input autoCapitalize="none" autoComplete="off" disabled={loading} id="proxy-account-id" maxLength={MAX_ACCOUNT_ID_LENGTH} onChange={(event) => setAccountId(event.target.value)} required spellCheck={false} type="text" value={accountId} />
-								<FieldDescription>填写下游 auth proxy 请求中使用的 account_id。</FieldDescription>
-							</Field>
-							<AccountTargetSelect accounts={accounts} groups={groups} loading={loading} onChange={setTarget} target={target} unassignedHint="未分配时，将继续使用来访请求中的上游凭据。" />
-							<Field className="rounded-lg border p-3" orientation="horizontal">
-								<FieldContent>
-									<FieldLabel htmlFor="proxy-enabled">启用</FieldLabel>
-									<FieldDescription>允许该 account_id 使用当前路由设置。</FieldDescription>
-								</FieldContent>
-								<Switch checked={enabled} disabled={loading} id="proxy-enabled" onCheckedChange={setEnabled} />
-							</Field>
-						</FieldGroup>
-					</ScrollArea>
-					<DialogFooter className="m-0 shrink-0 rounded-none px-4 py-3 sm:px-6 sm:py-4">
-						<DialogClose asChild><Button disabled={loading} type="button" variant="outline">取消</Button></DialogClose>
-						<Button disabled={loading || !name.trim() || !validAccountId(accountId)} type="submit">{loading ? <Spinner /> : null}{loading ? "保存中…" : "保存"}</Button>
-					</DialogFooter>
-				</form>
-			</DialogContent>
-		</Dialog>
+		<div className={cn("flex flex-col gap-2 rounded-lg border p-3", !credential.enabled && "bg-muted/40")}>
+			<div className="flex items-center gap-2">
+				<Badge className="shrink-0" variant="secondary">{CREDENTIAL_LABEL[credential.type]}</Badge>
+				<InputGroup className="min-w-0 flex-1">
+					<InputGroupInput
+						aria-invalid={invalid || undefined}
+						aria-label={CREDENTIAL_LABEL[credential.type]}
+						autoCapitalize="none"
+						autoComplete="off"
+						className="font-mono text-xs"
+						disabled={loading}
+						maxLength={isKey ? MAX_API_KEY_LENGTH : MAX_ACCOUNT_ID_LENGTH}
+						onChange={(event) => onChange({ value: event.target.value })}
+						placeholder={isKey ? undefined : "下游请求的 ChatGPT 账户 ID"}
+						required
+						spellCheck={false}
+						type={isKey && !visible ? "password" : "text"}
+						value={credential.value}
+					/>
+					{isKey ? (
+						<InputGroupAddon align="inline-end">
+							<InputGroupButton aria-label={visible ? "隐藏" : "显示"} onClick={() => setVisible((value) => !value)} size="icon-xs">
+								{visible ? <EyeOffIcon /> : <EyeIcon />}
+							</InputGroupButton>
+							<InputGroupButton aria-label="重新生成" disabled={loading} onClick={() => { onChange({ value: generateApiKey() }); setVisible(true); }} size="icon-xs">
+								<RefreshCwIcon />
+							</InputGroupButton>
+						</InputGroupAddon>
+					) : null}
+				</InputGroup>
+				<Button aria-label="移除凭据" className="text-muted-foreground" disabled={loading || !onRemove} onClick={onRemove} size="icon-sm" type="button" variant="ghost">
+					<Trash2Icon />
+				</Button>
+			</div>
+			<div className="flex items-center gap-2">
+				<Input aria-label="备注" className="h-8 flex-1" disabled={loading} maxLength={100} onChange={(event) => onChange({ name: event.target.value })} placeholder="备注（可选），如 my-laptop" type="text" value={credential.name} />
+				<Switch aria-label={credential.enabled ? "停用凭据" : "启用凭据"} checked={credential.enabled} disabled={loading} onCheckedChange={(checked) => onChange({ enabled: checked })} />
+			</div>
+			{duplicate ? <p className="text-xs text-destructive">与其他凭据重复。</p> : null}
+		</div>
 	);
 }
 
@@ -337,7 +389,7 @@ export function GroupEditorDialog({
 									type="text"
 									value={name}
 								/>
-								<FieldDescription>用于在 API Key 和下游账户的路由设置中识别这个组。</FieldDescription>
+								<FieldDescription>用于在用户的路由设置中识别这个组。</FieldDescription>
 							</Field>
 
 							<FieldSeparator />

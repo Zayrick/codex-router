@@ -68,7 +68,7 @@ export function FailuresCard({ data }: { data: OverviewData }) {
 					<TableHeader>
 						<TableRow className="hover:bg-transparent">
 							<TableHead className="h-8 w-18 text-[11.5px] font-medium text-faint">时间</TableHead>
-							<TableHead className="h-8 text-[11.5px] font-medium text-faint">调用身份 → 账户</TableHead>
+							<TableHead className="h-8 text-[11.5px] font-medium text-faint">用户 → 账户</TableHead>
 							<TableHead className="h-8 text-[11.5px] font-medium text-faint">模型</TableHead>
 							<TableHead className="h-8 text-[11.5px] font-medium text-faint">结果</TableHead>
 							<TableHead className="h-8 w-14 text-right text-[11.5px] font-medium text-faint">耗时</TableHead>
@@ -79,7 +79,7 @@ export function FailuresCard({ data }: { data: OverviewData }) {
 							<TableRow className="cursor-pointer" key={event.id} onClick={() => navigate("logs", { q: event.requestId })}>
 								<TableCell className="py-2 font-mono text-xs text-muted-foreground">{formatClock(event.recordedAt)}</TableCell>
 								<TableCell className="py-2">
-									<span className="font-medium">{event.identityName}</span>
+									<span className="font-medium">{event.userName}</span>
 									{event.codexAccountName ? (
 										<>
 											<span className="mx-1 text-xs text-faint">→</span>

@@ -41,7 +41,7 @@ sudo install -m 0600 -o codex-router -g codex-router \
 sudo nano /var/lib/codex-router/config.toml
 ```
 
-修改 `admin.secret` 和 `state.api_keys` 中的默认 Key，并把前端目录指向安装位置：
+修改 `admin.secret` 和 `state.users` 中的默认 API Key，并把前端目录指向安装位置：
 
 ```toml
 [frontend]
@@ -107,8 +107,8 @@ sudo journalctl -u codex-router -f
 关闭 SSE 响应缓冲，并设置 `X-Forwarded-For`（Nginx 使用 `$proxy_add_x_forwarded_for`）。
 `public_origin` 为非回环 HTTP 地址时默认禁止管理员登录。同机反向代理部署无需对公网开放 8787 端口。
 
-访问 `https://你的域名/admin`，使用 `admin.secret` 登录，添加至少一个 Codex 账户，并将 API Key
-分配到账户或账户组。下游用户在同一页面输入自己的 API Key 或 account id 查看用量，登录状态会保存在
+访问 `https://你的域名/admin`，使用 `admin.secret` 登录，添加至少一个 Codex 账户，再在“用户”页
+添加用户并分配到账户或账户组。用户在同一页面输入自己的任一 API Key 或账户 ID 查看用量，登录状态会保存在
 浏览器中。
 
 ## 5. 后续更新二进制与前端

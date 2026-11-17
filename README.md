@@ -11,15 +11,15 @@ TOML 文件中，下游 Token 用量保存在 SQLite 中，React 控制台作为
 - Gemini Models、generateContent、streamGenerateContent 与 countTokens；
 - `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket 转发；
 - Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
-- 统一 Codex 账户池、设备授权、JSON / 手动凭据导入、账户组、下游 API Key 与下游账户管理 API；
-- 统一的 `/admin` 控制台：管理员与 API Key / 下游账户用户同一入口登录，登录状态保存在服务端会话中并自动续期；
+- 统一 Codex 账户池、设备授权、JSON / 手动凭据导入、账户组与用户管理 API；一个用户可持有多个 API Key 和账户 ID；
+- 统一的 `/admin` 控制台：管理员与用户同一入口登录（用户可用自己的任一凭据登录同一看板），登录状态保存在服务端会话中并自动续期；
   用户视图的账户组可展示组内全部额度时间轴；
-- 按 API Key、下游账户、Codex 账户/组、模型和 HTTP/WebSocket 统计实际 Token 用量；
+- 按用户、单个凭据、Codex 账户/组、模型和 HTTP/WebSocket 统计实际 Token 用量；
 - 后台 OAuth 刷新、用量采集，以及可按事件和账户配置的 reset watch、Bark 与钉钉通知；
 - 原生流式正文和双向 WebSocket bridge。
 
-控制台位于 `/admin`（`/` 会跳转过去）。输入 `admin.secret` 进入管理视图，输入 API Key 或
-account id 进入该身份的用量视图。前端不再嵌入二进制：服务从 `frontend.dir` 目录读取
+控制台位于 `/admin`（`/` 会跳转过去）。输入 `admin.secret` 进入管理视图，输入用户的任一 API Key
+或账户 ID 进入该用户的用量视图。前端不再嵌入二进制：服务从 `frontend.dir` 目录读取
 `index.html` 并为每次请求注入 CSP nonce，`/admin/assets/*` 直接读取该目录下的带指纹资源。
 服务器只需要构建好的静态文件，不需要 Node.js 或 pnpm。完整契约见
 [API 文档](docs/api.md)，运行与持久化设置见[配置文档](docs/configuration.md)。
@@ -58,7 +58,7 @@ cargo run --release -- --config config.toml
 - `frontend.dir`：前端构建产物目录；
 - `server.trusted_proxies`：同机反向代理部署时设为 `["127.0.0.1", "::1"]`，让登录限流识别真实客户端；
 - `usage_tracking.database_path`：Token 用量 SQLite 文件，默认位于配置文件旁的 `usage.sqlite3`；
-- 登录或导入至少一个 Codex 账户，按需创建账户组，并在创建或编辑调用身份时选择账户或账户组。
+- 登录或导入至少一个 Codex 账户，按需创建账户组，并在创建或编辑用户时选择账户或账户组。
 
 ChatGPT 请求发往 `https://chatgpt.com`。默认直接连接；如需通过 SOCKS5 出站，在 `[upstream]`
 中配置 `chatgpt_proxy = "socks5h://127.0.0.1:1080"`。HTTP、SSE 和 WebSocket 会使用同一代理；完整
@@ -75,14 +75,14 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
 
 ## 统一账户调度
 
-设备登录和凭据导入会向 Codex 账户池添加账户。API Key 和下游账户可路由到单个账户或账户组；未分配的
-API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
+设备登录和凭据导入会向 Codex 账户池添加账户。用户可路由到单个账户或账户组，其全部凭据共用这条路由；
+未分配的用户用 API Key 调用时返回 `404`，用账户 ID 转发时按来访凭据透明转发。
 
 账户组支持三种策略：
 
 - `round-robin`：按顺序平均轮询；
 - `weighted-round-robin`：根据账户剩余额度和刷新时间平滑加权；
-- `fallback`：为每个调用身份固定账户，并在账户不可用时切换。
+- `fallback`：为每个用户固定账户，并在账户不可用时切换。
 
 前两种策略支持 session affinity，TTL 接受 `30m`、`1h`、`7d` 等时长或 `unlimited`。禁用账户会
 暂停调度并释放直连路由；上游返回 `429` 时，调度器会隔离该账户，直到额度巡检确认恢复。
@@ -101,8 +101,7 @@ API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
 
 - 统一账户目录、账户组和路由位于 `state.account_routing`；
 - 每个 Codex 账户的 OAuth 位于 `state.codex_account_oauth`；
-- 下游 Key 位于 `state.api_keys`；
-- 下游账户位于 `state.auth_proxy_accounts`；
+- 用户及其 API Key、账户 ID 位于 `state.users`；
 - 每账户订阅额度快照位于 `state.account_usage`。
 
 启动时会自动迁移旧版 OAuth 与额度状态。
@@ -112,13 +111,13 @@ API Key 返回 `404`，未分配的下游账户按来访凭据透明转发。
 不要在管理 API 写入期间同时手工编辑生产配置。手工修改静态设置后需要重启服务。
 
 下游 Token 用量单独写入 `usage_tracking.database_path` 指定的 SQLite 数据库。相对路径以配置文件
-目录为基准；管理页提供 24 小时、7 天、30 天和全部范围的趋势、模型/身份拆分及最近请求明细，
-并可按具体 API Key、下游 account id、Codex 账户或账户组重新计算全部用量视图。用户端时间筛选
+目录为基准；管理页提供 24 小时、7 天、30 天和全部范围的趋势、模型/用户拆分及最近请求明细，
+并可按用户、单个凭据、Codex 账户或账户组重新计算全部用量视图。用户端时间筛选
 提供 24 小时、7 天、30 天和全部范围；用户端额度是否显示、通知和模型价格统一在管理端“设置”页维护。
 
 控制台会话保存在 `session.database_path`（默认 `sessions.sqlite3`）。管理员会话空闲 24 小时或满 7 天
-过期，用户会话空闲 30 天或满 90 天过期，使用期间自动续期。修改 `admin.secret`、API Key 或
-account id，以及停用、删除对应身份，都会让相关会话立即失效。OAuth 设备轮询 state 仍使用
+过期，用户会话空闲 30 天或满 90 天过期，使用期间自动续期。修改 `admin.secret`，或停用、删除用户，
+以及修改、停用、删除用户已启用的凭据，都会让相关会话立即失效。OAuth 设备轮询 state 仍使用
 `admin.secret` 进行 HMAC-SHA256 签名。
 
 ## 部署注意

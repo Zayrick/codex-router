@@ -1,7 +1,7 @@
-import { ScrollTextIcon, ServerIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { CopyIcon, EyeIcon, EyeOffIcon, ScrollTextIcon, ServerIcon } from "lucide-react";
+import { useState, type ReactNode } from "react";
 
-import type { UsageAnalytics, UsageEventStatus } from "@/admin-api";
+import type { LastSeen, UsageAnalytics, UsageEventStatus, User, UserCredential } from "@/admin-api";
 import { useAdmin } from "@/admin/context";
 import { strategyLabel, formatTtl } from "@/admin/routing-model";
 import { useAnalytics } from "@/admin/hooks";
@@ -13,29 +13,31 @@ import { Card } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatCount, formatDateTime, formatPercent, formatSeconds, formatTokens, ratio } from "@/lib/format";
+import { formatCount, formatDateTime, formatPercent, formatSeconds, formatTokens, maskSecret, ratio } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-import type { IdentityEntry, RouteInfo } from "./model";
+import { useLastSeen } from "./use-last-seen";
+import { CREDENTIAL_LABEL, clientSummary, type RouteInfo } from "./model";
 
 const RANGE_TITLE: Record<string, string> = { "24h": "近 24 小时", "7d": "近 7 天", "30d": "近 30 天" };
 
-/** Expanded "近 7 天明细" panel of an identity row. */
-export function IdentityDetail({ entry, range, route }: { entry: IdentityEntry; range: "24h" | "7d" | "30d"; route: RouteInfo }) {
+/** Expanded "近 7 天明细" panel of a user row. */
+export function IdentityDetail({ user, range, route }: { user: User; range: "24h" | "7d" | "30d"; route: RouteInfo }) {
 	const { navigate } = useAdmin();
-	const { data, error, loading } = useAnalytics({ range, downstream: { identityType: entry.kind, identityId: entry.id } });
+	const { data, error, loading } = useAnalytics({ range, downstream: { identityType: "user", identityId: user.id } });
+	const lastSeen = useLastSeen();
 
 	return (
 		<div className="flex flex-col gap-4 border-b bg-surface-subtle py-4 pr-6 pl-6 sm:pl-12">
 			<div className="flex flex-wrap items-center justify-between gap-3">
 				<div className="flex flex-wrap items-center gap-2">
 					<span className="text-[13px] leading-5 font-semibold">
-						{entry.name} · {RANGE_TITLE[range]}明细
+						{user.name} · {RANGE_TITLE[range]}明细
 					</span>
 					{data ? <HeadChips analytics={data} /> : null}
 				</div>
 				<Button
-					onClick={() => navigate("logs", { downstreamType: entry.kind, downstreamId: entry.id })}
+					onClick={() => navigate("logs", { downstreamType: "user", downstreamId: user.id })}
 					size="sm"
 					type="button"
 					variant="outline"
@@ -44,6 +46,7 @@ export function IdentityDetail({ entry, range, route }: { entry: IdentityEntry; 
 					在调用日志中查看
 				</Button>
 			</div>
+			<CredentialsPanel lastSeen={lastSeen.data} user={user} />
 			{error ? <p className="text-xs text-danger">{error}</p> : null}
 			{!data && loading ? (
 				<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -71,6 +74,54 @@ export function IdentityDetail({ entry, range, route }: { entry: IdentityEntry; 
 					<UpstreamLine analytics={data} route={route} />
 				</>
 			) : null}
+		</div>
+	);
+}
+
+function CredentialsPanel({ user, lastSeen }: { user: User; lastSeen: LastSeen | null }) {
+	return (
+		<Card className="gap-0 rounded-lg py-1 shadow-none ring-border">
+			{user.credentials.map((credential, index) => (
+				<div key={credential.id}>
+					{index > 0 ? <Separator /> : null}
+					<CredentialLine credential={credential} seen={lastSeen?.credentials.find((item) => item.credentialId === credential.id) ?? null} />
+				</div>
+			))}
+		</Card>
+	);
+}
+
+function CredentialLine({ credential, seen }: { credential: UserCredential; seen: LastSeen["credentials"][number] | null }) {
+	const { notify } = useAdmin();
+	const [revealed, setRevealed] = useState(false);
+	const secret = credential.type === "api_key";
+	async function copy() {
+		try {
+			await navigator.clipboard.writeText(credential.value);
+			notify(`${CREDENTIAL_LABEL[credential.type]}已复制。`);
+		} catch {
+			notify("复制失败，请手动复制。", "error");
+		}
+	}
+	return (
+		<div className={cn("flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2", !credential.enabled && "opacity-55")}>
+			<span className="w-16 shrink-0 text-[11.5px] leading-4 font-medium text-muted-foreground">{CREDENTIAL_LABEL[credential.type]}</span>
+			<span className="flex min-w-0 flex-1 items-center gap-0.5">
+				<span className="truncate font-mono text-[11.5px] leading-4">{secret && !revealed ? maskSecret(credential.value) : credential.value}</span>
+				{secret ? (
+					<Button aria-label={revealed ? "隐藏" : "显示"} className="text-muted-foreground" onClick={() => setRevealed((value) => !value)} size="icon-xs" type="button" variant="ghost">
+						{revealed ? <EyeOffIcon /> : <EyeIcon />}
+					</Button>
+				) : null}
+				<Button aria-label="复制" className="text-muted-foreground" onClick={() => void copy()} size="icon-xs" type="button" variant="ghost">
+					<CopyIcon />
+				</Button>
+				{credential.name ? <span className="truncate text-[11.5px] leading-4 text-muted-foreground">{credential.name}</span> : null}
+			</span>
+			<span className="text-[11px] leading-4 text-faint">
+				{credential.enabled ? "" : "已停用 · "}
+				{seen ? [`最近 ${formatDateTime(seen.lastAt)}`, clientSummary(seen.userAgent)].filter(Boolean).join(" · ") : "从未使用"}
+			</span>
 		</div>
 	);
 }

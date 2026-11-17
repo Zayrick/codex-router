@@ -5,8 +5,8 @@ use serde::Serialize;
 use crate::{
     application::MonitoredQuotaWindow,
     auth::{
-        AccountRoutingState, ApiKeyRepository, CodexAccount, OAuthRepository, RouteConsumerKind,
-        RouteTargetKind, RoutingRepository,
+        AccountRoutingState, CodexAccount, OAuthRepository, RouteTargetKind, RoutingRepository,
+        UserRepository,
     },
     core::{ApiError, AppResult},
     upstream::codex::{CodexQuotaWindow, codex_subscription_from_usage},
@@ -26,40 +26,6 @@ use super::{
 };
 
 const PUBLIC_QUOTA_READ_CONCURRENCY: usize = 4;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PublicAccountKind {
-    ApiKey,
-    AuthProxy,
-}
-
-impl PublicAccountKind {
-    const fn identity_type(self) -> &'static str {
-        match self {
-            Self::ApiKey => "api_key",
-            Self::AuthProxy => "auth_proxy",
-        }
-    }
-
-    const fn route_consumer(self) -> RouteConsumerKind {
-        match self {
-            Self::ApiKey => RouteConsumerKind::ApiKey,
-            Self::AuthProxy => RouteConsumerKind::AuthProxy,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PublicAccount {
-    id: String,
-    kind: PublicAccountKind,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicAccountSummary {
-    identity_type: &'static str,
-}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,60 +71,38 @@ struct PublicQuotaWindow {
     reset_at: Option<i64>,
 }
 
-/// Usage dashboard of the API key or downstream account behind a user session.
-/// The queried identity always comes from the session, never from the request.
+/// The user behind a console session.
+fn session_user(principal: &Principal) -> AppResult<&str> {
+    match principal {
+        Principal::User(id) => Ok(id),
+        Principal::Admin => Err(user_session_required()),
+    }
+}
+
+/// Usage dashboard of the user behind a session, across all their credentials.
+/// The queried user always comes from the session, never from the request.
 pub async fn signed_in_account_dashboard(
     principal: &Principal,
     range: Option<&str>,
     config: &AppConfig,
     state: &AppState,
 ) -> AppResult<Response> {
-    let account = match principal {
-        Principal::ApiKey(id) => PublicAccount {
-            id: id.clone(),
-            kind: PublicAccountKind::ApiKey,
-        },
-        Principal::AuthProxy(id) => PublicAccount {
-            id: id.clone(),
-            kind: PublicAccountKind::AuthProxy,
-        },
-        Principal::Admin => return Err(user_session_required()),
-    };
+    let user_id = session_user(principal)?;
     let range = UsageRange::parse(range)
         .filter(|range| *range != UsageRange::Cycle)
         .ok_or_else(invalid_usage_range)?;
-    account_dashboard(&account, range, config, state).await
+    account_dashboard(user_id, range, config, state).await
 }
 
-/// Last four characters of a credential, never the full value.
-fn credential_hint(value: &str) -> String {
-    let tail = value.chars().rev().take(4).collect::<Vec<_>>();
-    if value.chars().count() <= 8 {
-        return "••••".into();
-    }
-    tail.into_iter().rev().collect()
+fn user_filter(user_id: &str) -> UsageIdentityFilter {
+    UsageIdentityFilter::parse_downstream("user", user_id).expect("stored user id is valid")
 }
 
-fn public_account(principal: &Principal) -> AppResult<PublicAccount> {
-    match principal {
-        Principal::ApiKey(id) => Ok(PublicAccount {
-            id: id.clone(),
-            kind: PublicAccountKind::ApiKey,
-        }),
-        Principal::AuthProxy(id) => Ok(PublicAccount {
-            id: id.clone(),
-            kind: PublicAccountKind::AuthProxy,
-        }),
-        Principal::Admin => Err(user_session_required()),
-    }
-}
-
-/// Analytics scope limited to the signed-in API key or account.
+/// Analytics scope limited to the signed-in user.
 pub fn user_scope(principal: &Principal) -> AppResult<AnalyticsScope> {
-    let account = public_account(principal)?;
-    let identity = UsageIdentityFilter::parse_downstream(account.kind.identity_type(), &account.id)
-        .expect("stored public account identity is valid");
-    Ok(AnalyticsScope::Identity(identity))
+    Ok(AnalyticsScope::Identity(user_filter(session_user(
+        principal,
+    )?)))
 }
 
 /// Quota forecasts of the accounts the signed-in identity is routed to.
@@ -167,41 +111,23 @@ pub async fn signed_in_account_quota(
     config: &AppConfig,
     state: &AppState,
 ) -> AppResult<Response> {
-    let account = public_account(principal)?;
-    let keys = ApiKeyRepository::new(state.config.as_ref());
-    let (name, credential) = match account.kind {
-        PublicAccountKind::ApiKey => keys
-            .read()
-            .await?
-            .into_iter()
-            .find(|entry| entry.id == account.id)
-            .map(|entry| (entry.name, entry.key))
-            .unwrap_or_default(),
-        PublicAccountKind::AuthProxy => keys
-            .read_auth_proxy_accounts()
-            .await?
-            .into_iter()
-            .find(|entry| entry.id == account.id)
-            .map(|entry| (entry.name, entry.account_id))
-            .unwrap_or_default(),
-    };
-    let identity = serde_json::json!({
-        "identityType": account.kind.identity_type(),
-        "name": name,
-        "credentialHint": credential_hint(&credential),
-    });
+    let user_id = session_user(principal)?;
+    let name = UserRepository::new(state.config.as_ref())
+        .user(user_id)
+        .await?
+        .map(|user| user.name)
+        .unwrap_or_default();
+    let identity = serde_json::json!({ "name": name });
     let routing = RoutingRepository::new(state.config.as_ref()).read().await?;
     let route = routing
         .routes
         .iter()
-        .find(|route| route.consumer_type == account.kind.route_consumer() && route.consumer_id == account.id)
+        .find(|route| route.user_id == user_id)
         .map(|route| serde_json::json!({ "targetType": route.target_type, "targetId": route.target_id }));
     let group_settings = routing
         .routes
         .iter()
-        .find(|route| {
-            route.consumer_type == account.kind.route_consumer() && route.consumer_id == account.id
-        })
+        .find(|route| route.user_id == user_id)
         .filter(|route| route.target_type == RouteTargetKind::Group)
         .and_then(|route| {
             routing
@@ -230,7 +156,7 @@ pub async fn signed_in_account_quota(
             200,
         );
     }
-    let (group, accounts) = quota_targets(routing, &account);
+    let (group, accounts) = quota_targets(routing, user_id);
     let ids = accounts
         .iter()
         .map(|account| account.id.clone())
@@ -254,16 +180,14 @@ pub async fn signed_in_account_quota(
 }
 
 async fn account_dashboard(
-    account: &PublicAccount,
+    user_id: &str,
     range: UsageRange,
     config: &AppConfig,
     state: &AppState,
 ) -> AppResult<Response> {
     let now_ms = current_time_ms();
-    let identity = UsageIdentityFilter::parse_downstream(account.kind.identity_type(), &account.id)
-        .expect("stored public account identity is valid");
     let quota = if config.public_account.show_quota {
-        match quota_collection(account, state, now_ms).await {
+        match quota_collection(user_id, state, now_ms).await {
             Ok(quota) => Some(quota),
             Err(error) => {
                 tracing::warn!(event = "public_account_quota_targets", status = "failed", error = %error);
@@ -277,7 +201,7 @@ async fn account_dashboard(
         .usage
         .dashboard_with_options(
             range,
-            UsageFilters::new(Some(identity), None),
+            UsageFilters::new(Some(user_filter(user_id)), None),
             None,
             &config.usage_tracking.model_prices,
             config.usage_tracking.fast_cost_multiplier(),
@@ -290,9 +214,6 @@ async fn account_dashboard(
 
     response::json(
         &serde_json::json!({
-            "account": PublicAccountSummary {
-                identity_type: account.kind.identity_type(),
-            },
             "usage": dashboard,
             "quota": quota,
         }),
@@ -301,12 +222,12 @@ async fn account_dashboard(
 }
 
 async fn quota_collection(
-    public_account: &PublicAccount,
+    user_id: &str,
     state: &AppState,
     now_ms: i64,
 ) -> AppResult<PublicQuotaCollection> {
     let routing = RoutingRepository::new(state.config.as_ref()).read().await?;
-    let (group, accounts) = quota_targets(routing, public_account);
+    let (group, accounts) = quota_targets(routing, user_id);
 
     let accounts = stream::iter(accounts)
         .map(|account: CodexAccount| async move {
@@ -333,12 +254,9 @@ async fn quota_collection(
 
 fn quota_targets(
     routing: AccountRoutingState,
-    public_account: &PublicAccount,
+    user_id: &str,
 ) -> (Option<PublicQuotaGroup>, Vec<CodexAccount>) {
-    let Some(assignment) = routing.routes.iter().find(|route| {
-        route.consumer_type == public_account.kind.route_consumer()
-            && route.consumer_id == public_account.id
-    }) else {
+    let Some(assignment) = routing.routes.iter().find(|route| route.user_id == user_id) else {
         return (None, Vec::new());
     };
 
@@ -487,12 +405,9 @@ fn invalid_usage_range() -> ApiError {
 }
 
 fn user_session_required() -> ApiError {
-    ApiError::new(
-        403,
-        "This view is only available to API key or account sessions.",
-    )
-    .with_kind("permission_error")
-    .with_code("user_session_required")
+    ApiError::new(403, "This view is only available to user sessions.")
+        .with_kind("permission_error")
+        .with_code("user_session_required")
 }
 
 fn usage_query_error() -> ApiError {
@@ -532,18 +447,12 @@ mod tests {
                 session_affinity_ttl: "24h".into(),
             }],
             routes: vec![RouteAssignment {
-                consumer_type: RouteConsumerKind::ApiKey,
-                consumer_id: "client-1".into(),
+                user_id: "client-1".into(),
                 target_type: RouteTargetKind::Group,
                 target_id: "group-1".into(),
             }],
         };
-        let public_account = PublicAccount {
-            id: "client-1".into(),
-            kind: PublicAccountKind::ApiKey,
-        };
-
-        let (group, accounts) = quota_targets(routing, &public_account);
+        let (group, accounts) = quota_targets(routing, "client-1");
 
         assert_eq!(
             group,

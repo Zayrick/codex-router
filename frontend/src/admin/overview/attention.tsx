@@ -4,7 +4,6 @@ import {
 	CircleAlertIcon,
 	CircleDollarSignIcon,
 	CircleXIcon,
-	KeyRoundIcon,
 	Layers3Icon,
 	ServerIcon,
 	TimerIcon,
@@ -112,28 +111,16 @@ export function AttentionCard({ data }: { data: OverviewData }) {
 		});
 	}
 
-	const routed = (kind: "api_key" | "auth_proxy", id: string) => state.routes.some((route) => route.consumerType === kind && route.consumerId === id);
-	for (const key of state.apiKeys.filter((entry) => entry.enabled && !routed("api_key", entry.id))) {
+	for (const user of state.users.filter((entry) => entry.enabled && !state.routes.some((route) => route.userId === entry.id))) {
+		const hasKey = user.credentials.some((credential) => credential.enabled && credential.type === "api_key");
 		items.push({
-			key: `route:api_key:${key.id}`,
+			key: `route:user:${user.id}`,
 			tone: "neutral",
 			icon: <UsersIcon />,
-			title: `${key.name}未分配路由`,
-			detail: "该 API Key 的请求将不可用",
+			title: `${user.name}未分配路由`,
+			detail: hasKey ? "API Key 请求将不可用" : "请求将透传客户端自带的上游凭据",
 			action: "分配路由",
-			page: "api-keys",
-			rank: Number.MAX_SAFE_INTEGER,
-		});
-	}
-	for (const proxy of state.authProxyAccounts.filter((entry) => entry.enabled && !routed("auth_proxy", entry.id))) {
-		items.push({
-			key: `route:auth_proxy:${proxy.id}`,
-			tone: "neutral",
-			icon: <UsersIcon />,
-			title: `${proxy.name}未分配路由`,
-			detail: "请求将透传客户端自带的上游凭据",
-			action: "分配路由",
-			page: "downstream",
+			page: "users",
 			rank: Number.MAX_SAFE_INTEGER,
 		});
 	}
@@ -212,18 +199,15 @@ export function AttentionCard({ data }: { data: OverviewData }) {
 /** Figma "card · 资源概况": counts per resource with their state split. */
 export function ResourcesCard() {
 	const { state, pricing, navigate } = useAdmin();
-	const routedTo = (kind: "api_key" | "auth_proxy", id: string) => state.routes.some((route) => route.consumerType === kind && route.consumerId === id);
+	const routedTo = (id: string) => state.routes.some((route) => route.userId === id);
 	const usedGroups = new Set(state.routes.filter((route) => route.targetType === "group").map((route) => route.targetId));
 	const priced = new Set(pricing.prices.map((price) => price.model.toLowerCase()));
 	const usedModels = pricing.usedModels;
 	const unpriced = usedModels.filter((model) => !priced.has(model.toLowerCase())).length;
 
 	const codexEnabled = state.codexAccounts.filter((account) => account.enabled).length;
-	const keysEnabled = state.apiKeys.filter((key) => key.enabled).length;
-	const keysUnrouted = state.apiKeys.filter((key) => !routedTo("api_key", key.id)).length;
-	const proxiesRouted = state.authProxyAccounts.filter((entry) => entry.enabled && routedTo("auth_proxy", entry.id)).length;
-	const proxiesUnrouted = state.authProxyAccounts.filter((entry) => entry.enabled && !routedTo("auth_proxy", entry.id)).length;
-	const proxiesDisabled = state.authProxyAccounts.filter((entry) => !entry.enabled).length;
+	const usersEnabled = state.users.filter((user) => user.enabled).length;
+	const usersUnrouted = state.users.filter((user) => user.enabled && !routedTo(user.id)).length;
 
 	const rows: { key: string; icon: ReactNode; label: string; count: number; parts: { text: string; tone: "success" | "warning" | "muted" }[]; page: ManagementPage }[] = [
 		{
@@ -244,33 +228,21 @@ export function ResourcesCard() {
 			count: state.accountGroups.length,
 			parts: [
 				{ text: `${usedGroups.size} 使用中`, tone: "success" },
-				{ text: `${state.accountGroups.filter((group) => !usedGroups.has(group.id)).length} 未分配身份`, tone: "warning" },
+				{ text: `${state.accountGroups.filter((group) => !usedGroups.has(group.id)).length} 未分配用户`, tone: "warning" },
 			],
 			page: "groups",
 		},
 		{
-			key: "keys",
-			icon: <KeyRoundIcon />,
-			label: "API Keys",
-			count: state.apiKeys.length,
-			parts: [
-				{ text: `${keysEnabled} 启用`, tone: "success" },
-				{ text: `${state.apiKeys.length - keysEnabled} 停用`, tone: "muted" },
-				{ text: `${keysUnrouted} 未分配`, tone: "warning" },
-			],
-			page: "api-keys",
-		},
-		{
-			key: "downstream",
+			key: "users",
 			icon: <UsersIcon />,
-			label: "下游账户",
-			count: state.authProxyAccounts.length,
+			label: "用户",
+			count: state.users.length,
 			parts: [
-				{ text: `${proxiesRouted} 已路由`, tone: "success" },
-				{ text: `${proxiesUnrouted} 启用未分配`, tone: "warning" },
-				{ text: `${proxiesDisabled} 停用`, tone: "muted" },
+				{ text: `${usersEnabled} 启用`, tone: "success" },
+				{ text: `${state.users.length - usersEnabled} 停用`, tone: "muted" },
+				{ text: `${usersUnrouted} 未分配`, tone: "warning" },
 			],
-			page: "downstream",
+			page: "users",
 		},
 		{
 			key: "pricing",

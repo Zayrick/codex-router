@@ -13,7 +13,7 @@ log_filter = "codex_router=info,tower_http=info"
 
 [admin]
 # Sign in at /admin with this secret. Use a long random value: the console path
-# is public. Every API key or downstream account id signs in at the same page.
+# is public. Users sign in at the same page with any of their API keys or account IDs.
 secret = "change-this-admin-secret"
 
 [frontend]
@@ -63,16 +63,23 @@ database_path = "usage.sqlite3"
 # dingtalk_secret = "SEC..."
 
 [public_account]
-# When enabled, a credential routed to a group can see quota timelines for all
+# When enabled, a user routed to a group can see quota timelines for all
 # Codex accounts in that group on the public account page.
 show_quota = true
 
 [state]
 
-[[state.api_keys]]
+# A user may hold several API keys and ChatGPT account IDs; all of them share
+# the user's route, usage statistics, and console dashboard.
+[[state.users]]
 id = "00000000-0000-4000-8000-000000000001"
 name = "local"
-key = "sk-change-me-123!"
+enabled = true
+
+[[state.users.credentials]]
+id = "00000000-0000-4000-8000-000000000002"
+type = "api_key"
+value = "sk-change-me-123!"
 enabled = true
 
 # Account, routing, OAuth, and quota state is managed by the service.

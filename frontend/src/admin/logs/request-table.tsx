@@ -140,7 +140,7 @@ function Cell({
 	switch (column) {
 		case "identity":
 			return (
-				<TwoLine primary={event.identityName || "—"} secondary={identityTypeLabel(event.identityType)} />
+				<TwoLine primary={event.userName || "—"} secondary={event.credentialType ? `${identityTypeLabel(event.credentialType)} · ${event.credentialName}` : ""} />
 			);
 		case "model":
 			return (

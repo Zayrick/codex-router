@@ -34,7 +34,6 @@ import { QuotaTimeline } from "./QuotaTimeline";
 import { UsagePanel } from "./UsagePanel";
 
 export interface RouteIdentity {
-	type: "api_key" | "auth_proxy";
 	id: string;
 	name: string;
 }
@@ -293,13 +292,13 @@ function RoutingSources({ sources }: { sources: RoutingSource[] }) {
 						{source.group ? <Layers3Icon className="size-3.5" /> : <Link2Icon className="size-3.5" />}
 						<span className="font-bold">{source.group ? source.group.name : "直连"}</span>
 						<span className="text-[11.5px] text-faint">
-							{source.group ? `${strategyLabel(source.group.strategy)}${source.identities.length ? "" : " · 未分配"}` : "调用身份直接路由到此账户"}
+							{source.group ? `${strategyLabel(source.group.strategy)}${source.identities.length ? "" : " · 未分配"}` : "用户直接路由到此账户"}
 						</span>
 					</span>
 					{source.identities.length ? (
 						<div className="flex flex-wrap gap-1.5">
 							{source.identities.map((identity) => (
-								<IdentityChip identity={identity} key={`${identity.type}:${identity.id}`} />
+								<IdentityChip identity={identity} key={identity.id} />
 							))}
 						</div>
 					) : null}
@@ -312,7 +311,7 @@ function RoutingSources({ sources }: { sources: RoutingSource[] }) {
 export function IdentityChip({ identity, aside }: { identity: RouteIdentity; aside?: ReactNode }) {
 	return (
 		<span className="inline-flex max-w-full items-center gap-1 rounded-full border bg-card px-2 py-[3px] text-[11.5px] leading-4">
-			{identity.type === "api_key" ? <KeyRoundIcon className="size-3 shrink-0" /> : <UserRoundIcon className="size-3 shrink-0" />}
+			<UserRoundIcon className="size-3 shrink-0" />
 			<span className="truncate">{identity.name}</span>
 			{aside}
 		</span>

@@ -2,7 +2,7 @@
 // tabs (Figma "User v2 / 用量" and "User v2 / 调用日志").
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ChartNoAxesColumnIcon, KeyRoundIcon, Layers3Icon, LogOutIcon, ScrollTextIcon, UserRoundIcon } from "lucide-react";
+import { ChartNoAxesColumnIcon, Layers3Icon, LogOutIcon, ScrollTextIcon, UserRoundIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { AdminSessionExpiredError } from "@/admin-api";
@@ -98,8 +98,7 @@ export default function UserConsole({ onSignedOut }: { onSignedOut: (error?: str
 	}
 
 	const identity = profile?.identity;
-	const kindLabel = identity?.identityType === "auth_proxy" ? "下游账户" : "API Key";
-	const name = identity?.name || kindLabel;
+	const name = identity?.name || "用户";
 	const routeLabel = routeSummary(profile);
 
 	return (
@@ -122,9 +121,8 @@ export default function UserConsole({ onSignedOut }: { onSignedOut: (error?: str
 					<div className="flex items-center gap-3">
 						{identity ? (
 							<span className="flex h-8 items-center gap-2 rounded-full border bg-surface-subtle pr-3 pl-2.5 text-[13px] max-md:hidden">
-								{identity.identityType === "auth_proxy" ? <UserRoundIcon className="size-3.5" /> : <KeyRoundIcon className="size-3.5" />}
+								<UserRoundIcon className="size-3.5" />
 								<span className="font-semibold">{identity.name}</span>
-								<span className="text-[12.5px] text-muted-foreground">· {kindLabel}</span>
 							</span>
 						) : null}
 						<Button onClick={() => void handleSignOut()} size="sm" type="button" variant="outline">
@@ -140,7 +138,7 @@ export default function UserConsole({ onSignedOut }: { onSignedOut: (error?: str
 					<section className="flex flex-wrap items-end justify-between gap-4 pb-6" aria-labelledby="user-title">
 						<div className="flex min-w-0 flex-col">
 							<p className="pb-2 text-[9.76px] leading-4 font-extrabold tracking-[0.12em] text-faint uppercase">
-								{kindLabel} · 仅显示当前凭据的数据
+								包含你全部凭据的数据
 							</p>
 							<h1 className="text-[38.4px] leading-[52px] font-bold tracking-[-0.045em]" id="user-title">
 								{TAB_COPY[tab].title}
@@ -151,9 +149,6 @@ export default function UserConsole({ onSignedOut }: { onSignedOut: (error?: str
 						</div>
 						{identity ? (
 							<div className="flex flex-wrap items-center gap-2">
-								<span className="flex items-center rounded-md border bg-card px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
-									{identity.identityType === "api_key" ? "sk-" : ""}••••••••{identity.credentialHint}
-								</span>
 								{routeLabel ? (
 									<span className="flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-xs">
 										<Layers3Icon className="size-3.25 text-muted-foreground" />

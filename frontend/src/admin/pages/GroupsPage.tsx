@@ -22,7 +22,7 @@ import { cn } from "@/lib/utils";
 const STRATEGY_HINTS: Record<string, string> = {
 	"round-robin": "依次分配",
 	"weighted-round-robin": "按剩余额度 ÷ 剩余时间",
-	fallback: "调用身份粘性，故障时切换",
+	fallback: "用户粘性，故障时切换",
 };
 
 export default function GroupsPage() {
@@ -35,12 +35,10 @@ export default function GroupsPage() {
 	const statsById = useMemo(() => new Map((analytics.data?.upstreamAccounts ?? []).map((entry) => [entry.codexAccountId, entry])), [analytics.data]);
 	const groupStats = useMemo(() => new Map((analytics.data?.upstreamGroups ?? []).map((entry) => [entry.accountGroupId, entry])), [analytics.data]);
 
-	const identityName = (type: "api_key" | "auth_proxy", id: string) =>
-		(type === "api_key" ? state.apiKeys.find((entry) => entry.id === id)?.name : state.authProxyAccounts.find((entry) => entry.id === id)?.name) ?? id;
 	const routedTo = (targetType: "group" | "account", targetId: string): RouteIdentity[] =>
 		state.routes
 			.filter((route) => route.targetType === targetType && route.targetId === targetId)
-			.map((route) => ({ type: route.consumerType, id: route.consumerId, name: identityName(route.consumerType, route.consumerId) }));
+			.map((route) => ({ id: route.userId, name: state.users.find((user) => user.id === route.userId)?.name ?? route.userId }));
 	const groupsOf = (accountId: string) => state.accountGroups.filter((group) => group.accountIds.includes(accountId));
 
 	async function saveGroup(group: AccountGroup) {
@@ -99,10 +97,7 @@ export default function GroupsPage() {
 			incomplete: grouped.reduce((sum, entry) => sum + entry.incomplete, 0),
 			cancelled: grouped.reduce((sum, entry) => sum + entry.cancelled, 0),
 		});
-		const unassigned = [
-			...state.apiKeys.map((entry) => ({ type: "api_key" as const, id: entry.id, name: entry.name, enabled: entry.enabled })),
-			...state.authProxyAccounts.map((entry) => ({ type: "auth_proxy" as const, id: entry.id, name: entry.name, enabled: entry.enabled })),
-		].filter((entry) => !state.routes.some((route) => route.consumerType === entry.type && route.consumerId === entry.id));
+		const unassigned = state.users.filter((user) => !state.routes.some((route) => route.userId === user.id));
 		const unassignedEnabled = unassigned.filter((entry) => entry.enabled);
 		const unassignedDisabled = unassigned.filter((entry) => !entry.enabled);
 
@@ -118,7 +113,7 @@ export default function GroupsPage() {
 									<span className="min-w-0 flex-1 truncate text-muted-foreground">
 										{group.name} · {strategyLabel(group.strategy)}
 									</span>
-									<span className={cn("font-semibold whitespace-nowrap", count ? "text-foreground" : "text-warning")}>{count ? `${count} 个身份` : "未分配"}</span>
+									<span className={cn("font-semibold whitespace-nowrap", count ? "text-foreground" : "text-warning")}>{count ? `${count} 个用户` : "未分配"}</span>
 								</div>
 							);
 						})}
@@ -173,7 +168,7 @@ export default function GroupsPage() {
 				)}
 				<StatCard
 					aside={<TriangleAlertIcon className={cn("size-4", unassigned.length ? "text-warning" : "text-faint")} />}
-					label="未分配调用身份"
+					label="未分配用户"
 					unit="个"
 					value={unassigned.length}
 					valueClassName={unassigned.length ? "text-warning" : ""}
@@ -185,7 +180,7 @@ export default function GroupsPage() {
 						{unassignedDisabled.length ? (
 							<UnassignedRow names={unassignedDisabled.map((entry) => entry.name)} status="已停用" tone="neutral" />
 						) : null}
-						{unassigned.length === 0 ? <span className="text-xs text-muted-foreground">所有调用身份都已分配</span> : null}
+						{unassigned.length === 0 ? <span className="text-xs text-muted-foreground">所有用户都已分配</span> : null}
 					</div>
 				</StatCard>
 			</div>

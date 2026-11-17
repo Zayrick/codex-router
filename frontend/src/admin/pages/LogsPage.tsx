@@ -6,6 +6,7 @@ import { useAdmin } from "@/admin/context";
 import { publishExportUrl, useExportUrl } from "@/admin/logs/export-store";
 import type { FilterOptions } from "@/admin/logs/filter-bar";
 import { LogsView, type LogsDataSource } from "@/admin/logs/LogsView";
+import { identityTypeLabel } from "@/components/app/viz";
 import { Button } from "@/components/ui/button";
 
 /** 调用日志: every request with filters, summary, session grouping and details. */
@@ -26,12 +27,14 @@ export default function LogsPage() {
 	const options = useMemo<FilterOptions>(
 		() => ({
 			identities: [
-				...state.apiKeys.map((key) => ({ filter: { identityType: "api_key" as const, identityId: key.id }, label: key.name, hint: "API Key" })),
-				...state.authProxyAccounts.map((account) => ({
-					filter: { identityType: "auth_proxy" as const, identityId: account.id },
-					label: account.name,
-					hint: "下游账户",
-				})),
+				...state.users.map((user) => ({ filter: { identityType: "user" as const, identityId: user.id }, label: user.name, hint: "用户" })),
+				...state.users.flatMap((user) =>
+					user.credentials.map((credential) => ({
+						filter: { identityType: "credential" as const, identityId: credential.id },
+						label: credential.name || `${identityTypeLabel(credential.type)} ···${credential.value.slice(-4)}`,
+						hint: user.name,
+					})),
+				),
 			],
 			upstreams: [
 				...state.accountGroups.map((group) => ({ filter: { identityType: "account_group" as const, identityId: group.id }, label: group.name, hint: "账户组" })),

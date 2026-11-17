@@ -7,7 +7,7 @@ use axum::{
 use url::Url;
 
 use crate::{
-    auth::{ApiKeyRepository, OAuthRepository, RouteConsumerKind, matching_auth_proxy_account},
+    auth::{OAuthRepository, UserRepository},
     core::{ApiError, AppResult},
     upstream::{
         codex::{CodexCredentials, resolve_chatgpt_url},
@@ -78,18 +78,17 @@ async fn replacement_credentials(
     headers: &axum::http::HeaderMap,
     state: &AppState,
 ) -> AppResult<Option<RelayReplacement>> {
-    let accounts = ApiKeyRepository::new(state.config.as_ref())
-        .read_auth_proxy_accounts()
-        .await?;
-    let Some(account) = matching_auth_proxy_account(incoming_account_id, &accounts) else {
+    let Some(authenticated) = UserRepository::new(state.config.as_ref())
+        .match_account_id(incoming_account_id)
+        .await?
+    else {
         return Ok(None);
     };
     let Some(account_route) = state
         .account_router
         .resolve(
             state.config.as_ref(),
-            RouteConsumerKind::AuthProxy,
-            &account.id,
+            &authenticated.user.id,
             headers,
             current_time_ms(),
         )
@@ -106,7 +105,7 @@ async fn replacement_credentials(
     {
         return Err(missing_oauth_account_id());
     }
-    let identity = UsageIdentity::from(account).with_account_route(
+    let identity = UsageIdentity::from(&authenticated).with_account_route(
         &account_route.account.id,
         &account_route.account.name,
         account_route

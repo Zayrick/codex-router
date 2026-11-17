@@ -352,7 +352,7 @@ export function LogsView({
 					? {
 							onIdentityFilter: (event: UsageEvent) => {
 								setSheetId(null);
-								changeFilters({ ...filters, downstream: { identityType: event.identityType, identityId: event.identityId } });
+								changeFilters({ ...filters, downstream: { identityType: "user", identityId: event.userId } });
 							},
 						}
 					: {})}

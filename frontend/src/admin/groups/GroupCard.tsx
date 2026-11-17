@@ -23,7 +23,7 @@ import { openGroupEditor } from "./editor-store";
 const STRATEGY_COPY: Record<string, (ttl: string, affinity: boolean) => string> = {
 	"weighted-round-robin": (ttl, affinity) => `按剩余额度 ÷ 剩余时间分配${affinity ? `；同一会话 ${formatTtl(ttl)} 内固定到同一账户` : ""}。`,
 	"round-robin": (ttl, affinity) => `按账户顺序轮流分配${affinity ? `；同一会话 ${formatTtl(ttl)} 内固定到同一账户` : ""}。`,
-	fallback: () => "每个调用身份固定使用首选账户，不可用时按顺序切换。",
+	fallback: () => "每个用户固定使用首选账户，不可用时按顺序切换。",
 };
 
 /** Figma "group · …": header, members with live weights, 7-day usage and assigned identities. */
@@ -73,9 +73,9 @@ export function GroupCard({
 					<div className="flex flex-wrap items-center gap-2">
 						<span className="truncate text-[15px] leading-5 font-semibold tracking-[-0.01em]">{group.name}</span>
 						<Tag>{strategyLabel(group.strategy)}</Tag>
-						<Tag>{fallback ? "调用身份保持" : group.sessionAffinity ? `会话保持 ${formatTtl(group.sessionAffinityTtl)}` : "不保持会话"}</Tag>
+						<Tag>{fallback ? "用户保持" : group.sessionAffinity ? `会话保持 ${formatTtl(group.sessionAffinityTtl)}` : "不保持会话"}</Tag>
 						<Tag>{members.length} 个账户</Tag>
-						{unassigned ? <Tag tone="warning">未分配</Tag> : <Tag tone="success">{identities.length} 个调用身份</Tag>}
+						{unassigned ? <Tag tone="warning">未分配</Tag> : <Tag tone="success">{identities.length} 个用户</Tag>}
 					</div>
 					<p className="text-[12.5px] leading-5 text-muted-foreground">
 						{(STRATEGY_COPY[group.strategy] ?? STRATEGY_COPY["round-robin"])?.(group.sessionAffinityTtl, group.sessionAffinity)}
@@ -84,14 +84,14 @@ export function GroupCard({
 				<div className="flex flex-wrap items-center gap-2">
 					<Button onClick={() => setAssigning(true)} size="sm" type="button" variant="outline">
 						<Link2Icon data-icon="inline-start" />
-						分配给调用身份
+						分配给用户
 					</Button>
 					<Button onClick={() => openGroupEditor(group)} size="sm" type="button" variant="outline">
 						<PencilIcon data-icon="inline-start" />
 						编辑
 					</Button>
 					<DeleteConfirmationDialog
-						description="分配到此组的调用身份将变为未分配。此操作无法撤销。"
+						description="分配到此组的用户将变为未分配。此操作无法撤销。"
 						onConfirm={() => void remove()}
 						title={`删除账户组“${group.name}”？`}
 						trigger={
@@ -107,12 +107,12 @@ export function GroupCard({
 				<div className="flex flex-wrap items-center gap-3 border-b bg-warning-soft px-6 py-3">
 					<TriangleAlertIcon className="size-4 shrink-0 text-warning" />
 					<div className="flex min-w-0 flex-1 flex-col">
-						<span className="text-[12.5px] leading-5 font-bold text-warning">尚未分配调用身份</span>
+						<span className="text-[12.5px] leading-5 font-bold text-warning">尚未分配用户</span>
 						<span className="text-xs leading-5 text-warning">分配后，首选账户不可用时将按顺序自动切换。</span>
 					</div>
 					<Button onClick={() => setAssigning(true)} size="sm" type="button">
 						<Link2Icon data-icon="inline-start" />
-						分配给调用身份
+						分配给用户
 					</Button>
 				</div>
 			) : null}
@@ -156,17 +156,16 @@ export function GroupCard({
 				>
 					{groupStats?.consumers.length ? (
 						<div className="flex flex-col gap-2">
-							<span className="text-[11.5px] leading-4 font-medium text-faint">按调用身份（7 天请求）</span>
+							<span className="text-[11.5px] leading-4 font-medium text-faint">按用户（7 天请求）</span>
 							{groupStats.consumers.slice(0, 6).map((consumer) => (
-								<div className="flex items-center gap-2 text-[12.5px] leading-5" key={`${consumer.identityType}:${consumer.identityId}`}>
-									<IdentityChip identity={{ type: consumer.identityType, id: consumer.identityId, name: consumer.identityName }} />
-									<span className="text-[11px] text-faint">{consumer.identityType === "api_key" ? "API Key" : "下游账户"}</span>
+								<div className="flex items-center gap-2 text-[12.5px] leading-5" key={consumer.userId}>
+									<IdentityChip identity={{ id: consumer.userId, name: consumer.userName }} />
 									<span className="ml-auto font-semibold tabular-nums">{formatCount(consumer.requests)}</span>
 								</div>
 							))}
 						</div>
 					) : (
-						<p className="text-xs text-muted-foreground">{unassigned ? "分配调用身份后显示用量" : "近 7 天无请求"}</p>
+						<p className="text-xs text-muted-foreground">{unassigned ? "分配用户后显示用量" : "近 7 天无请求"}</p>
 					)}
 				</UsagePanel>
 			</div>
@@ -175,16 +174,12 @@ export function GroupCard({
 				<Link2Icon className="size-3.5" />
 				<span>已分配</span>
 				{identities.map((identity) => (
-					<IdentityChip
-						aside={<span className="text-[10.5px] text-faint">{identity.type === "api_key" ? "API Key" : "下游账户"}</span>}
-						identity={identity}
-						key={`${identity.type}:${identity.id}`}
-					/>
+					<IdentityChip identity={identity} key={identity.id} />
 				))}
 				{identities.length === 0 ? <span className="text-faint">暂无</span> : null}
 				<Button className="ml-auto" onClick={() => setAssigning(true)} size="sm" type="button" variant="ghost">
 					<PlusIcon data-icon="inline-start" />
-					添加调用身份
+					添加用户
 				</Button>
 			</div>
 

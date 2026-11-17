@@ -1,6 +1,6 @@
 // Pure helpers for routes, identities and account groups shared by dialogs and pages.
 
-import type { AccountGroup, AccountGroupStrategy, RouteAssignment, RouteConsumerType } from "@/admin-api";
+import type { AccountGroup, AccountGroupStrategy, RouteAssignment } from "@/admin-api";
 
 export const MIN_API_KEY_LENGTH = 11;
 export const MAX_API_KEY_LENGTH = 512;
@@ -12,24 +12,19 @@ export type RouteTargetSelection = Pick<RouteAssignment, "targetType" | "targetI
 export const STRATEGY_OPTIONS = [
 	{ value: "round-robin", label: "轮询" },
 	{ value: "weighted-round-robin", label: "额度加权轮询" },
-	{ value: "fallback", label: "调用身份粘性 / Fallback" },
+	{ value: "fallback", label: "用户粘性 / Fallback" },
 ] as const satisfies ReadonlyArray<{
 	value: AccountGroupStrategy;
 	label: string;
 }>;
 
-export function consumerRoute(routes: RouteAssignment[], kind: RouteConsumerType, id: string): RouteAssignment | null {
-	return routes.find((route) => route.consumerType === kind && route.consumerId === id) ?? null;
+export function userRoute(routes: RouteAssignment[], userId: string): RouteAssignment | null {
+	return routes.find((route) => route.userId === userId) ?? null;
 }
 
-export function replaceConsumerRoute(
-	routes: RouteAssignment[],
-	consumerType: RouteConsumerType,
-	consumerId: string,
-	target: RouteTargetSelection,
-): RouteAssignment[] {
-	const retained = routes.filter((route) => route.consumerType !== consumerType || route.consumerId !== consumerId);
-	return target ? [...retained, { consumerType, consumerId, ...target }] : retained;
+export function replaceUserRoute(routes: RouteAssignment[], userId: string, target: RouteTargetSelection): RouteAssignment[] {
+	const retained = routes.filter((route) => route.userId !== userId);
+	return target ? [...retained, { userId, ...target }] : retained;
 }
 
 export function routeTargetValue(target: RouteTargetSelection): string {
@@ -92,7 +87,7 @@ export function strategyLabel(value: AccountGroupStrategy): string {
 
 export function strategyHint(value: AccountGroupStrategy): string {
 	if (value === "weighted-round-robin") return "按各账户 Codex 额度窗口的平均“剩余百分比 ÷ 剩余分钟”平滑分配。";
-	if (value === "fallback") return "每个 API Key 或下游 account id 固定使用一个账户，仅在该账户不可用时切换。";
+	if (value === "fallback") return "每个用户固定使用一个账户，仅在该账户不可用时切换。";
 	return "按账户顺序平均轮换请求。";
 }
 
