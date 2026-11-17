@@ -1,8 +1,8 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -14,6 +14,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     auth::{AuthProxyAccount, ClientApiKey},
+    core::ApiError,
     http::parse_json_body,
     protocol::openai,
 };
@@ -21,38 +22,56 @@ use crate::{
 use super::{
     oauth::current_time_ms,
     pricing::{ModelPrice, calculate_cost, price_index},
+    usage_client::{SessionKind, UsageClient},
 };
 
 const MAX_TRACKED_JSON_BYTES: usize = 16 * 1024 * 1024;
 const RECENT_EVENT_LIMIT: i64 = 50;
 const BREAKDOWN_LIMIT: i64 = 12;
 const ACTIVITY_BUCKET_COUNT: i64 = 7 * 24;
+const MAX_ERROR_CODE_CHARS: usize = 128;
+
+/// Bumped whenever the table layout changes; tables from other versions are dropped and rebuilt.
+const USAGE_SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS usage_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recorded_at_ms INTEGER NOT NULL,
+    request_id TEXT NOT NULL,
     identity_type TEXT NOT NULL,
     identity_id TEXT NOT NULL,
     identity_name TEXT NOT NULL,
-    codex_account_id TEXT NOT NULL DEFAULT '',
-    codex_account_name TEXT NOT NULL DEFAULT '',
-    account_group_id TEXT NOT NULL DEFAULT '',
-    account_group_name TEXT NOT NULL DEFAULT '',
+    codex_account_id TEXT NOT NULL,
+    codex_account_name TEXT NOT NULL,
+    account_group_id TEXT NOT NULL,
+    account_group_name TEXT NOT NULL,
+    requested_model TEXT NOT NULL,
     model TEXT NOT NULL,
     transport TEXT NOT NULL,
     endpoint TEXT NOT NULL,
+    stream INTEGER NOT NULL,
     status TEXT NOT NULL,
-    response_id TEXT NOT NULL DEFAULT '',
-    reasoning_effort TEXT NOT NULL DEFAULT '',
-    service_tier TEXT NOT NULL DEFAULT '',
-    response_service_tier TEXT NOT NULL DEFAULT '',
-    input_tokens INTEGER NOT NULL DEFAULT 0,
-    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
-    total_tokens INTEGER NOT NULL DEFAULT 0
+    status_code INTEGER,
+    error_code TEXT NOT NULL,
+    response_id TEXT NOT NULL,
+    reasoning_effort TEXT NOT NULL,
+    service_tier TEXT NOT NULL,
+    response_service_tier TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    parent_session_id TEXT NOT NULL,
+    session_kind TEXT NOT NULL,
+    client_ip TEXT NOT NULL,
+    x_forwarded_for TEXT NOT NULL,
+    user_agent TEXT NOT NULL,
+    latency_ms INTEGER NOT NULL,
+    ttft_ms INTEGER,
+    input_tokens INTEGER NOT NULL,
+    cached_input_tokens INTEGER NOT NULL,
+    cache_creation_input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    reasoning_output_tokens INTEGER NOT NULL,
+    total_tokens INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_usage_events_recorded_at
     ON usage_events(recorded_at_ms DESC, id DESC);
@@ -60,6 +79,12 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_identity
     ON usage_events(identity_type, identity_id, recorded_at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_events_model
     ON usage_events(model, recorded_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_events_codex_account
+    ON usage_events(codex_account_id, recorded_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_events_account_group
+    ON usage_events(account_group_id, recorded_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_events_session
+    ON usage_events(session_id, recorded_at_ms DESC) WHERE session_id <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_events_response_id
     ON usage_events(response_id) WHERE response_id <> '';
 "#;
@@ -69,18 +94,23 @@ const DEFAULT_REQUEST_SETTING: &str = "default";
 const PRIORITY_SERVICE_TIER: &str = "priority";
 /// Requests without an explicit tier let the upstream choose.
 const AUTO_SERVICE_TIER: &str = "auto";
-/// Bumped when stored usage values need a one-time rewrite.
-const USAGE_SCHEMA_VERSION: i64 = 1;
 /// Groups cost queries by whether the request used Fast mode.
 const FAST_SQL: &str = "(service_tier = 'priority')";
 pub const DEFAULT_FAST_COST_MULTIPLIER: f64 = 2.0;
 
-const ROUTING_INDEXES: &str = r#"
-CREATE INDEX IF NOT EXISTS idx_usage_events_codex_account
-    ON usage_events(codex_account_id, recorded_at_ms DESC);
-CREATE INDEX IF NOT EXISTS idx_usage_events_account_group
-    ON usage_events(account_group_id, recorded_at_ms DESC);
-"#;
+/// The upstream finished the response.
+const STATUS_COMPLETED: &str = "completed";
+/// The upstream stopped early, for example at `max_output_tokens`.
+const STATUS_INCOMPLETE: &str = "incomplete";
+/// The upstream or the router rejected the request.
+const STATUS_FAILED: &str = "failed";
+/// The client went away (or started another response) before the upstream finished.
+const STATUS_CANCELLED: &str = "cancelled";
+/// The upstream body ended or broke without a terminal event.
+const STATUS_INTERRUPTED: &str = "interrupted";
+/// Request health: successful and failed buckets; cancellations count as neither.
+const SUCCESS_SQL: &str = "(status IN ('completed', 'incomplete'))";
+const FAILURE_SQL: &str = "(status IN ('failed', 'interrupted'))";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageIdentity {
@@ -243,24 +273,8 @@ impl UsageIdentity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct UsageEvent {
-    recorded_at_ms: i64,
-    identity_type: String,
-    identity_id: String,
-    identity_name: String,
-    codex_account_id: String,
-    codex_account_name: String,
-    account_group_id: String,
-    account_group_name: String,
-    model: String,
-    transport: String,
-    endpoint: String,
-    status: String,
-    response_id: String,
-    reasoning_effort: String,
-    service_tier: String,
-    response_service_tier: String,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TokenUsage {
     input_tokens: i64,
     cached_input_tokens: i64,
     cache_creation_input_tokens: i64,
@@ -269,18 +283,62 @@ struct UsageEvent {
     total_tokens: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ParsedUsage {
+/// One upstream request attempt; exactly one row is written per attempt.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct UsageEvent {
+    recorded_at_ms: i64,
+    request_id: String,
+    identity_type: String,
+    identity_id: String,
+    identity_name: String,
+    codex_account_id: String,
+    codex_account_name: String,
+    account_group_id: String,
+    account_group_name: String,
+    requested_model: String,
+    /// Model reported by the upstream, falling back to the requested model; used for pricing.
     model: String,
+    transport: String,
+    endpoint: String,
+    stream: bool,
     status: String,
+    status_code: Option<u16>,
+    error_code: String,
     response_id: String,
+    reasoning_effort: String,
+    service_tier: String,
     response_service_tier: String,
-    input_tokens: i64,
-    cached_input_tokens: i64,
-    cache_creation_input_tokens: i64,
-    output_tokens: i64,
-    reasoning_output_tokens: i64,
-    total_tokens: i64,
+    session_id: String,
+    parent_session_id: String,
+    session_kind: String,
+    client_ip: String,
+    x_forwarded_for: String,
+    user_agent: String,
+    latency_ms: i64,
+    ttft_ms: Option<i64>,
+    tokens: TokenUsage,
+}
+
+/// How an attempt ended, as reported by the upstream or inferred by the router.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Outcome {
+    status: &'static str,
+    status_code: Option<u16>,
+    error_code: String,
+    response_id: String,
+    response_model: String,
+    response_service_tier: String,
+    tokens: TokenUsage,
+}
+
+impl Outcome {
+    fn new(status: &'static str, error_code: &str) -> Self {
+        Self {
+            status,
+            error_code: error_code.into(),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -314,14 +372,7 @@ impl UsageStore {
         connection
             .pragma_update(None, "synchronous", "NORMAL")
             .context("failed to configure usage database synchronization")?;
-        connection
-            .execute_batch(SCHEMA)
-            .context("failed to initialize usage database schema")?;
-        ensure_usage_text_columns(&connection)?;
-        migrate_usage_values(&connection)?;
-        connection
-            .execute_batch(ROUTING_INDEXES)
-            .context("failed to initialize usage routing indexes")?;
+        prepare_schema(&connection)?;
         restrict_database_permissions(&path)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -333,56 +384,31 @@ impl UsageStore {
         self.path.as_ref()
     }
 
-    fn record_background(&self, event: UsageEvent) {
-        let store = self.clone();
-        tokio::spawn(async move {
-            if let Err(error) = store.insert(event).await {
-                tracing::warn!(event = "usage_record", status = "failed", error = %error);
-            }
-        });
+    /// Persists without blocking the caller; falls back to a direct write outside a runtime.
+    fn record(&self, event: UsageEvent) {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let store = self.clone();
+            runtime.spawn(async move {
+                if let Err(error) = store.insert(event).await {
+                    tracing::warn!(event = "usage_record", status = "failed", error = %error);
+                }
+            });
+        } else if let Err(error) = insert_event(&self.lock(), &event) {
+            tracing::warn!(event = "usage_record", status = "failed", error = %error);
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Connection> {
+        self.connection
+            .lock()
+            .expect("usage database lock poisoned")
     }
 
     async fn insert(&self, event: UsageEvent) -> Result<()> {
         let connection = self.connection.clone();
         tokio::task::spawn_blocking(move || {
             let connection = connection.lock().expect("usage database lock poisoned");
-            connection.execute(
-                r#"
-                INSERT OR IGNORE INTO usage_events (
-                    recorded_at_ms, identity_type, identity_id, identity_name,
-                    codex_account_id, codex_account_name, account_group_id, account_group_name,
-                    model, transport, endpoint, status, response_id,
-                    reasoning_effort, service_tier, response_service_tier,
-                    input_tokens, cached_input_tokens, cache_creation_input_tokens,
-                    output_tokens, reasoning_output_tokens, total_tokens
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
-                "#,
-                params![
-                    event.recorded_at_ms,
-                    event.identity_type,
-                    event.identity_id,
-                    event.identity_name,
-                    event.codex_account_id,
-                    event.codex_account_name,
-                    event.account_group_id,
-                    event.account_group_name,
-                    event.model,
-                    event.transport,
-                    event.endpoint,
-                    event.status,
-                    event.response_id,
-                    event.reasoning_effort,
-                    event.service_tier,
-                    event.response_service_tier,
-                    event.input_tokens,
-                    event.cached_input_tokens,
-                    event.cache_creation_input_tokens,
-                    event.output_tokens,
-                    event.reasoning_output_tokens,
-                    event.total_tokens,
-                ],
-            )?;
-            Ok::<_, anyhow::Error>(())
+            insert_event(&connection, &event)
         })
         .await
         .context("usage database writer task failed")??;
@@ -432,46 +458,90 @@ impl UsageStore {
     }
 }
 
-fn ensure_usage_text_columns(connection: &Connection) -> Result<()> {
-    let mut statement = connection.prepare("PRAGMA table_info(usage_events)")?;
-    let columns: std::collections::HashSet<String> = statement
-        .query_map([], |row| row.get(1))?
-        .collect::<rusqlite::Result<_>>()?;
-    drop(statement);
-    for name in [
-        "codex_account_id",
-        "codex_account_name",
-        "account_group_id",
-        "account_group_name",
-        "reasoning_effort",
-        "service_tier",
-        "response_service_tier",
-    ] {
-        if !columns.contains(name) {
-            connection.execute(
-                &format!("ALTER TABLE usage_events ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"),
-                [],
-            )?;
+/// Creates the current table layout, discarding a table written by any other schema version.
+fn prepare_schema(connection: &Connection) -> Result<()> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let reset = if version == USAGE_SCHEMA_VERSION {
+        ""
+    } else {
+        let existing: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_events')",
+            [],
+            |row| row.get(0),
+        )?;
+        if existing {
+            tracing::warn!(
+                event = "usage_schema_reset",
+                previous_version = version,
+                current_version = USAGE_SCHEMA_VERSION,
+                "dropping usage events recorded with an incompatible schema"
+            );
         }
-    }
-    Ok(())
+        "DROP TABLE IF EXISTS usage_events;"
+    };
+    connection
+        .execute_batch(&format!(
+            "BEGIN; {reset} {SCHEMA} PRAGMA user_version = {USAGE_SCHEMA_VERSION}; COMMIT;"
+        ))
+        .context("failed to initialize usage database schema")
 }
 
-fn migrate_usage_values(connection: &Connection) -> Result<()> {
-    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if version >= USAGE_SCHEMA_VERSION {
-        return Ok(());
-    }
-    // Early builds stored an omitted request tier as `default`; the upstream treats it as `auto`.
-    connection
-        .execute(
-            "UPDATE usage_events SET service_tier = 'auto' WHERE service_tier = 'default'",
-            [],
+fn insert_event(connection: &Connection, event: &UsageEvent) -> Result<()> {
+    connection.execute(
+        r#"
+        INSERT OR IGNORE INTO usage_events (
+            recorded_at_ms, request_id, identity_type, identity_id, identity_name,
+            codex_account_id, codex_account_name, account_group_id, account_group_name,
+            requested_model, model, transport, endpoint, stream,
+            status, status_code, error_code, response_id,
+            reasoning_effort, service_tier, response_service_tier,
+            session_id, parent_session_id, session_kind,
+            client_ip, x_forwarded_for, user_agent, latency_ms, ttft_ms,
+            input_tokens, cached_input_tokens, cache_creation_input_tokens,
+            output_tokens, reasoning_output_tokens, total_tokens
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+            ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35
         )
-        .context("failed to migrate usage service tiers")?;
-    connection
-        .pragma_update(None, "user_version", USAGE_SCHEMA_VERSION)
-        .context("failed to record usage database version")?;
+        "#,
+        params![
+            event.recorded_at_ms,
+            event.request_id,
+            event.identity_type,
+            event.identity_id,
+            event.identity_name,
+            event.codex_account_id,
+            event.codex_account_name,
+            event.account_group_id,
+            event.account_group_name,
+            event.requested_model,
+            event.model,
+            event.transport,
+            event.endpoint,
+            event.stream,
+            event.status,
+            event.status_code,
+            event.error_code,
+            event.response_id,
+            event.reasoning_effort,
+            event.service_tier,
+            event.response_service_tier,
+            event.session_id,
+            event.parent_session_id,
+            event.session_kind,
+            event.client_ip,
+            event.x_forwarded_for,
+            event.user_agent,
+            event.latency_ms,
+            event.ttft_ms,
+            event.tokens.input_tokens,
+            event.tokens.cached_input_tokens,
+            event.tokens.cache_creation_input_tokens,
+            event.tokens.output_tokens,
+            event.tokens.reasoning_output_tokens,
+            event.tokens.total_tokens,
+        ],
+    )?;
     Ok(())
 }
 
@@ -508,6 +578,27 @@ fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transport {
+    Http,
+    WebSocket,
+}
+
+impl Transport {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::WebSocket => "websocket",
+        }
+    }
+}
+
+/// Records one usage row per upstream attempt.
+///
+/// An HTTP tracker covers a single attempt that starts when the tracker is
+/// created. A WebSocket tracker starts an attempt for every `response.create`
+/// or `response.append`. An attempt ends at its terminal event, an explicit
+/// failure, or — when the last clone is dropped — as cancelled or interrupted.
 #[derive(Clone)]
 pub struct UsageTracker {
     inner: Arc<UsageTrackerInner>,
@@ -516,9 +607,18 @@ pub struct UsageTracker {
 struct UsageTrackerInner {
     store: UsageStore,
     identity: UsageIdentity,
+    client: UsageClient,
     endpoint: String,
-    transport: &'static str,
-    request: Mutex<RequestSettings>,
+    transport: Transport,
+    state: Mutex<TrackerState>,
+}
+
+#[derive(Default)]
+struct TrackerState {
+    request: RequestSettings,
+    /// Set when a converted protocol decides streaming instead of the upstream body.
+    client_stream: Option<bool>,
+    attempt: Option<Attempt>,
 }
 
 /// Request-side attributes copied onto every usage event recorded by a tracker.
@@ -527,6 +627,38 @@ struct RequestSettings {
     model: String,
     reasoning_effort: String,
     service_tier: String,
+    stream: bool,
+    prompt_cache_key: String,
+}
+
+struct Attempt {
+    request_id: String,
+    started_at: Instant,
+    first_output_at: Option<Instant>,
+    status_code: Option<u16>,
+    /// The upstream body ended, or broke, while the attempt was still open.
+    upstream_ended: bool,
+}
+
+impl Attempt {
+    fn start() -> Self {
+        Self {
+            request_id: uuid::Uuid::new_v4().simple().to_string(),
+            started_at: Instant::now(),
+            first_output_at: None,
+            status_code: None,
+            upstream_ended: false,
+        }
+    }
+
+    /// Classifies an attempt that never received a terminal event.
+    fn abandoned(&self) -> Outcome {
+        match self.status_code {
+            Some(status) if !(200..300).contains(&status) => Outcome::new(STATUS_FAILED, ""),
+            _ if self.upstream_ended => Outcome::new(STATUS_INTERRUPTED, "stream_truncated"),
+            _ => Outcome::new(STATUS_CANCELLED, "client_cancelled"),
+        }
+    }
 }
 
 /// Request-side usage attributes extracted from an upstream Responses body.
@@ -535,6 +667,8 @@ pub struct UsageRequest {
     model: Option<String>,
     reasoning_effort: String,
     service_tier: String,
+    stream: bool,
+    prompt_cache_key: String,
 }
 
 impl UsageRequest {
@@ -556,42 +690,81 @@ impl UsageRequest {
             .and_then(Value::as_str)
             .map(normalize_service_tier)
             .unwrap_or_else(|| AUTO_SERVICE_TIER.into());
+        let stream = request_field(object, "stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let prompt_cache_key = request_field(object, "prompt_cache_key")
+            .and_then(Value::as_str)
+            .map(|value| value.trim().chars().take(MAX_ERROR_CODE_CHARS).collect())
+            .unwrap_or_default();
         Self {
             model,
             reasoning_effort,
             service_tier,
+            stream,
+            prompt_cache_key,
         }
     }
 }
 
+impl RequestSettings {
+    fn apply(&mut self, request: UsageRequest) {
+        if let Some(model) = request.model {
+            self.model = model;
+        }
+        self.reasoning_effort = request.reasoning_effort;
+        self.service_tier = request.service_tier;
+        self.stream = request.stream;
+        self.prompt_cache_key = request.prompt_cache_key;
+    }
+}
+
 impl UsageTracker {
-    pub fn http(store: UsageStore, identity: UsageIdentity, endpoint: impl Into<String>) -> Self {
-        Self::new(store, identity, endpoint, "http")
+    pub fn http(
+        store: UsageStore,
+        identity: UsageIdentity,
+        client: UsageClient,
+        endpoint: impl Into<String>,
+    ) -> Self {
+        Self::new(store, identity, client, endpoint, Transport::Http)
     }
 
     pub fn websocket(
         store: UsageStore,
         identity: UsageIdentity,
+        client: UsageClient,
         endpoint: impl Into<String>,
     ) -> Self {
-        Self::new(store, identity, endpoint, "websocket")
+        Self::new(store, identity, client, endpoint, Transport::WebSocket)
     }
 
     fn new(
         store: UsageStore,
         identity: UsageIdentity,
+        client: UsageClient,
         endpoint: impl Into<String>,
-        transport: &'static str,
+        transport: Transport,
     ) -> Self {
         Self {
             inner: Arc::new(UsageTrackerInner {
                 store,
                 identity,
+                client,
                 endpoint: endpoint.into(),
                 transport,
-                request: Mutex::new(RequestSettings::default()),
+                state: Mutex::new(TrackerState {
+                    attempt: (transport == Transport::Http).then(Attempt::start),
+                    ..TrackerState::default()
+                }),
             }),
         }
+    }
+
+    fn state(&self) -> MutexGuard<'_, TrackerState> {
+        self.inner
+            .state
+            .lock()
+            .expect("usage tracker lock poisoned")
     }
 
     pub fn observe_request_value(&self, value: &Value) {
@@ -607,27 +780,27 @@ impl UsageTracker {
             return;
         }
         let request = UsageRequest::from_body(object);
+        let mut state = self.state();
+        if self.inner.transport == Transport::WebSocket {
+            if let Some(previous) = state.attempt.take() {
+                let outcome = Outcome::new(STATUS_CANCELLED, "superseded");
+                let event = self.inner.event(&state, previous, outcome);
+                self.inner.store.record(event);
+            }
+            state.attempt = Some(Attempt::start());
+        }
         if kind == Some("response.append") {
             // Appends extend the previous response.create and inherit its settings.
             if let Some(model) = request.model {
-                self.set_requested_model(&model);
+                state.request.model = model;
             }
             return;
         }
-        self.record_request(request);
+        state.request.apply(request);
     }
 
     pub fn record_request(&self, request: UsageRequest) {
-        let mut current = self
-            .inner
-            .request
-            .lock()
-            .expect("usage request lock poisoned");
-        if let Some(model) = request.model {
-            current.model = model;
-        }
-        current.reasoning_effort = request.reasoning_effort;
-        current.service_tier = request.service_tier;
+        self.state().request.apply(request);
     }
 
     pub fn observe_request_text(&self, text: &str) {
@@ -636,65 +809,77 @@ impl UsageTracker {
         }
     }
 
-    pub fn set_requested_model(&self, model: &str) {
-        let model = model.trim();
-        if model.is_empty() {
-            return;
+    /// Records whether the client asked for a stream when the upstream body always streams.
+    pub fn set_client_stream(&self, stream: bool) {
+        self.state().client_stream = Some(stream);
+    }
+
+    pub fn observe_upstream_status(&self, status: u16) {
+        self.state()
+            .attempt
+            .get_or_insert_with(Attempt::start)
+            .status_code = Some(status);
+    }
+
+    /// Ends the attempt with an error raised before the upstream produced a response.
+    pub fn fail(&self, error: &ApiError) {
+        let mut state = self.state();
+        let attempt = state.attempt.take().unwrap_or_else(Attempt::start);
+        let outcome = Outcome {
+            status: STATUS_FAILED,
+            status_code: Some(error.status),
+            error_code: clip_error_code(error.code.as_deref().unwrap_or(&error.kind)),
+            ..Outcome::default()
+        };
+        let event = self.inner.event(&state, attempt, outcome);
+        drop(state);
+        self.inner.store.record(event);
+    }
+
+    /// Marks that the upstream body is finished; an attempt still open is then interrupted.
+    pub fn upstream_finished(&self) {
+        if let Some(attempt) = self.state().attempt.as_mut() {
+            attempt.upstream_ended = true;
         }
-        self.inner
-            .request
-            .lock()
-            .expect("usage request lock poisoned")
-            .model = model.to_owned();
     }
 
-    pub fn observe_response_value(&self, value: &Value) {
-        let Some(object) = value.as_object() else {
-            return;
-        };
-        self.observe_response_object(object);
-    }
-
+    /// Observes one streamed event (SSE or WebSocket message).
     pub fn observe_response_object(&self, object: &Map<String, Value>) {
-        let request = self
-            .inner
-            .request
-            .lock()
-            .expect("usage request lock poisoned")
-            .clone();
-        let Some(parsed) = parse_usage(object, &request.model) else {
-            return;
-        };
-        self.inner.store.record_background(UsageEvent {
-            recorded_at_ms: current_time_ms(),
-            identity_type: self.inner.identity.kind.as_str().into(),
-            identity_id: self.inner.identity.id.clone(),
-            identity_name: self.inner.identity.name.clone(),
-            codex_account_id: self.inner.identity.codex_account_id.clone(),
-            codex_account_name: self.inner.identity.codex_account_name.clone(),
-            account_group_id: self.inner.identity.account_group_id.clone(),
-            account_group_name: self.inner.identity.account_group_name.clone(),
-            model: parsed.model,
-            transport: self.inner.transport.into(),
-            endpoint: self.inner.endpoint.clone(),
-            status: parsed.status,
-            response_id: parsed.response_id,
-            reasoning_effort: request.reasoning_effort,
-            service_tier: request.service_tier,
-            response_service_tier: parsed.response_service_tier,
-            input_tokens: parsed.input_tokens,
-            cached_input_tokens: parsed.cached_input_tokens,
-            cache_creation_input_tokens: parsed.cache_creation_input_tokens,
-            output_tokens: parsed.output_tokens,
-            reasoning_output_tokens: parsed.reasoning_output_tokens,
-            total_tokens: parsed.total_tokens,
-        });
+        self.observe_response(object, false);
     }
 
     pub fn observe_response_text(&self, text: &str) {
-        if let Ok(value) = serde_json::from_str::<Value>(text) {
-            self.observe_response_value(&value);
+        if let Ok(Value::Object(object)) = serde_json::from_str::<Value>(text) {
+            self.observe_response_object(&object);
         }
+    }
+
+    /// Observes a complete non-streamed JSON body.
+    fn observe_response_body(&self, value: &Value) {
+        if let Some(object) = value.as_object() {
+            self.observe_response(object, true);
+        }
+    }
+
+    fn observe_response(&self, object: &Map<String, Value>, whole_body: bool) {
+        let mut state = self.state();
+        let Some(attempt) = state.attempt.as_mut() else {
+            return;
+        };
+        if attempt.first_output_at.is_none()
+            && string(object, "type").is_some_and(|kind| kind.ends_with(".delta"))
+        {
+            attempt.first_output_at = Some(Instant::now());
+        }
+        let Some(outcome) = parse_outcome(object, whole_body) else {
+            return;
+        };
+        let Some(attempt) = state.attempt.take() else {
+            return;
+        };
+        let event = self.inner.event(&state, attempt, outcome);
+        drop(state);
+        self.inner.store.record(event);
     }
 
     /// Passes a streamed request body through unchanged while reading its usage settings.
@@ -740,6 +925,85 @@ impl UsageTracker {
     }
 }
 
+impl UsageTrackerInner {
+    fn event(&self, state: &TrackerState, attempt: Attempt, outcome: Outcome) -> UsageEvent {
+        let request = &state.request;
+        let session = &self.client.session;
+        // Codex reuses the conversation ID as its prompt cache key.
+        let (session_id, session_kind) = if session.id.is_empty() {
+            let kind = if request.prompt_cache_key.is_empty() {
+                SessionKind::Unknown
+            } else {
+                SessionKind::Main
+            };
+            (request.prompt_cache_key.clone(), kind)
+        } else {
+            (session.id.clone(), session.kind)
+        };
+        let session_kind = if self.endpoint.trim_end_matches('/').ends_with("/compact") {
+            SessionKind::Compaction
+        } else {
+            session_kind
+        };
+        let model = if outcome.response_model.is_empty() {
+            request.model.clone()
+        } else {
+            outcome.response_model
+        };
+        UsageEvent {
+            recorded_at_ms: current_time_ms(),
+            request_id: attempt.request_id,
+            identity_type: self.identity.kind.as_str().into(),
+            identity_id: self.identity.id.clone(),
+            identity_name: self.identity.name.clone(),
+            codex_account_id: self.identity.codex_account_id.clone(),
+            codex_account_name: self.identity.codex_account_name.clone(),
+            account_group_id: self.identity.account_group_id.clone(),
+            account_group_name: self.identity.account_group_name.clone(),
+            requested_model: request.model.clone(),
+            model,
+            transport: self.transport.as_str().into(),
+            endpoint: self.endpoint.clone(),
+            stream: self.transport == Transport::WebSocket
+                || state.client_stream.unwrap_or(request.stream),
+            status: outcome.status.into(),
+            status_code: outcome.status_code.or(attempt.status_code),
+            error_code: outcome.error_code,
+            response_id: outcome.response_id,
+            reasoning_effort: request.reasoning_effort.clone(),
+            service_tier: request.service_tier.clone(),
+            response_service_tier: outcome.response_service_tier,
+            session_id,
+            parent_session_id: session.parent_id.clone(),
+            session_kind: session_kind.as_str().into(),
+            client_ip: self.client.ip.clone(),
+            x_forwarded_for: self.client.forwarded_for.clone(),
+            user_agent: self.client.user_agent.clone(),
+            latency_ms: elapsed_ms(attempt.started_at, Instant::now()),
+            ttft_ms: attempt
+                .first_output_at
+                .map(|at| elapsed_ms(attempt.started_at, at)),
+            tokens: outcome.tokens,
+        }
+    }
+}
+
+impl Drop for UsageTrackerInner {
+    fn drop(&mut self) {
+        let mut state =
+            std::mem::take(self.state.get_mut().unwrap_or_else(PoisonError::into_inner));
+        if let Some(attempt) = state.attempt.take() {
+            let outcome = attempt.abandoned();
+            let event = self.event(&state, attempt, outcome);
+            self.store.record(event);
+        }
+    }
+}
+
+fn elapsed_ms(from: Instant, to: Instant) -> i64 {
+    i64::try_from(to.saturating_duration_since(from).as_millis()).unwrap_or(i64::MAX)
+}
+
 struct RequestBodyObserver {
     tracker: UsageTracker,
     content_encoding: Option<String>,
@@ -763,6 +1027,8 @@ impl RequestBodyObserver {
     }
 }
 
+/// Watches a proxied upstream body. Dropping it before [`Self::finish`] means the
+/// client disconnected mid-response.
 pub struct UsageWireObserver {
     tracker: UsageTracker,
     format: WireFormat,
@@ -818,6 +1084,7 @@ impl UsageWireObserver {
         }
     }
 
+    /// Called once the upstream body has ended, cleanly or not.
     pub fn finish(mut self) {
         match &mut self.format {
             WireFormat::Sse(decoder) => {
@@ -833,10 +1100,11 @@ impl UsageWireObserver {
                 if let Some(active) = buffer.take()
                     && let Ok(value) = serde_json::from_slice::<Value>(&active)
                 {
-                    self.tracker.observe_response_value(&value);
+                    self.tracker.observe_response_body(&value);
                 }
             }
         }
+        self.tracker.upstream_finished();
     }
 }
 
@@ -863,14 +1131,20 @@ fn normalize_service_tier(value: &str) -> String {
     }
 }
 
-fn parse_usage(root: &Map<String, Value>, fallback_model: &str) -> Option<ParsedUsage> {
-    let kind = string(root, "type");
-    let terminal = match kind {
-        Some("response.completed") => "completed",
-        Some("response.incomplete") => "incomplete",
-        Some("response.failed") => "failed",
+/// Reads a terminal event, an error event, or (for `whole_body`) a complete JSON
+/// response. Returns `None` for events that do not end the attempt.
+fn parse_outcome(root: &Map<String, Value>, whole_body: bool) -> Option<Outcome> {
+    let has_error = |object: &Map<String, Value>| {
+        object.get("error").is_some_and(|error| !error.is_null())
+            || object.get("detail").is_some_and(|detail| !detail.is_null())
+    };
+    let status = match string(root, "type") {
+        Some("response.completed") => STATUS_COMPLETED,
+        Some("response.incomplete") => STATUS_INCOMPLETE,
+        Some("response.failed" | "error") => STATUS_FAILED,
         Some(_) => return None,
-        None if root.get("usage").and_then(Value::as_object).is_some() => "completed",
+        None if has_error(root) => STATUS_FAILED,
+        None if whole_body || root.get("usage").is_some_and(Value::is_object) => STATUS_COMPLETED,
         None => return None,
     };
     let response = root
@@ -881,45 +1155,80 @@ fn parse_usage(root: &Map<String, Value>, fallback_model: &str) -> Option<Parsed
         .get("usage")
         .and_then(Value::as_object)
         .or_else(|| root.get("usage").and_then(Value::as_object));
-    let usage = usage?;
-    let input_tokens = token(usage, "input_tokens").unwrap_or(0);
-    let output_tokens = token(usage, "output_tokens").unwrap_or(0);
-    let cached_input_tokens = usage
-        .get("input_tokens_details")
-        .and_then(Value::as_object)
-        .and_then(|details| token(details, "cached_tokens"))
-        .unwrap_or(0);
-    let cache_creation_input_tokens = usage
-        .get("input_tokens_details")
-        .and_then(Value::as_object)
-        .and_then(|details| token(details, "cache_creation_tokens"))
-        .unwrap_or(0);
-    let reasoning_output_tokens = usage
-        .get("output_tokens_details")
-        .and_then(Value::as_object)
-        .and_then(|details| token(details, "reasoning_tokens"))
-        .unwrap_or(0);
-    let total_tokens = token(usage, "total_tokens").unwrap_or(input_tokens + output_tokens);
-    let model = string(response, "model")
-        .or_else(|| string(root, "model"))
-        .unwrap_or(fallback_model)
-        .trim();
-    Some(ParsedUsage {
-        model: if model.is_empty() { "unknown" } else { model }.into(),
-        status: terminal.into(),
+    Some(Outcome {
+        status,
+        status_code: root
+            .get("status")
+            .and_then(Value::as_u64)
+            .and_then(|status| u16::try_from(status).ok())
+            .filter(|status| (100..600).contains(status)),
+        error_code: error_code(root, response),
         response_id: string(response, "id").unwrap_or_default().trim().into(),
+        response_model: string(response, "model")
+            .or_else(|| string(root, "model"))
+            .unwrap_or_default()
+            .trim()
+            .into(),
         response_service_tier: string(response, "service_tier")
             .or_else(|| string(root, "service_tier"))
             .filter(|tier| !tier.trim().is_empty())
             .map(normalize_service_tier)
             .unwrap_or_default(),
-        input_tokens,
-        cached_input_tokens,
-        cache_creation_input_tokens,
-        output_tokens,
-        reasoning_output_tokens,
-        total_tokens,
+        tokens: usage.map(parse_tokens).unwrap_or_default(),
     })
+}
+
+fn parse_tokens(usage: &Map<String, Value>) -> TokenUsage {
+    let input_tokens = token(usage, "input_tokens").unwrap_or(0);
+    let output_tokens = token(usage, "output_tokens").unwrap_or(0);
+    let input_details = usage.get("input_tokens_details").and_then(Value::as_object);
+    let output_details = usage
+        .get("output_tokens_details")
+        .and_then(Value::as_object);
+    TokenUsage {
+        input_tokens,
+        cached_input_tokens: input_details
+            .and_then(|details| token(details, "cached_tokens"))
+            .unwrap_or(0),
+        cache_creation_input_tokens: input_details
+            .and_then(|details| token(details, "cache_creation_tokens"))
+            .unwrap_or(0),
+        output_tokens,
+        reasoning_output_tokens: output_details
+            .and_then(|details| token(details, "reasoning_tokens"))
+            .unwrap_or(0),
+        total_tokens: token(usage, "total_tokens").unwrap_or(input_tokens + output_tokens),
+    }
+}
+
+/// First machine-readable reason found in Codex error and incomplete payloads.
+fn error_code(root: &Map<String, Value>, response: &Map<String, Value>) -> String {
+    [
+        nested(response, "error", "code"),
+        nested(response, "error", "type"),
+        nested(response, "incomplete_details", "reason"),
+        string(root, "code"),
+        nested(root, "error", "code"),
+        nested(root, "error", "type"),
+        nested(root, "detail", "code"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .find(|code| !code.is_empty())
+    .map(clip_error_code)
+    .unwrap_or_default()
+}
+
+fn nested<'a>(object: &'a Map<String, Value>, parent: &str, key: &str) -> Option<&'a str> {
+    object
+        .get(parent)
+        .and_then(Value::as_object)
+        .and_then(|child| string(child, key))
+}
+
+fn clip_error_code(value: &str) -> String {
+    value.chars().take(MAX_ERROR_CODE_CHARS).collect()
 }
 
 fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
@@ -1051,7 +1360,7 @@ pub struct UsageBreakdownRow {
     pub totals: UsageTotals,
 }
 
-/// Usage grouped by a request setting; an empty value marks events recorded before it was tracked.
+/// Usage grouped by a request setting; empty when the attempt failed before its request was read.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageDimensionRow {
@@ -1075,6 +1384,7 @@ pub struct UsageIdentityRow {
 pub struct UsageEventRow {
     pub id: i64,
     pub recorded_at: i64,
+    pub request_id: String,
     pub identity_type: String,
     pub identity_id: String,
     pub identity_name: String,
@@ -1082,13 +1392,25 @@ pub struct UsageEventRow {
     pub codex_account_name: String,
     pub account_group_id: String,
     pub account_group_name: String,
+    pub requested_model: String,
     pub model: String,
     pub transport: String,
     pub endpoint: String,
+    pub stream: bool,
     pub status: String,
+    pub status_code: Option<u16>,
+    pub error_code: String,
     pub reasoning_effort: String,
     pub service_tier: String,
     pub response_service_tier: String,
+    pub session_id: String,
+    pub parent_session_id: String,
+    pub session_kind: String,
+    pub client_ip: String,
+    pub x_forwarded_for: String,
+    pub user_agent: String,
+    pub latency_ms: i64,
+    pub ttft_ms: Option<i64>,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
     pub cache_creation_input_tokens: i64,
@@ -1267,7 +1589,7 @@ fn query_models(
     let sql = format!(
         "SELECT model, {TOTAL_COLUMNS} FROM usage_events \
          WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2 \
-         AND {usage_filters} \
+         AND model <> '' AND {usage_filters} \
          GROUP BY model ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, model LIMIT ?7"
     );
     let mut statement = connection.prepare(&sql)?;
@@ -1432,8 +1754,8 @@ fn query_series(
     let sql = format!(
         r#"
         SELECT (((recorded_at_ms - ?1) * ?2) / ?3), model, {FAST_SQL}, {TOTAL_COLUMNS},
-               COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END), 0)
+               COALESCE(SUM({SUCCESS_SQL}), 0),
+               COALESCE(SUM({FAILURE_SQL}), 0)
         FROM usage_events
         WHERE recorded_at_ms >= ?4 AND recorded_at_ms < ?5
           AND {usage_filters}
@@ -1728,10 +2050,12 @@ fn query_recent_events(
 ) -> Result<Vec<UsageEventRow>> {
     let sql = format!(
         r#"
-        SELECT id, recorded_at_ms, identity_type, identity_id, identity_name,
+        SELECT id, recorded_at_ms, request_id, identity_type, identity_id, identity_name,
                codex_account_id, codex_account_name, account_group_id, account_group_name,
-               model, transport, endpoint, status, reasoning_effort, service_tier,
-               response_service_tier, input_tokens, cached_input_tokens,
+               requested_model, model, transport, endpoint, stream, status, status_code,
+               error_code, reasoning_effort, service_tier, response_service_tier,
+               session_id, parent_session_id, session_kind, client_ip, x_forwarded_for,
+               user_agent, latency_ms, ttft_ms, input_tokens, cached_input_tokens,
                cache_creation_input_tokens, output_tokens, reasoning_output_tokens, total_tokens
         FROM usage_events
         WHERE recorded_at_ms >= ?1 AND recorded_at_ms < ?2
@@ -1756,26 +2080,39 @@ fn query_recent_events(
             Ok(UsageEventRow {
                 id: row.get(0)?,
                 recorded_at: row.get(1)?,
-                identity_type: row.get(2)?,
-                identity_id: row.get(3)?,
-                identity_name: row.get(4)?,
-                codex_account_id: row.get(5)?,
-                codex_account_name: row.get(6)?,
-                account_group_id: row.get(7)?,
-                account_group_name: row.get(8)?,
-                model: row.get(9)?,
-                transport: row.get(10)?,
-                endpoint: row.get(11)?,
-                status: row.get(12)?,
-                reasoning_effort: row.get(13)?,
-                service_tier: row.get(14)?,
-                response_service_tier: row.get(15)?,
-                input_tokens: row.get(16)?,
-                cached_input_tokens: row.get(17)?,
-                cache_creation_input_tokens: row.get(18)?,
-                output_tokens: row.get(19)?,
-                reasoning_output_tokens: row.get(20)?,
-                total_tokens: row.get(21)?,
+                request_id: row.get(2)?,
+                identity_type: row.get(3)?,
+                identity_id: row.get(4)?,
+                identity_name: row.get(5)?,
+                codex_account_id: row.get(6)?,
+                codex_account_name: row.get(7)?,
+                account_group_id: row.get(8)?,
+                account_group_name: row.get(9)?,
+                requested_model: row.get(10)?,
+                model: row.get(11)?,
+                transport: row.get(12)?,
+                endpoint: row.get(13)?,
+                stream: row.get(14)?,
+                status: row.get(15)?,
+                status_code: row.get(16)?,
+                error_code: row.get(17)?,
+                reasoning_effort: row.get(18)?,
+                service_tier: row.get(19)?,
+                response_service_tier: row.get(20)?,
+                session_id: row.get(21)?,
+                parent_session_id: row.get(22)?,
+                session_kind: row.get(23)?,
+                client_ip: row.get(24)?,
+                x_forwarded_for: row.get(25)?,
+                user_agent: row.get(26)?,
+                latency_ms: row.get(27)?,
+                ttft_ms: row.get(28)?,
+                input_tokens: row.get(29)?,
+                cached_input_tokens: row.get(30)?,
+                cache_creation_input_tokens: row.get(31)?,
+                output_tokens: row.get(32)?,
+                reasoning_output_tokens: row.get(33)?,
+                total_tokens: row.get(34)?,
                 cost_usd: 0.0,
             })
         },
@@ -1816,6 +2153,32 @@ mod tests {
             account_group_id: "group-1".into(),
             account_group_name: "pool".into(),
         }
+    }
+
+    fn client() -> UsageClient {
+        UsageClient::default()
+    }
+
+    /// A completed event with the given tokens; tests override the fields they check.
+    fn completed(identity_type: &str, identity_id: &str, total_tokens: i64) -> UsageEvent {
+        UsageEvent {
+            recorded_at_ms: current_time_ms().saturating_sub(1),
+            identity_type: identity_type.into(),
+            identity_id: identity_id.into(),
+            transport: "http".into(),
+            endpoint: "/v1/responses".into(),
+            status: STATUS_COMPLETED.into(),
+            tokens: TokenUsage {
+                total_tokens,
+                ..TokenUsage::default()
+            },
+            ..UsageEvent::default()
+        }
+    }
+
+    async fn only_event(store: &UsageStore) -> UsageEventRow {
+        let dashboard = wait_for_requests(store, 1).await;
+        dashboard.recent_events.into_iter().next().unwrap()
     }
 
     fn temporary_store() -> (UsageStore, PathBuf) {
@@ -1862,23 +2225,54 @@ mod tests {
                 }
             }
         });
-        let parsed = parse_usage(value.as_object().unwrap(), "fallback").unwrap();
-        assert_eq!(parsed.model, "gpt-5.6-sol");
-        assert_eq!(parsed.input_tokens, 120);
-        assert_eq!(parsed.cached_input_tokens, 80);
-        assert_eq!(parsed.cache_creation_input_tokens, 4);
-        assert_eq!(parsed.output_tokens, 30);
-        assert_eq!(parsed.reasoning_output_tokens, 12);
-        assert_eq!(parsed.total_tokens, 150);
+        let parsed = parse_outcome(value.as_object().unwrap(), false).unwrap();
+        assert_eq!(parsed.status, STATUS_COMPLETED);
+        assert_eq!(parsed.response_model, "gpt-5.6-sol");
+        assert_eq!(
+            parsed.tokens,
+            TokenUsage {
+                input_tokens: 120,
+                cached_input_tokens: 80,
+                cache_creation_input_tokens: 4,
+                output_tokens: 30,
+                reasoning_output_tokens: 12,
+                total_tokens: 150,
+            }
+        );
     }
 
     #[test]
-    fn accepts_compact_json_and_uses_the_request_model() {
+    fn parses_compact_json_and_error_payloads() {
         let value = json!({"id":"resp_compact","usage":{"input_tokens":2,"output_tokens":3}});
-        let parsed = parse_usage(value.as_object().unwrap(), "gpt-5.4").unwrap();
-        assert_eq!(parsed.model, "gpt-5.4");
-        assert_eq!(parsed.total_tokens, 5);
-        assert_eq!(parsed.status, "completed");
+        let parsed = parse_outcome(value.as_object().unwrap(), true).unwrap();
+        assert_eq!(parsed.tokens.total_tokens, 5);
+        assert_eq!(parsed.status, STATUS_COMPLETED);
+
+        let failed = json!({"type":"response.failed","response":{"id":"resp_x","error":{"code":"server_error"}}});
+        let parsed = parse_outcome(failed.as_object().unwrap(), false).unwrap();
+        assert_eq!(
+            (parsed.status, parsed.error_code.as_str()),
+            (STATUS_FAILED, "server_error")
+        );
+
+        let incomplete = json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}});
+        let parsed = parse_outcome(incomplete.as_object().unwrap(), false).unwrap();
+        assert_eq!(parsed.error_code, "max_output_tokens");
+
+        let websocket = json!({"type":"error","status":429,"error":{"type":"usage_limit_reached"}});
+        let parsed = parse_outcome(websocket.as_object().unwrap(), false).unwrap();
+        assert_eq!(parsed.status_code, Some(429));
+        assert_eq!(parsed.error_code, "usage_limit_reached");
+
+        let body = json!({"detail":{"code":"token_expired"}});
+        let parsed = parse_outcome(body.as_object().unwrap(), true).unwrap();
+        assert_eq!(
+            (parsed.status, parsed.error_code.as_str()),
+            (STATUS_FAILED, "token_expired")
+        );
+
+        let delta = json!({"type":"response.output_text.delta","delta":"hi"});
+        assert!(parse_outcome(delta.as_object().unwrap(), false).is_none());
     }
 
     #[tokio::test]
@@ -1889,24 +2283,20 @@ mod tests {
             identity_type: "api_key".into(),
             identity_id: "key-1".into(),
             identity_name: "laptop".into(),
-            codex_account_id: String::new(),
-            codex_account_name: String::new(),
-            account_group_id: String::new(),
-            account_group_name: String::new(),
             model: "gpt-5.6-sol".into(),
             transport: "http".into(),
             endpoint: "/v1/responses".into(),
             status: "completed".into(),
             response_id: "resp_unique".into(),
-            reasoning_effort: String::new(),
-            service_tier: String::new(),
-            response_service_tier: String::new(),
-            input_tokens: 10,
-            cached_input_tokens: 4,
-            cache_creation_input_tokens: 0,
-            output_tokens: 5,
-            reasoning_output_tokens: 2,
-            total_tokens: 15,
+            tokens: TokenUsage {
+                input_tokens: 10,
+                cached_input_tokens: 4,
+                output_tokens: 5,
+                reasoning_output_tokens: 2,
+                total_tokens: 15,
+                ..TokenUsage::default()
+            },
+            ..UsageEvent::default()
         };
         store.insert(event.clone()).await.unwrap();
         store.insert(event).await.unwrap();
@@ -1940,24 +2330,21 @@ mod tests {
                     identity_type: "api_key".into(),
                     identity_id: "key-1".into(),
                     identity_name: "laptop".into(),
-                    codex_account_id: String::new(),
-                    codex_account_name: String::new(),
-                    account_group_id: String::new(),
-                    account_group_name: String::new(),
                     model: "gpt-test".into(),
                     transport: "http".into(),
                     endpoint: "/v1/responses".into(),
                     status: "completed".into(),
                     response_id: response_id.into(),
-                    reasoning_effort: String::new(),
                     service_tier: service_tier.into(),
-                    response_service_tier: String::new(),
-                    input_tokens: 1_000_000,
-                    cached_input_tokens: 400_000,
-                    cache_creation_input_tokens: 100_000,
-                    output_tokens: 100_000,
-                    reasoning_output_tokens: 0,
-                    total_tokens: 1_100_000,
+                    tokens: TokenUsage {
+                        input_tokens: 1_000_000,
+                        cached_input_tokens: 400_000,
+                        cache_creation_input_tokens: 100_000,
+                        output_tokens: 100_000,
+                        total_tokens: 1_100_000,
+                        ..TokenUsage::default()
+                    },
+                    ..UsageEvent::default()
                 })
                 .await
                 .unwrap();
@@ -2053,15 +2440,15 @@ mod tests {
                 endpoint: "/v1/responses".into(),
                 status: "completed".into(),
                 response_id: "resp_filter_key".into(),
-                reasoning_effort: String::new(),
-                service_tier: String::new(),
-                response_service_tier: String::new(),
-                input_tokens: 10,
-                cached_input_tokens: 2,
-                cache_creation_input_tokens: 0,
-                output_tokens: 5,
-                reasoning_output_tokens: 1,
-                total_tokens: 15,
+                tokens: TokenUsage {
+                    input_tokens: 10,
+                    cached_input_tokens: 2,
+                    output_tokens: 5,
+                    reasoning_output_tokens: 1,
+                    total_tokens: 15,
+                    ..TokenUsage::default()
+                },
+                ..UsageEvent::default()
             },
             UsageEvent {
                 recorded_at_ms: now,
@@ -2077,15 +2464,15 @@ mod tests {
                 endpoint: "/v1/responses".into(),
                 status: "completed".into(),
                 response_id: "resp_filter_account".into(),
-                reasoning_effort: String::new(),
-                service_tier: String::new(),
-                response_service_tier: String::new(),
-                input_tokens: 60,
-                cached_input_tokens: 20,
-                cache_creation_input_tokens: 4,
-                output_tokens: 30,
-                reasoning_output_tokens: 12,
-                total_tokens: 90,
+                tokens: TokenUsage {
+                    input_tokens: 60,
+                    cached_input_tokens: 20,
+                    cache_creation_input_tokens: 4,
+                    output_tokens: 30,
+                    reasoning_output_tokens: 12,
+                    total_tokens: 90,
+                },
+                ..UsageEvent::default()
             },
         ] {
             store.insert(event).await.unwrap();
@@ -2165,7 +2552,7 @@ mod tests {
     #[tokio::test]
     async fn websocket_tracker_records_multiple_responses_and_request_models() {
         let (store, path) = temporary_store();
-        let tracker = UsageTracker::websocket(store.clone(), identity(), "/v1/responses");
+        let tracker = UsageTracker::websocket(store.clone(), identity(), client(), "/v1/responses");
 
         tracker.observe_request_text(r#"{"type":"response.create","model":"gpt-5.6-sol"}"#);
         tracker.observe_response_text(
@@ -2223,7 +2610,7 @@ mod tests {
     #[tokio::test]
     async fn records_request_settings_and_groups_them_in_the_dashboard() {
         let (store, path) = temporary_store();
-        let tracker = UsageTracker::websocket(store.clone(), identity(), "/v1/responses");
+        let tracker = UsageTracker::websocket(store.clone(), identity(), client(), "/v1/responses");
 
         tracker.observe_request_text(
             r#"{"type":"response.create","model":"gpt-5.5","reasoning":{"effort":"high"},"service_tier":"priority"}"#,
@@ -2275,37 +2662,41 @@ mod tests {
     }
 
     #[test]
-    fn migrates_omitted_request_tiers_from_default_to_auto() {
+    fn rebuilds_tables_written_by_other_schema_versions() {
         let path = std::env::temp_dir().join(format!(
             "codex-router-usage-{}.sqlite3",
             uuid::Uuid::new_v4()
         ));
         {
             let connection = Connection::open(&path).unwrap();
-            connection.execute_batch(SCHEMA).unwrap();
             connection
-                .execute(
-                    "INSERT INTO usage_events (recorded_at_ms, identity_type, identity_id, \
-                     identity_name, model, transport, endpoint, status, service_tier) \
-                     VALUES (1, 'api_key', 'k', 'n', 'm', 'http', '/', 'completed', 'default'), \
-                            (2, 'api_key', 'k', 'n', 'm', 'http', '/', 'completed', 'priority')",
-                    [],
+                .execute_batch(
+                    "CREATE TABLE usage_events (id INTEGER PRIMARY KEY, model TEXT NOT NULL); \
+                     INSERT INTO usage_events (model) VALUES ('legacy');",
                 )
                 .unwrap();
         }
         let store = UsageStore::open(path.clone()).unwrap();
-        let tiers = {
-            let connection = store.connection.lock().unwrap();
-            let mut statement = connection
-                .prepare("SELECT service_tier FROM usage_events ORDER BY recorded_at_ms")
+        {
+            let connection = store.lock();
+            let rows: i64 = connection
+                .query_row("SELECT COUNT(*) FROM usage_events", [], |row| row.get(0))
                 .unwrap();
-            statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap()
-        };
-        assert_eq!(tiers, vec!["auto", "priority"]);
+            assert_eq!(rows, 0);
+            let version: i64 = connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, USAGE_SCHEMA_VERSION);
+            insert_event(&connection, &completed("api_key", "k", 1)).unwrap();
+        }
+        drop(store);
+        // Reopening at the current version keeps the data.
+        let store = UsageStore::open(path.clone()).unwrap();
+        let rows: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM usage_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
         drop(store);
         remove_temporary_store(&path);
     }
@@ -2315,7 +2706,12 @@ mod tests {
         use ruzstd::encoding::{CompressionLevel, compress_to_vec};
 
         let (store, path) = temporary_store();
-        let tracker = UsageTracker::http(store.clone(), identity(), "/backend-api/codex/responses");
+        let tracker = UsageTracker::http(
+            store.clone(),
+            identity(),
+            client(),
+            "/backend-api/codex/responses",
+        );
         let encoded = compress_to_vec(
             &br#"{"model":"gpt-5.5","reasoning":{"effort":"medium"},"service_tier":"priority"}"#[..],
             CompressionLevel::Fastest,
@@ -2349,8 +2745,12 @@ mod tests {
     #[tokio::test]
     async fn sse_wire_observer_handles_split_terminal_events() {
         let (store, path) = temporary_store();
-        let tracker = UsageTracker::http(store.clone(), identity(), "/v1/responses");
-        tracker.set_requested_model("gpt-5.4");
+        let tracker = UsageTracker::http(store.clone(), identity(), client(), "/v1/responses");
+        tracker.record_request(UsageRequest::from_body(
+            json!({"model":"gpt-5.4","stream":true})
+                .as_object()
+                .unwrap(),
+        ));
         let mut observer = tracker.wire_observer(Some("text/event-stream; charset=utf-8"));
         let payload = br#"data: {"type":"response.completed","response":{"id":"resp_sse_1","usage":{"input_tokens":8,"input_tokens_details":{"cached_tokens":6},"output_tokens":3,"total_tokens":11}}}
 
@@ -2369,6 +2769,224 @@ data: [DONE]
         assert_eq!(dashboard.recent_events[0].transport, "http");
 
         drop(tracker);
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn records_client_metadata_session_and_timing() {
+        use super::super::usage_client::UsageSession;
+
+        let (store, path) = temporary_store();
+        let client = UsageClient {
+            ip: "203.0.113.7".into(),
+            forwarded_for: "203.0.113.7, 10.0.0.2".into(),
+            user_agent: "codex_cli_rs/0.80.0".into(),
+            session: UsageSession {
+                id: "thread-2".into(),
+                parent_id: "thread-1".into(),
+                kind: SessionKind::Subagent,
+            },
+        };
+        let tracker = UsageTracker::http(store.clone(), identity(), client, "/v1/responses");
+        tracker.record_request(UsageRequest::from_body(
+            json!({"model":"gpt-5.5","stream":true})
+                .as_object()
+                .unwrap(),
+        ));
+        tracker.observe_upstream_status(200);
+        tracker.observe_response_text(r#"{"type":"response.output_text.delta","delta":"hi"}"#);
+        tracker.observe_response_text(
+            r#"{"type":"response.completed","response":{"id":"resp_meta","model":"gpt-5.5-2026","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#,
+        );
+        let event = only_event(&store).await;
+        assert_eq!(event.requested_model, "gpt-5.5");
+        assert_eq!(event.model, "gpt-5.5-2026");
+        assert!(event.stream);
+        assert_eq!(event.status, "completed");
+        assert_eq!(event.status_code, Some(200));
+        assert_eq!(event.client_ip, "203.0.113.7");
+        assert_eq!(event.x_forwarded_for, "203.0.113.7, 10.0.0.2");
+        assert_eq!(event.user_agent, "codex_cli_rs/0.80.0");
+        assert_eq!(event.session_id, "thread-2");
+        assert_eq!(event.parent_session_id, "thread-1");
+        assert_eq!(event.session_kind, "subagent");
+        assert_eq!(event.request_id.len(), 32);
+        assert!(event.ttft_ms.is_some_and(|ttft| ttft <= event.latency_ms));
+
+        drop(tracker);
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_the_prompt_cache_key_and_marks_compactions() {
+        let (store, path) = temporary_store();
+        let tracker =
+            UsageTracker::http(store.clone(), identity(), client(), "/v1/responses/compact");
+        tracker.record_request(UsageRequest::from_body(
+            json!({"model":"gpt-5.5","prompt_cache_key":"conv-1"})
+                .as_object()
+                .unwrap(),
+        ));
+        tracker.observe_response_body(
+            &json!({"id":"resp_c","usage":{"input_tokens":4,"output_tokens":1}}),
+        );
+        let event = only_event(&store).await;
+        assert_eq!(event.session_id, "conv-1");
+        assert_eq!(event.session_kind, "compaction");
+        assert!(!event.stream);
+        assert_eq!(event.ttft_ms, None);
+
+        drop(tracker);
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn records_upstream_http_errors_with_their_code() {
+        let (store, path) = temporary_store();
+        let tracker = UsageTracker::http(store.clone(), identity(), client(), "/v1/responses");
+        tracker.record_request(UsageRequest::from_body(
+            json!({"model":"gpt-5.5"}).as_object().unwrap(),
+        ));
+        tracker.observe_upstream_status(429);
+        let mut observer = tracker.wire_observer(Some("application/json"));
+        observer.push(br#"{"error":{"type":"usage_limit_reached","message":"limit"}}"#);
+        observer.finish();
+        drop(tracker);
+
+        let event = only_event(&store).await;
+        assert_eq!(event.status, "failed");
+        assert_eq!(event.status_code, Some(429));
+        assert_eq!(event.error_code, "usage_limit_reached");
+        assert_eq!(event.model, "gpt-5.5");
+        assert_eq!(event.total_tokens, 0);
+
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn records_router_errors_raised_before_the_upstream_answers() {
+        let (store, path) = temporary_store();
+        let tracker = UsageTracker::http(store.clone(), identity(), client(), "/v1/responses");
+        tracker.fail(
+            &ApiError::new(502, "unreachable")
+                .with_kind("upstream_error")
+                .with_code("codex_unavailable"),
+        );
+        // Dropping after an explicit failure must not add a second row.
+        drop(tracker);
+        let event = only_event(&store).await;
+        assert_eq!(event.status, "failed");
+        assert_eq!(event.status_code, Some(502));
+        assert_eq!(event.error_code, "codex_unavailable");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(wait_for_requests(&store, 1).await.totals.requests, 1);
+
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn distinguishes_cancelled_from_interrupted_streams() {
+        let (store, path) = temporary_store();
+        // The client disconnected: the observer is dropped without finishing.
+        let tracker = UsageTracker::http(store.clone(), identity(), client(), "/v1/responses");
+        tracker.observe_upstream_status(200);
+        let observer = tracker.wire_observer(Some("text/event-stream"));
+        drop(observer);
+        drop(tracker);
+        // The upstream ended without a terminal event.
+        let tracker = UsageTracker::http(store.clone(), identity(), client(), "/v1/responses");
+        tracker.observe_upstream_status(200);
+        let mut observer = tracker.wire_observer(Some("text/event-stream"));
+        observer.push(b"data: {\"type\":\"response.created\"}\n\n");
+        observer.finish();
+        drop(tracker);
+
+        let dashboard = wait_for_requests(&store, 2).await;
+        let mut statuses = dashboard
+            .recent_events
+            .iter()
+            .map(|event| (event.status.as_str(), event.error_code.as_str()))
+            .collect::<Vec<_>>();
+        statuses.sort_unstable();
+        assert_eq!(
+            statuses,
+            vec![
+                ("cancelled", "client_cancelled"),
+                ("interrupted", "stream_truncated")
+            ]
+        );
+        let failed = dashboard
+            .series
+            .iter()
+            .map(|point| point.failed_requests)
+            .sum::<i64>();
+        let successful = dashboard
+            .series
+            .iter()
+            .map(|point| point.successful_requests)
+            .sum::<i64>();
+        assert_eq!((successful, failed), (0, 1));
+
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn websocket_attempts_cover_errors_and_superseded_responses() {
+        let (store, path) = temporary_store();
+        let tracker = UsageTracker::websocket(store.clone(), identity(), client(), "/v1/responses");
+        tracker.observe_request_text(r#"{"type":"response.create","model":"gpt-5.5"}"#);
+        tracker.observe_request_text(r#"{"type":"response.create","model":"gpt-5.5"}"#);
+        tracker.observe_response_text(
+            r#"{"type":"error","status":429,"error":{"type":"usage_limit_reached"}}"#,
+        );
+        // A terminal event without an open attempt is ignored.
+        tracker
+            .observe_response_text(r#"{"type":"response.failed","response":{"id":"resp_late"}}"#);
+        drop(tracker);
+
+        let dashboard = wait_for_requests(&store, 2).await;
+        let mut outcomes = dashboard
+            .recent_events
+            .iter()
+            .map(|event| {
+                (
+                    event.status.as_str(),
+                    event.error_code.as_str(),
+                    event.status_code,
+                )
+            })
+            .collect::<Vec<_>>();
+        outcomes.sort_unstable();
+        assert_eq!(
+            outcomes,
+            vec![
+                ("cancelled", "superseded", None),
+                ("failed", "usage_limit_reached", Some(429)),
+            ]
+        );
+        assert!(dashboard.recent_events.iter().all(|event| event.stream));
+
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn websocket_handshake_rejections_are_recorded_once() {
+        let (store, path) = temporary_store();
+        let tracker = UsageTracker::websocket(store.clone(), identity(), client(), "/v1/responses");
+        tracker.observe_upstream_status(401);
+        drop(tracker);
+        let event = only_event(&store).await;
+        assert_eq!(event.status, "failed");
+        assert_eq!(event.status_code, Some(401));
+        assert_eq!(event.model, "");
+
         drop(store);
         remove_temporary_store(&path);
     }

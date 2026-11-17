@@ -21,7 +21,25 @@ use super::{
     state::AppState,
     stream::{present_non_stream, present_stream},
     usage::{UsageIdentity, UsageTracker},
+    usage_client::UsageClient,
 };
+
+/// Who sent a request, captured before the request is consumed.
+struct UsageSource {
+    identity: UsageIdentity,
+    client: UsageClient,
+}
+
+impl UsageSource {
+    fn tracker(self, state: &AppState, endpoint: &str, websocket: bool) -> UsageTracker {
+        let store = state.usage.clone();
+        if websocket {
+            UsageTracker::websocket(store, self.identity, self.client, endpoint)
+        } else {
+            UsageTracker::http(store, self.identity, self.client, endpoint)
+        }
+    }
+}
 
 pub struct RoutedApiIdentity {
     pub usage: UsageIdentity,
@@ -38,13 +56,17 @@ pub async fn handle_api(
     identity: RoutedApiIdentity,
 ) -> Response {
     let family = route.family();
+    let usage_client = UsageClient::from_request(request.extensions(), request.headers(), config);
     match dispatch(
         route,
         request,
         &client_url,
         websocket,
         state,
-        identity.usage,
+        UsageSource {
+            identity: identity.usage,
+            client: usage_client,
+        },
         &identity.account,
     )
     .await
@@ -81,7 +103,7 @@ async fn dispatch(
     client_url: &Url,
     websocket: Option<WebSocketUpgrade>,
     state: &AppState,
-    identity: UsageIdentity,
+    usage: UsageSource,
     account_route: &ResolvedAccountRoute,
 ) -> AppResult<Response> {
     match &route {
@@ -151,13 +173,8 @@ async fn dispatch(
                 ApiRoute::Proxy => CodexProxyRoute::Proxy,
                 _ => return Err(runtime_failure()),
             };
-            let tracker = track_usage.then(|| {
-                if websocket.is_some() {
-                    UsageTracker::websocket(state.usage.clone(), identity, client_url.path())
-                } else {
-                    UsageTracker::http(state.usage.clone(), identity, client_url.path())
-                }
-            });
+            let tracker =
+                track_usage.then(|| usage.tracker(state, client_url.path(), websocket.is_some()));
             if let Some(upgrade) = websocket {
                 let output = client
                     .forward_websocket(
@@ -174,7 +191,8 @@ async fn dispatch(
             }
             let upstream = client
                 .forward_proxy(request, client_url, proxy_route, tracker.as_ref())
-                .await?;
+                .await
+                .inspect_err(|error| fail_tracker(tracker.as_ref(), error))?;
             observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
             Ok(match tracker {
                 Some(tracker) => response::upstream_proxy_tracked(upstream, tracker),
@@ -189,10 +207,13 @@ async fn dispatch(
             let (parts, body) = request.into_parts();
             let input = body::request_json(&parts.headers, body).await?;
             let adapted = route.adapter().ok_or_else(runtime_failure)?.adapt(&input)?;
-            let tracker = UsageTracker::http(state.usage.clone(), identity, client_url.path());
+            let tracker = usage.tracker(state, client_url.path(), false);
+            tracker.set_client_stream(adapted.stream);
             let upstream = client
                 .send_converted_responses(&adapted.body, &parts.headers, &tracker)
-                .await?;
+                .await
+                .inspect_err(|error| tracker.fail(error))?;
+            tracker.observe_upstream_status(upstream.status().as_u16());
             observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
             if !upstream.status().is_success() {
                 return Ok(match route {
@@ -210,6 +231,12 @@ async fn dispatch(
             let output = present_non_stream(upstream, &adapted.response, created, tracker).await?;
             response::json(&output, 200)
         }
+    }
+}
+
+fn fail_tracker(tracker: Option<&UsageTracker>, error: &ApiError) {
+    if let Some(tracker) = tracker {
+        tracker.fail(error);
     }
 }
 

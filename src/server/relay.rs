@@ -17,10 +17,12 @@ use crate::{
 
 use super::{
     codex::header_bag,
+    config::AppConfig,
     oauth::current_time_ms,
     response,
     state::AppState,
     usage::{UsageIdentity, UsageTracker},
+    usage_client::UsageClient,
     websocket,
 };
 
@@ -34,9 +36,10 @@ pub async fn handle_relay(
     request: Request<Body>,
     client_url: Url,
     upgrade: Option<WebSocketUpgrade>,
+    config: &AppConfig,
     state: &AppState,
 ) -> Response {
-    match dispatch_relay(request, &client_url, upgrade, state).await {
+    match dispatch_relay(request, &client_url, upgrade, config, state).await {
         Ok(output) => output,
         Err(error) => response::api_error(&error),
     }
@@ -46,6 +49,7 @@ async fn dispatch_relay(
     request: Request<Body>,
     client_url: &Url,
     upgrade: Option<WebSocketUpgrade>,
+    config: &AppConfig,
     state: &AppState,
 ) -> AppResult<Response> {
     let replacement = if client_url.path().starts_with("/backend-api/codex/") {
@@ -58,7 +62,15 @@ async fn dispatch_relay(
     } else {
         None
     };
-    forward_relay(request, client_url, upgrade, replacement.as_ref(), state).await
+    forward_relay(
+        request,
+        client_url,
+        upgrade,
+        replacement.as_ref(),
+        config,
+        state,
+    )
+    .await
 }
 
 async fn replacement_credentials(
@@ -117,6 +129,7 @@ async fn forward_relay(
     client_url: &Url,
     upgrade: Option<WebSocketUpgrade>,
     replacement: Option<&RelayReplacement>,
+    config: &AppConfig,
     state: &AppState,
 ) -> AppResult<Response> {
     let (parts, body) = request.into_parts();
@@ -129,16 +142,19 @@ async fn forward_relay(
     let tracker = replacement
         .filter(|_| is_codex_usage_path(client_url.path()))
         .map(|replacement| {
+            let client = UsageClient::from_request(&parts.extensions, &parts.headers, config);
             if upgrade.is_some() {
                 UsageTracker::websocket(
                     state.usage.clone(),
                     replacement.identity.clone(),
+                    client,
                     client_url.path(),
                 )
             } else {
                 UsageTracker::http(
                     state.usage.clone(),
                     replacement.identity.clone(),
+                    client,
                     client_url.path(),
                 )
             }
@@ -180,7 +196,15 @@ async fn forward_relay(
             None => reqwest::Body::wrap_stream(body),
         });
     }
-    let upstream = outgoing.send().await.map_err(relay_fetch_error)?;
+    let upstream = outgoing
+        .send()
+        .await
+        .map_err(relay_fetch_error)
+        .inspect_err(|error| {
+            if let Some(tracker) = &tracker {
+                tracker.fail(error);
+            }
+        })?;
     if let Some(account_id) = routed_account_id.as_deref() {
         state
             .account_router

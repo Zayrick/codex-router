@@ -185,7 +185,7 @@ export interface UsageModelRow extends UsageTotals {
 	model: string;
 }
 
-/** `value` is empty for events recorded before the setting was tracked. */
+/** `value` is empty for attempts that failed before the request was read. */
 export interface UsageDimensionRow extends UsageTotals {
 	value: string;
 }
@@ -196,9 +196,15 @@ export interface UsageIdentityRow extends UsageTotals {
 	identityName: string;
 }
 
+export type UsageEventStatus = "completed" | "incomplete" | "failed" | "cancelled" | "interrupted";
+
+/** Role of the request in its Codex session tree; empty when the client sent no session. */
+export type UsageSessionKind = "" | "main" | "subagent" | "fork" | "compaction";
+
 export interface UsageEvent extends Omit<UsageTotals, "requests"> {
 	id: number;
 	recordedAt: number;
+	requestId: string;
 	identityType: "api_key" | "auth_proxy";
 	identityId: string;
 	identityName: string;
@@ -206,13 +212,28 @@ export interface UsageEvent extends Omit<UsageTotals, "requests"> {
 	codexAccountName: string;
 	accountGroupId: string;
 	accountGroupName: string;
+	/** Model in the request; empty when the attempt failed before the request was read. */
+	requestedModel: string;
+	/** Model reported by the upstream, falling back to `requestedModel`. */
 	model: string;
 	transport: "http" | "websocket";
 	endpoint: string;
-	status: "completed" | "incomplete" | "failed";
+	stream: boolean;
+	status: UsageEventStatus;
+	statusCode: number | null;
+	errorCode: string;
 	reasoningEffort: string;
 	serviceTier: string;
 	responseServiceTier: string;
+	sessionId: string;
+	parentSessionId: string;
+	sessionKind: UsageSessionKind;
+	clientIp: string;
+	xForwardedFor: string;
+	userAgent: string;
+	latencyMs: number;
+	/** Time to the first streamed output delta; null when none arrived. */
+	ttftMs: number | null;
 }
 
 export interface UsageDashboard {

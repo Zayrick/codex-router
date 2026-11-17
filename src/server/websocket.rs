@@ -3,7 +3,7 @@ use axum::{
     extract::ws::{
         CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket, WebSocketUpgrade,
     },
-    http::{HeaderName, HeaderValue},
+    http::{HeaderName, HeaderValue, StatusCode},
     response::Response,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -25,6 +25,35 @@ use crate::{
 use super::{chatgpt_proxy::ChatgptProxy, response, usage::UsageTracker};
 
 pub async fn proxy(
+    upgrade: WebSocketUpgrade,
+    target: Url,
+    headers: HeaderBag,
+    adapt_responses: bool,
+    tracker: Option<UsageTracker>,
+    proxy: Option<&ChatgptProxy>,
+) -> AppResult<Response> {
+    let result = connect(
+        upgrade,
+        target,
+        headers,
+        adapt_responses,
+        tracker.clone(),
+        proxy,
+    )
+    .await;
+    if let Some(tracker) = &tracker {
+        match &result {
+            Ok(response) if response.status() != StatusCode::SWITCHING_PROTOCOLS => {
+                tracker.observe_upstream_status(response.status().as_u16());
+            }
+            Ok(_) => {}
+            Err(error) => tracker.fail(error),
+        }
+    }
+    result
+}
+
+async fn connect(
     upgrade: WebSocketUpgrade,
     mut target: Url,
     headers: HeaderBag,
@@ -120,9 +149,14 @@ async fn bridge(
         }
         let _ = client_sender.close().await;
     };
-    tokio::select! {
-        _ = to_upstream => {},
-        _ = to_client => {},
+    let upstream_closed = tokio::select! {
+        _ = to_upstream => false,
+        _ = to_client => true,
+    };
+    // A response still open when the upstream hangs up was interrupted; when the
+    // client leaves first, the tracker's drop records it as cancelled.
+    if upstream_closed && let Some(tracker) = &tracker {
+        tracker.upstream_finished();
     }
 }
 

@@ -22,6 +22,7 @@ mod session_store;
 mod state;
 mod stream;
 mod usage;
+mod usage_client;
 mod usage_store;
 mod websocket;
 

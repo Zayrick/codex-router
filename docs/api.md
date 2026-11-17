@@ -302,9 +302,24 @@ SameSite=Lax`）；HTTP 时为 `codex-session`（`Path=/admin; HttpOnly; SameSit
 
 ## 12. Token 用量统计
 
-API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Responses 请求，会在收到包含
-usage 的上游终止 JSON/SSE/WebSocket 事件时把用量写入 SQLite。一个 WebSocket 连接可以记录多个
-response，相同 response ID 只落库一次。模型优先取终止响应，缺失且请求模型可用时使用请求模型。
+API Key 鉴权的 Codex Responses 请求，以及代理账户转发的 Codex Responses 请求，每次上游尝试
+恰好写入一条 SQLite 记录，失败的请求同样记录。HTTP 请求是一次尝试；WebSocket 连接中每个
+`response.create`/`response.append` 各是一次尝试，相同 response ID 只落库一次。`status` 取值：
+
+- `completed`、`incomplete`：上游返回 `response.completed`/`response.incomplete`；
+- `failed`：上游返回非 2xx、`response.failed` 或 `error` 事件，或路由在上游响应前出错（如凭据失效、上游不可达）；
+- `cancelled`：客户端在终止事件前断开，或在 WebSocket 中开始了下一个 response（`errorCode` 为 `superseded`）；
+- `interrupted`：上游流在终止事件前结束或出错（`errorCode` 为 `stream_truncated`）。
+
+每条记录还包含：客户端请求的模型（`requestedModel`）与上游报告的模型（`model`，缺失时回退到
+请求模型，计价按此字段）、是否流式、HTTP 状态码与错误码、端到端耗时与首个输出增量的耗时
+（`latencyMs`、`ttftMs`）、客户端 IP（仅在 TCP 对端属于 `trusted_proxies` 时采信
+`X-Forwarded-For`）、原始 `X-Forwarded-For`、`User-Agent`，以及 Codex 会话信息。会话 ID 取自
+`session_id`/`thread_id` 请求头或 `x-codex-turn-metadata`，缺失时回退到请求体的
+`prompt_cache_key`；`sessionKind` 为 `main`、`subagent`、`fork` 或 `compaction`（依据
+`x-codex-parent-thread-id`、`x-openai-subagent`、分叉来源及 `/compact` 端点判断）。
+
+数据库表结构版本记录在 SQLite `user_version` 中；版本不一致的旧表会在启动时被删除并重建。
 
 管理员会话可读取 `GET /admin/api/usage?range=7d`。`range` 支持 `cycle`、`24h`、`7d`、
 `30d` 和 `all`，省略时使用 `7d`。下游筛选使用 `downstreamType` 与 `downstreamId`，类型支持
@@ -317,13 +332,13 @@ response，相同 response ID 只落库一次。模型优先取终止响应，�
 
 - `startAt`、`endAt` 和所选 `range`；
 - `totals`：请求数以及输入、缓存命中、缓存创建、输出、推理和总 Token；
-- `series`：按小时或天填充的趋势时间桶；
+- `series`：按小时或天填充的趋势时间桶；`successfulRequests` 统计 `completed`/`incomplete`，`failedRequests` 统计 `failed`/`interrupted`，`cancelled` 不计入两者；
 - `models`、`identities`：按模型及 API Key/代理账户聚合；
-- `reasoningEfforts`、`serviceTiers`：按思考强度（`reasoning.effort`）及服务等级聚合，`value` 取自实际发往上游的请求体；未显式设置思考强度时为 `default`，未设置服务等级时为 `auto`（由上游决定），`priority` 即 Codex 的 Fast 模式，空字符串表示该事件记录于此功能上线之前；
-- `recentEvents`：最多 50 条事件，包含模型、身份、端点、HTTP/WebSocket、状态、思考强度、请求与响应服务等级（`reasoningEffort`、`serviceTier`、`responseServiceTier`）及 Token 明细。
+- `reasoningEfforts`、`serviceTiers`：按思考强度（`reasoning.effort`）及服务等级聚合，`value` 取自实际发往上游的请求体；未显式设置思考强度时为 `default`，未设置服务等级时为 `auto`（由上游决定），`priority` 即 Codex 的 Fast 模式，空字符串表示请求在读取请求体之前就失败了；
+- `recentEvents`：最多 50 条事件，包含上述全部字段、身份与路由目标、端点、HTTP/WebSocket、思考强度、请求与响应服务等级（`reasoningEffort`、`serviceTier`、`responseServiceTier`）及 Token 明细。
 
 缓存与推理 Token 分别是输入与输出 Token 的子集。该接口不返回 Key/OAuth，也不会记录或返回
-请求正文与模型输出；未收到 usage 的请求不会生成统计。
+请求正文与模型输出。
 
 ## 13. 管理 API
 

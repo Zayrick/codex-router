@@ -10,7 +10,7 @@ use std::{
 use axum::{
     body::Body,
     extract::ConnectInfo,
-    http::{HeaderMap, Request},
+    http::{Extensions, HeaderMap, Request},
 };
 use ipnet::IpNet;
 use percent_encoding::percent_decode_str;
@@ -33,8 +33,16 @@ const MAX_FORWARDED_HOPS: usize = 16;
 /// peer is a configured trusted proxy; hops are read right to left, skipping
 /// further trusted proxies, so a client cannot spoof its address by prepending.
 pub fn client_ip(request: &Request<Body>, config: &AppConfig) -> Option<IpAddr> {
-    let peer = request
-        .extensions()
+    client_address(request.extensions(), request.headers(), config)
+}
+
+/// [`client_ip`] for callers that already split the request into parts.
+pub fn client_address(
+    extensions: &Extensions,
+    headers: &HeaderMap,
+    config: &AppConfig,
+) -> Option<IpAddr> {
+    let peer = extensions
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| canonical_ip(info.0.ip()))?;
     let trusted: Vec<IpNet> = config
@@ -43,7 +51,7 @@ pub fn client_ip(request: &Request<Body>, config: &AppConfig) -> Option<IpAddr> 
         .iter()
         .filter_map(|entry| parse_trusted_proxy(entry).ok())
         .collect();
-    Some(forwarded_client(peer, request.headers(), &trusted))
+    Some(forwarded_client(peer, headers, &trusted))
 }
 
 fn forwarded_client(peer: IpAddr, headers: &HeaderMap, trusted: &[IpNet]) -> IpAddr {

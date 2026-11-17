@@ -18,7 +18,7 @@ const SERVICE_TIER_LABELS: Readonly<Record<string, string>> = {
 	flex: "Flex",
 };
 
-/** Effort values are shown as sent upstream; only missing history gets a label. */
+/** Effort values are shown as sent upstream; empty means the request was never read. */
 export function reasoningEffortLabel(value: string): string {
 	return value || "未记录";
 }

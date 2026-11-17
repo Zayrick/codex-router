@@ -110,6 +110,8 @@ import {
 	type UsageBounds,
 	type UsageDashboard,
 	type UsageEvent,
+	type UsageEventStatus,
+	type UsageSessionKind,
 	type UsageIdentityFilter,
 	type UsageIdentityType,
 	type UsageRange,
@@ -1109,16 +1111,19 @@ function UsagePanel({
 					<Card className="min-w-0 p-3" size="sm">
 						<div className="usage-section-heading"><strong>最近请求</strong></div>
 						<ScrollArea className="rounded-[.72rem] border" scrollbars="horizontal">
-							<Table className="usage-events-table min-w-[56rem] table-auto [&_th]:px-[.7rem] [&_th]:py-[.62rem] [&_td]:px-[.7rem] [&_td]:py-[.62rem] [&_th]:text-[.68rem] [&_td]:text-[.68rem]">
-								<TableHeader><TableRow><TableHead>时间</TableHead><TableHead>调用身份</TableHead><TableHead>路由目标</TableHead><TableHead>模型</TableHead><TableHead>思考 / 速度</TableHead><TableHead>Token</TableHead><TableHead>成本</TableHead></TableRow></TableHeader>
+							<Table className="usage-events-table min-w-[78rem] table-auto [&_th]:px-[.7rem] [&_th]:py-[.62rem] [&_td]:px-[.7rem] [&_td]:py-[.62rem] [&_th]:text-[.68rem] [&_td]:text-[.68rem]">
+								<TableHeader><TableRow><TableHead>时间</TableHead><TableHead>调用身份</TableHead><TableHead>客户端</TableHead><TableHead>路由目标</TableHead><TableHead>模型</TableHead><TableHead>思考 / 速度</TableHead><TableHead>状态</TableHead><TableHead>耗时</TableHead><TableHead>Token</TableHead><TableHead>成本</TableHead></TableRow></TableHeader>
 								<TableBody>{usage.recentEvents.map((event) => (
 									<TableRow key={event.id}>
 										<TableCell><time dateTime={new Date(event.recordedAt).toISOString()}>{formatCompactDate(event.recordedAt)}</time></TableCell>
 										<TableCell><strong>{event.identityName}</strong><small>{usageIdentityLabel(event.identityType)}</small></TableCell>
+										<TableCell title={clientTitle(event)}><strong className="max-w-[14rem] truncate">{event.userAgent || "—"}</strong><small>{[event.clientIp, sessionKindLabel(event.sessionKind)].filter(Boolean).join(" · ") || "—"}</small></TableCell>
 										<TableCell><strong>{event.accountGroupName || event.codexAccountName || "—"}</strong>{event.accountGroupName || event.codexAccountName ? <small>{event.accountGroupName ? event.codexAccountName : "Codex 账户"}</small> : null}</TableCell>
-										<TableCell><code>{event.model}</code></TableCell>
+										<TableCell title={event.requestedModel && event.requestedModel !== event.model ? `请求模型：${event.requestedModel}` : undefined}><code>{event.model || "—"}</code><small>{event.stream ? "流式" : "非流式"} · {event.transport === "websocket" ? "WebSocket" : "HTTP"}</small></TableCell>
 										<TableCell><strong>{reasoningEffortLabel(event.reasoningEffort)}</strong><small>{requestSpeedLabel(event)}</small></TableCell>
-										<TableCell><strong>{formatTokens(event.totalTokens)}</strong><small>{statusLabel(event.status)}</small></TableCell>
+										<TableCell title={`请求 ID：${event.requestId}`}><strong>{statusLabel(event.status)}</strong><small>{[event.statusCode, event.errorCode].filter((part) => part !== null && part !== "").join(" · ") || "—"}</small></TableCell>
+										<TableCell><strong>{formatDuration(event.latencyMs)}</strong><small>{event.ttftMs === null ? "—" : `首字 ${formatDuration(event.ttftMs)}`}</small></TableCell>
+										<TableCell><strong>{formatTokens(event.totalTokens)}</strong></TableCell>
 										<TableCell><strong>{formatCost(event.costUsd)}</strong></TableCell>
 									</TableRow>
 								))}</TableBody>
@@ -1545,8 +1550,42 @@ function requestSpeedLabel(event: UsageEvent): string {
 	return served !== requested ? `${requested}[${served}]` : requested;
 }
 
-function statusLabel(value: "completed" | "incomplete" | "failed"): string {
-	return value === "completed" ? "已完成" : value === "incomplete" ? "未完整完成" : "失败";
+const STATUS_LABELS: Readonly<Record<UsageEventStatus, string>> = {
+	completed: "已完成",
+	incomplete: "未完整完成",
+	failed: "失败",
+	cancelled: "客户端取消",
+	interrupted: "上游中断",
+};
+
+function statusLabel(value: UsageEventStatus): string {
+	return STATUS_LABELS[value];
+}
+
+const SESSION_KIND_LABELS: Readonly<Record<UsageSessionKind, string>> = {
+	"": "",
+	main: "主会话",
+	subagent: "子代理",
+	fork: "分叉",
+	compaction: "上下文压缩",
+};
+
+function sessionKindLabel(value: UsageSessionKind): string {
+	return SESSION_KIND_LABELS[value];
+}
+
+function clientTitle(event: UsageEvent): string | undefined {
+	const lines = [
+		event.userAgent && `UA：${event.userAgent}`,
+		event.xForwardedFor && `X-Forwarded-For：${event.xForwardedFor}`,
+		event.sessionId && `会话：${event.sessionId}`,
+		event.parentSessionId && `父会话：${event.parentSessionId}`,
+	].filter(Boolean);
+	return lines.length ? lines.join("\n") : undefined;
+}
+
+function formatDuration(ms: number): string {
+	return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
 }
 
 function currentWeeklyUsageBounds(subscription: SubscriptionInfo, now: number): UsageBounds | null {

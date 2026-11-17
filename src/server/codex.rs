@@ -164,7 +164,11 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         route: CodexProxyRoute,
         tracker: Option<UsageTracker>,
     ) -> AppResult<Response> {
-        let credentials = self.credentials().await?;
+        let credentials = self.credentials().await.inspect_err(|error| {
+            if let Some(tracker) = &tracker {
+                tracker.fail(error);
+            }
+        })?;
         let source = header_bag(source_headers);
         let target = resolve_codex_proxy_url(client_url, method.as_str());
         let headers = proxy_request_headers(&source, &credentials, target.path(), true);

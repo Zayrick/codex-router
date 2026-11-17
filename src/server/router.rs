@@ -75,7 +75,7 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
         if has_websocket_upgrade && websocket.is_none() {
             response::empty(400)
         } else {
-            handle_relay(request, client_url, websocket, &state).await
+            handle_relay(request, client_url, websocket, &config, &state).await
         }
     } else if path == "/healthz" {
         if method != "GET" {
@@ -172,7 +172,7 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
     } else if has_websocket_upgrade && websocket.is_none() {
         response::empty(400)
     } else {
-        handle_relay(request, client_url, websocket, &state).await
+        handle_relay(request, client_url, websocket, &config, &state).await
     };
 
     response::suppress_html_body(output)

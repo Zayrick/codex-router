@@ -132,6 +132,16 @@ async fn decode_terminal_event(
 async fn consume_events(
     upstream: reqwest::Response,
     tracker: &UsageTracker,
+    consume: impl FnMut(&JsonObject) -> AppResult<bool>,
+) -> AppResult<()> {
+    let result = consume_upstream_events(upstream, tracker, consume).await;
+    tracker.upstream_finished();
+    result
+}
+
+async fn consume_upstream_events(
+    upstream: reqwest::Response,
+    tracker: &UsageTracker,
     mut consume: impl FnMut(&JsonObject) -> AppResult<bool>,
 ) -> AppResult<()> {
     let mut source = upstream.bytes_stream();
@@ -229,6 +239,8 @@ fn chat_stream(
                 },
             }
         }
+        // Reached only when the client kept reading until the upstream was done.
+        tracker.upstream_finished();
     };
     stream_response(output, headers)
 }
@@ -345,6 +357,8 @@ fn completion_stream(
                 },
             }
         }
+        // Reached only when the client kept reading until the upstream was done.
+        tracker.upstream_finished();
     };
     stream_response(output, headers)
 }
@@ -407,6 +421,8 @@ fn anthropic_stream(
                 }
             }
         }
+        // Reached only when the client kept reading until the upstream was done.
+        tracker.upstream_finished();
     };
     stream_response(output, headers)
 }
@@ -478,6 +494,8 @@ fn gemini_stream(
                 }
             }
         }
+        // Reached only when the client kept reading until the upstream was done.
+        tracker.upstream_finished();
     };
     stream_response(output, headers)
 }

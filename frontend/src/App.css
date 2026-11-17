@@ -491,7 +491,7 @@
 }
 
 .usage-events-table time,
-.usage-events-table td:nth-child(n+7) {
+.usage-events-table td:nth-child(n+8) {
 	font-variant-numeric: tabular-nums;
 }
 

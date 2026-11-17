@@ -169,6 +169,7 @@ pub fn upstream_proxy_tracked(response: reqwest::Response, tracker: UsageTracker
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+    tracker.observe_upstream_status(status.as_u16());
     let mut source = response.bytes_stream();
     let mut observer = tracker.wire_observer(content_type.as_deref());
     let output = async_stream::stream! {
