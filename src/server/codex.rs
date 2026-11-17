@@ -16,6 +16,7 @@ use crate::{
     core::{ApiError, AppResult, JsonObject},
     http::parse_json_body_with_source,
     protocol::openai::{
+        images::ImageRequest,
         request_policy::apply_converted_response_egress_policy,
         responses::{adapt_compact_body, adapt_responses_create_body},
     },
@@ -122,6 +123,37 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             Method::POST,
             headers,
             Some(reqwest::Body::from(body)),
+            true,
+        )
+        .await
+    }
+
+    pub async fn send_images(
+        &self,
+        request: &ImageRequest,
+        source_headers: &HeaderMap,
+        client_url: &Url,
+    ) -> AppResult<reqwest::Response> {
+        let credentials = self.credentials().await?;
+        let mut client_url = client_url.clone();
+        client_url.set_path(request.operation.path());
+        let target = resolve_codex_proxy_url(&client_url, "POST");
+        let mut source = json_headers(&header_bag(source_headers));
+        source.set(
+            "accept",
+            if request.body.get("stream").and_then(Value::as_bool) == Some(true) {
+                "text/event-stream"
+            } else {
+                "application/json"
+            },
+        );
+        let headers = proxy_request_headers(&source, &credentials, target.path(), false);
+        let bytes = serde_json::to_vec(&request.body).map_err(|_| json_serialization_error())?;
+        self.send(
+            &target,
+            Method::POST,
+            headers,
+            Some(reqwest::Body::from(bytes)),
             true,
         )
         .await

@@ -11,6 +11,7 @@ pub mod config;
 mod console;
 mod console_security;
 mod frontend;
+mod images;
 mod oauth;
 mod pricing;
 mod provider_error;

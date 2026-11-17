@@ -46,14 +46,16 @@ CORS。
 
 | 方法与路径 | 级别 | 行为 |
 | --- | --- | --- |
-| `GET /v1/models` | 协议转换 | 读取 Codex 模型目录并返回 OpenAI model list |
+| `GET /v1/models` | 协议转换 | 读取 Codex 模型目录并补充内置图像模型，返回 OpenAI model list |
 | `POST /v1/chat/completions` | 协议转换 | Chat 请求转换为 Responses；返回 Chat JSON 或 SSE |
 | `POST /v1/completions` | 协议转换 | legacy prompt 转换为 Responses；返回 `text_completion` JSON 或 SSE |
 | `POST /v1/responses` | 原生映射 | 映射到 `/backend-api/codex/responses` 并应用 Responses 创建策略 |
 | `POST /v1/responses/compact` | 原生映射 | 映射到 Codex compact，仅应用 input 角色规范化 |
 | `GET /v1/responses` + WebSocket Upgrade | 原生映射 | 建立 Responses 双向 WebSocket bridge |
 | `/v1/responses/*` 其他子路径 | 透明传输 | 映射到同名 Codex 子路径；上游决定是否支持 |
-| `/v1/images[/…]` | 透明传输 | 映射到 `/backend-api/codex/images[/…]`，支持流式 JSON、multipart 和二进制正文 |
+| `POST /v1/images/generations` | 原生映射 | JSON 请求映射到 Codex Images，支持 Base64、Data URL 和 SSE |
+| `POST /v1/images/edits` | 协议转换 | 支持 JSON 与 multipart，将上传的图片和 mask 转换为 Codex JSON |
+| `/v1/images[/…]` 其他路径 | 透明传输 | 映射到同名 Codex Images 路径；上游决定是否支持 |
 | `/v1/alpha/search` | 透明传输 | 映射到 `/backend-api/codex/alpha/search` |
 | `POST /v1/live` | 原生映射 | 映射到 Codex Realtime call bootstrap，并补充缺失的默认查询参数 |
 | `POST /v1/realtime/calls` | 原生映射 | 与 `/v1/live` 使用相同的 bootstrap 逻辑 |
@@ -62,6 +64,33 @@ CORS。
 | `GET /v1/realtime/calls/{call_id}` + WebSocket Upgrade | 透明传输 | 连接对应 Realtime sideband |
 一般透明代理路径拒绝 `CONNECT`；`OPTIONS` 由预检逻辑处理。除表中明确限制方法的路径外，
 路由层允许其他 HTTP 方法，上游能力仍由目标 action 决定。
+
+### 图片生成与编辑
+
+`POST /v1/images/generations` 和 `POST /v1/images/edits`（也接受尾部 `/`）分别调用
+`/backend-api/codex/images/generations` 和 `/backend-api/codex/images/edits`。
+两者要求非空 `prompt`，未指定 `model` 时使用 `gpt-image-2`。显式模型名、`size`、`quality`、
+`n`、`background`、`output_format` 和其他扩展字段会传给上游；不根据模型列表限制请求，
+参数是否被接受或执行仍取决于上游。
+
+编辑请求接受以下两种形式：
+
+- `application/json`：使用 `images: [{"image_url":"…"}]` 或 `images: [{"file_id":"…"}]`；
+  可选 `mask` 同样接受 `image_url` 或 `file_id`。
+- `multipart/form-data`：上传一个或多个 `image` / `image[]` 文件，以及可选的一个 `mask` 文件。
+  文件会编码为 Base64 Data URL，并转换成 `images[].image_url` / `mask.image_url`；
+  `n`、`output_compression`、`partial_images` 等数字字段和 `stream` 布尔字段会转换为相应 JSON 类型。
+  也可通过 `mask[file_id]` / `mask[image_url]` 指定已有 mask 引用。
+
+`response_format` 默认是 `b64_json`，保留上游的标准 `data[].b64_json` 返回。
+指定 `url` 时转换为 `data[].url`，内容是 `data:image/…;base64,…`，不是托管图片的 HTTP 地址。
+`stream: true` 保留原生图像 SSE；`url` 模式按事件转换 `b64_json`，保留事件名、ID 和用量字段。
+上游错误保留原始状态、正文和重试相关 header。
+
+标准 `/v1/models` 会补入 `gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、
+`gpt-image-2.5-sunburst` 和 `gpt-image-2.5`，已有同名条目保留上游元数据。
+这些是兼容目录条目，不表示账户已获得各型号权限。带 `client_version` 查询参数的原生 Codex
+模型目录仍直接返回上游内容，不补充条目。
 
 ### Backend API 与透明转发
 
@@ -202,7 +231,9 @@ input、工具 schema 和工具结果进行估算。结果适用于预检和预�
 ## 8. 正文、流与 WebSocket
 
 - Live/Realtime multipart bootstrap 上限为 16 MiB；
-- 图片、Realtime 和其他透明代理正文使用原生异步字节流；
+- Images 生成/编辑 JSON 正文上限为 100 MiB，编辑 multipart 上传总大小上限为 64 MiB；
+- Images 的 `url` 响应转换最多读取 100 MiB JSON，SSE 单事件上限为 100 MiB；
+- Images 默认 Base64 响应、Realtime 和其他透明代理正文使用原生异步字节流；
 - SSE 转换按事件增量处理，并保留下游背压；
 - Responses WebSocket 转发 close code、close reason 和协商后的子协议；
 - 上游拒绝 WebSocket 握手时，服务返回经过安全 header 过滤的 HTTP 响应。

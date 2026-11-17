@@ -6,6 +6,7 @@
 
 pub mod chat;
 pub mod completions;
+pub mod images;
 pub mod request_policy;
 pub mod responses;
 pub mod sse;

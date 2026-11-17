@@ -6,11 +6,12 @@ TOML 文件中，下游 Token 用量保存在 SQLite 中，React 控制台作为
 
 ## 当前能力
 
-- OpenAI Models、Responses、Chat Completions 与 legacy Completions；
+- OpenAI Models、Responses、Chat Completions、legacy Completions 与 Images 生成/编辑；
 - Anthropic Messages 与本地 token count；
 - Gemini Models、generateContent、streamGenerateContent 与 countTokens；
 - `/backend-api/*` 和未注册路径的透明 HTTP/SSE/WebSocket 转发；
-- Codex Responses、图片、Realtime/Live、multipart 与二进制流式代理；
+- 标准图片编辑 multipart 转 Codex JSON、图像模型目录补充、Base64/Data URL 与图像 SSE；
+- Codex Responses、Realtime/Live 和其他原生 multipart、二进制流式代理；
 - 统一 Codex 账户池、设备授权、JSON / 手动凭据导入、账户组与用户管理 API；一个用户可持有多个 API Key 和账户 ID；
 - 统一的 `/admin` 控制台：管理员与用户同一入口登录（用户可用自己的任一凭据登录同一看板），登录状态保存在服务端会话中并自动续期；
   用户视图的账户组可展示组内全部额度时间轴；

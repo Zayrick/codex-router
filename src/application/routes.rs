@@ -1,5 +1,6 @@
 use crate::{
     protocol::gemini::{GeminiAction, match_gemini_action_path, match_gemini_model_path},
+    protocol::openai::images::ImageOperation,
     upstream::codex::{is_codex_proxy_path, is_codex_proxy_request_allowed},
 };
 use url::Url;
@@ -17,6 +18,7 @@ pub enum ProtocolFamily {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiRoute {
     Models,
+    Images(ImageOperation),
     Responses,
     Compact,
     Proxy,
@@ -39,7 +41,9 @@ impl ApiRoute {
             | Self::GeminiGenerate { .. }
             | Self::GeminiTokens { .. } => ProtocolFamily::Gemini,
             Self::Responses | Self::Compact | Self::Proxy => ProtocolFamily::Codex,
-            Self::Models | Self::ChatCompletions | Self::Completions => ProtocolFamily::OpenAi,
+            Self::Models | Self::Images(_) | Self::ChatCompletions | Self::Completions => {
+                ProtocolFamily::OpenAi
+            }
         }
     }
 
@@ -84,6 +88,10 @@ pub fn is_known_api_path(pathname: &str) -> bool {
 fn match_api_path(pathname: &str) -> Option<ApiRoute> {
     match pathname {
         "/v1/models" => Some(ApiRoute::Models),
+        "/v1/images/generations" | "/v1/images/generations/" => {
+            Some(ApiRoute::Images(ImageOperation::Generate))
+        }
+        "/v1/images/edits" | "/v1/images/edits/" => Some(ApiRoute::Images(ImageOperation::Edit)),
         "/v1/responses" | "/v1/responses/" => Some(ApiRoute::Responses),
         "/v1/responses/compact" | "/v1/responses/compact/" => Some(ApiRoute::Compact),
         "/v1/chat/completions" => Some(ApiRoute::ChatCompletions),
@@ -284,6 +292,27 @@ mod tests {
         );
         assert_eq!(match_api_route("GET", &url, false), None);
         assert!(is_known_api_path(url.path()));
+    }
+
+    #[test]
+    fn image_creation_routes_use_adaptation_and_other_image_paths_remain_proxies() {
+        for operation in [ImageOperation::Generate, ImageOperation::Edit] {
+            for suffix in ["", "/"] {
+                let url = Url::parse(&format!(
+                    "https://worker.example{}{suffix}",
+                    operation.path()
+                ))
+                .unwrap();
+                assert_eq!(
+                    match_api_route("POST", &url, false),
+                    Some(ApiRoute::Images(operation))
+                );
+                assert_eq!(match_api_route("GET", &url, false), None);
+                assert!(is_known_api_path(url.path()));
+            }
+        }
+        let url = Url::parse("https://worker.example/v1/images/variations").unwrap();
+        assert_eq!(match_api_route("POST", &url, false), Some(ApiRoute::Proxy));
     }
 
     #[test]

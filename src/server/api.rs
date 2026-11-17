@@ -15,6 +15,7 @@ use super::{
     body,
     codex::{CodexClient, CodexProxyRoute},
     config::AppConfig,
+    images,
     oauth::current_time_ms,
     provider_error::{anthropic_upstream_error_response, gemini_upstream_error_response},
     response,
@@ -132,6 +133,15 @@ async fn dispatch(
     let oauth = OAuthRepository::new(state.config.as_ref(), &account_route.account.id);
     let client = CodexClient::new(&oauth, &state.chatgpt);
     match route {
+        ApiRoute::Images(operation) => {
+            let (parts, body) = request.into_parts();
+            let adapted = images::prepare_request(&parts.headers, body, operation).await?;
+            let upstream = client
+                .send_images(&adapted, &parts.headers, client_url)
+                .await?;
+            observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
+            images::present_response(upstream, adapted.response_format, adapted.output_format).await
+        }
         ApiRoute::Models => {
             let upstream = client.fetch_models(client_url, request.headers()).await?;
             observe_upstream_status(state, account_route, upstream.status().as_u16()).await;
