@@ -16,7 +16,7 @@ use super::{
     usage::{
         CostIndex, EVENT_COLUMNS, PRIORITY_SERVICE_TIER, STATUS_CANCELLED, STATUS_COMPLETED,
         STATUS_FAILED, STATUS_INCOMPLETE, STATUS_INTERRUPTED, UsageEventRow, UsageFilters,
-        UsageIdentityFilter, UsageStore, event_cost, event_from_row, filter_parameters,
+        UsageIdentityFilter, UsageNames, UsageStore, event_cost, event_from_row, filter_parameters,
         usage_filters_sql,
     },
 };
@@ -830,10 +830,11 @@ impl UsageStore {
         request: AnalyticsRequest,
         prices: &[ModelPrice],
         fast_cost_multiplier: f64,
+        names: UsageNames,
         now: i64,
     ) -> Result<UsageAnalytics> {
         let costs = CostIndex::new(prices, fast_cost_multiplier);
-        self.read(move |connection| analytics(connection, &request, &costs, now))
+        self.read(move |connection| analytics(connection, &request, &costs, &names, now))
             .await
     }
 
@@ -842,10 +843,11 @@ impl UsageStore {
         request: EventPageRequest,
         prices: &[ModelPrice],
         fast_cost_multiplier: f64,
+        names: UsageNames,
         now: i64,
     ) -> Result<UsageEventPage> {
         let costs = CostIndex::new(prices, fast_cost_multiplier);
-        self.read(move |connection| event_page(connection, &request, &costs, now))
+        self.read(move |connection| event_page(connection, &request, &costs, &names, now))
             .await
     }
 
@@ -855,6 +857,7 @@ impl UsageStore {
         request: EventPageRequest,
         prices: &[ModelPrice],
         fast_cost_multiplier: f64,
+        names: UsageNames,
     ) -> Result<Vec<UsageEventRow>> {
         let costs = CostIndex::new(prices, fast_cost_multiplier);
         self.read(move |connection| {
@@ -865,6 +868,7 @@ impl UsageStore {
                 request_range.start_at,
                 request_range.end_at,
                 &costs,
+                &names,
             )?;
             let slow = slow_threshold(&events);
             let mut events = events
@@ -1035,6 +1039,7 @@ fn load_events(
     start_at: i64,
     end_at: i64,
     costs: &CostIndex,
+    names: &UsageNames,
 ) -> Result<Vec<UsageEventRow>> {
     let sql = format!(
         "SELECT {EVENT_COLUMNS} FROM usage_events \
@@ -1049,6 +1054,7 @@ fn load_events(
     let mut events = Vec::new();
     for row in rows {
         let mut event = row?;
+        names.apply_event(&mut event);
         if request.filters.matches(&event) {
             event.cost_usd = event_cost(&event, costs);
             events.push(event);
@@ -1061,9 +1067,17 @@ fn analytics(
     connection: &Connection,
     request: &AnalyticsRequest,
     costs: &CostIndex,
+    names: &UsageNames,
     now: i64,
 ) -> Result<UsageAnalytics> {
-    let events = load_events(connection, request, request.start_at, request.end_at, costs)?;
+    let events = load_events(
+        connection,
+        request,
+        request.start_at,
+        request.end_at,
+        costs,
+        names,
+    )?;
     let previous = if request.range == AnalyticsRange::All {
         None
     } else {
@@ -1075,6 +1089,7 @@ fn analytics(
             request.start_at - length,
             elapsed_end - length,
             costs,
+            names,
         )?;
         Some(totals(&previous, costs))
     };
@@ -1114,6 +1129,7 @@ fn event_page(
     connection: &Connection,
     request: &EventPageRequest,
     costs: &CostIndex,
+    names: &UsageNames,
     _now: i64,
 ) -> Result<UsageEventPage> {
     let range = &request.analytics;
@@ -1128,7 +1144,14 @@ fn event_page(
         params![range.start_at, range.end_at, a, b, c, d],
         |row| row.get(0),
     )?;
-    let events = load_events(connection, range, range.start_at, range.end_at, costs)?;
+    let events = load_events(
+        connection,
+        range,
+        range.start_at,
+        range.end_at,
+        costs,
+        names,
+    )?;
     let slow = slow_threshold(&events);
     let mut views = EventViewCounts::default();
     for event in &events {
@@ -2413,7 +2436,7 @@ mod tests {
             filters: EventFilters::default(),
         };
         let analytics = store
-            .analytics(request.clone(), &prices, 2.0, now)
+            .analytics(request.clone(), &prices, 2.0, UsageNames::default(), now)
             .await
             .unwrap();
         assert_eq!(analytics.totals.outcomes.requests, 7);
@@ -2436,6 +2459,7 @@ mod tests {
                 },
                 &prices,
                 2.0,
+                UsageNames::default(),
                 now,
             )
             .await
@@ -2463,6 +2487,7 @@ mod tests {
                 },
                 &prices,
                 2.0,
+                UsageNames::default(),
                 now,
             )
             .await
@@ -2482,6 +2507,7 @@ mod tests {
                 },
                 &prices,
                 2.0,
+                UsageNames::default(),
                 now,
             )
             .await
@@ -2498,6 +2524,224 @@ mod tests {
             6
         );
 
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
+    }
+
+    #[tokio::test]
+    async fn usage_queries_resolve_current_names_from_existing_events() {
+        use super::super::usage::UsageRange;
+        use crate::auth::{
+            AccountGroup, AccountRoutingState, CodexAccount, CredentialKind, User, UserCredential,
+        };
+
+        let path = std::env::temp_dir().join(format!(
+            "codex-router-names-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let store = UsageStore::open(path.clone()).unwrap();
+        let now = super::super::oauth::current_time_ms();
+        let mut recorded = event(now - MINUTE, "failed");
+        recorded.session_id = "root".into();
+        recorded.session_kind = "main".into();
+        recorded.status_code = Some(500);
+        recorded.error_code = "upstream_error".into();
+        let mut deleted = event(now - MINUTE + 1, "completed");
+        deleted.user_id = "deleted-user".into();
+        deleted.user_name = "Deleted user".into();
+        deleted.credential_id = "deleted-credential".into();
+        deleted.credential_name = "Deleted credential".into();
+        deleted.codex_account_id = "deleted-account".into();
+        deleted.codex_account_name = "Deleted account".into();
+        deleted.account_group_id = "deleted-group".into();
+        deleted.account_group_name = "Deleted group".into();
+        store
+            .read(move |connection| {
+                insert(connection, &recorded);
+                insert(connection, &deleted);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let request = AnalyticsRequest {
+            range: AnalyticsRange::All,
+            start_at: now - HOUR,
+            end_at: now,
+            bucket_ms: MINUTE,
+            filters: EventFilters::default(),
+        };
+        let original = store
+            .analytics(request.clone(), &[], 2.0, UsageNames::default(), now)
+            .await
+            .unwrap();
+        let mut users = vec![User {
+            id: "key".into(),
+            name: "Current user".into(),
+            enabled: true,
+            credentials: vec![UserCredential {
+                id: "credential".into(),
+                kind: CredentialKind::ApiKey,
+                value: "sk-test-123".into(),
+                name: "Current credential".into(),
+                enabled: true,
+            }],
+        }];
+        let routing = AccountRoutingState {
+            accounts: vec![CodexAccount {
+                id: "acct".into(),
+                name: "Current account".into(),
+                enabled: true,
+            }],
+            groups: vec![AccountGroup {
+                id: "group".into(),
+                name: "Current group".into(),
+                account_ids: vec!["acct".into()],
+                strategy: "round-robin".into(),
+                session_affinity: false,
+                session_affinity_ttl: "1h".into(),
+            }],
+            ..Default::default()
+        };
+        let names = UsageNames::new(&users, &routing);
+        let analytics = store
+            .analytics(request.clone(), &[], 2.0, names.clone(), now)
+            .await
+            .unwrap();
+        assert_eq!(analytics.totals, original.totals);
+        assert_eq!(
+            analytics
+                .identities
+                .iter()
+                .find(|row| row.user_id == "key")
+                .unwrap()
+                .user_name,
+            "Current user"
+        );
+        let account = analytics
+            .upstream_accounts
+            .iter()
+            .find(|row| row.codex_account_id == "acct")
+            .unwrap();
+        assert_eq!(account.codex_account_name, "Current account");
+        assert_eq!(account.account_group_name, "Current group");
+        assert_eq!(account.consumers[0].user_name, "Current user");
+        let group = analytics
+            .upstream_groups
+            .iter()
+            .find(|row| row.account_group_id == "group")
+            .unwrap();
+        assert_eq!(group.account_group_name, "Current group");
+        assert_eq!(group.accounts[0].codex_account_name, "Current account");
+        assert_eq!(analytics.errors[0].accounts[0].name, "Current account");
+        assert_eq!(analytics.sessions.recent[0].user_name, "Current user");
+        assert_eq!(
+            analytics.recent_failures[0].credential_name,
+            "Current credential"
+        );
+        assert_eq!(
+            analytics
+                .identity_models
+                .iter()
+                .find(|row| row.user_id == "key")
+                .unwrap()
+                .user_name,
+            "Current user"
+        );
+
+        let page_request = EventPageRequest {
+            analytics: request,
+            view: EventView::All,
+            offset: 0,
+            limit: 50,
+            group_by_session: true,
+        };
+        let page = store
+            .event_page(page_request.clone(), &[], 2.0, names.clone(), now)
+            .await
+            .unwrap();
+        let sessions = page.sessions.unwrap();
+        let session = sessions.iter().find(|row| row.user_id == "key").unwrap();
+        assert_eq!(session.user_name, "Current user");
+        assert_eq!(session.account_group_name, "Current group");
+        assert_eq!(session.accounts, vec!["Current account"]);
+        assert_eq!(session.events[0].credential_name, "Current credential");
+
+        let exported = store
+            .export_events(page_request.clone(), &[], 2.0, names.clone())
+            .await
+            .unwrap();
+        let renamed = exported.iter().find(|row| row.user_id == "key").unwrap();
+        assert_eq!(renamed.user_name, "Current user");
+        assert_eq!(renamed.credential_name, "Current credential");
+        let removed = exported
+            .iter()
+            .find(|row| row.user_id == "deleted-user")
+            .unwrap();
+        assert_eq!(removed.user_name, "Deleted user");
+        assert_eq!(removed.credential_name, "Deleted credential");
+        assert_eq!(removed.codex_account_name, "Deleted account");
+        assert_eq!(removed.account_group_name, "Deleted group");
+
+        let dashboard = store
+            .dashboard_with_options(
+                UsageRange::All,
+                UsageFilters::default(),
+                None,
+                &[],
+                2.0,
+                names,
+            )
+            .await
+            .unwrap();
+        assert_eq!(dashboard.totals.requests, 2);
+        assert_eq!(
+            dashboard
+                .identities
+                .iter()
+                .find(|row| row.user_id == "key")
+                .unwrap()
+                .user_name,
+            "Current user"
+        );
+        assert_eq!(
+            dashboard
+                .recent_events
+                .iter()
+                .find(|row| row.user_id == "key")
+                .unwrap()
+                .credential_name,
+            "Current credential"
+        );
+
+        users[0].credentials[0].name.clear();
+        let cleared = store
+            .export_events(page_request, &[], 2.0, UsageNames::new(&users, &routing))
+            .await
+            .unwrap();
+        assert_eq!(
+            cleared
+                .iter()
+                .find(|row| row.user_id == "key")
+                .unwrap()
+                .credential_name,
+            "···-123"
+        );
+        let stored = store.read(|connection| {
+            Ok(connection.query_row("SELECT user_name, credential_name, codex_account_name, account_group_name FROM usage_events WHERE user_id = 'key'", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+            })?)
+        }).await.unwrap();
+        assert_eq!(
+            stored,
+            (
+                "Key".into(),
+                "laptop".into(),
+                "a@example.com".into(),
+                "Pool".into()
+            )
+        );
         drop(store);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));

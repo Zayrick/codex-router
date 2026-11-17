@@ -20,7 +20,7 @@ use super::{
     response,
     session_store::Principal,
     state::AppState,
-    usage::{UsageFilters, UsageIdentityFilter, UsageRange},
+    usage::{UsageFilters, UsageIdentityFilter, UsageNames, UsageRange},
     usage_analytics::AnalyticsScope,
     usage_store::CodexUsageStateRepository,
 };
@@ -205,6 +205,7 @@ async fn account_dashboard(
             None,
             &config.usage_tracking.model_prices,
             config.usage_tracking.fast_cost_multiplier(),
+            UsageNames::new(&config.state.users, &config.state.account_routing),
         )
         .await
         .map_err(|error| {

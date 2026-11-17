@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
@@ -12,7 +12,12 @@ use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::{auth::AuthenticatedUser, core::ApiError, http::parse_json_body, protocol::openai};
+use crate::{
+    auth::{AccountRoutingState, AuthenticatedUser, User},
+    core::ApiError,
+    http::parse_json_body,
+    protocol::openai,
+};
 
 use super::{
     oauth::current_time_ms,
@@ -412,8 +417,15 @@ impl UsageStore {
         range: UsageRange,
         filters: UsageFilters,
     ) -> Result<UsageDashboard> {
-        self.dashboard_with_options(range, filters, None, &[], DEFAULT_FAST_COST_MULTIPLIER)
-            .await
+        self.dashboard_with_options(
+            range,
+            filters,
+            None,
+            &[],
+            DEFAULT_FAST_COST_MULTIPLIER,
+            UsageNames::default(),
+        )
+        .await
     }
 
     pub async fn dashboard_with_options(
@@ -423,12 +435,20 @@ impl UsageStore {
         bounds: Option<UsageBounds>,
         prices: &[ModelPrice],
         fast_cost_multiplier: f64,
+        names: UsageNames,
     ) -> Result<UsageDashboard> {
         let connection = self.connection.clone();
         let costs = CostIndex::new(prices, fast_cost_multiplier);
         tokio::task::spawn_blocking(move || {
             let connection = connection.lock().expect("usage database lock poisoned");
-            query_dashboard(&connection, range, &filters, bounds, &costs)
+            let mut dashboard = query_dashboard(&connection, range, &filters, bounds, &costs)?;
+            for identity in &mut dashboard.identities {
+                names.apply_user(&identity.user_id, &mut identity.user_name);
+            }
+            for event in &mut dashboard.recent_events {
+                names.apply_event(event);
+            }
+            Ok(dashboard)
         })
         .await
         .context("usage database query task failed")?
@@ -1433,6 +1453,60 @@ pub struct UsageEventRow {
     pub cost_usd: f64,
 }
 
+/// Current display names keyed by stable IDs. Deleted identities keep their event names.
+#[derive(Debug, Clone, Default)]
+pub struct UsageNames {
+    users: HashMap<String, String>,
+    credentials: HashMap<String, String>,
+    accounts: HashMap<String, String>,
+    groups: HashMap<String, String>,
+}
+
+impl UsageNames {
+    pub fn new(users: &[User], routing: &AccountRoutingState) -> Self {
+        Self {
+            users: users
+                .iter()
+                .map(|user| (user.id.clone(), user.name.clone()))
+                .collect(),
+            credentials: users
+                .iter()
+                .flat_map(|user| &user.credentials)
+                .map(|credential| (credential.id.clone(), credential.display_name()))
+                .collect(),
+            accounts: routing
+                .accounts
+                .iter()
+                .map(|account| (account.id.clone(), account.name.clone()))
+                .collect(),
+            groups: routing
+                .groups
+                .iter()
+                .map(|group| (group.id.clone(), group.name.clone()))
+                .collect(),
+        }
+    }
+
+    fn apply_user(&self, id: &str, name: &mut String) {
+        if let Some(current) = self.users.get(id) {
+            name.clone_from(current);
+        }
+    }
+
+    pub(super) fn apply_event(&self, event: &mut UsageEventRow) {
+        self.apply_user(&event.user_id, &mut event.user_name);
+        if let Some(name) = self.credentials.get(&event.credential_id) {
+            event.credential_name.clone_from(name);
+        }
+        if let Some(name) = self.accounts.get(&event.codex_account_id) {
+            event.codex_account_name.clone_from(name);
+        }
+        if let Some(name) = self.groups.get(&event.account_group_id) {
+            event.account_group_name.clone_from(name);
+        }
+    }
+}
+
 fn query_dashboard(
     connection: &Connection,
     range: UsageRange,
@@ -2385,6 +2459,7 @@ mod tests {
                 Some(bounds),
                 &[price],
                 3.0,
+                UsageNames::default(),
             )
             .await
             .unwrap();

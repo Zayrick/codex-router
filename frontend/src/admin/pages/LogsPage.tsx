@@ -17,11 +17,12 @@ export default function LogsPage() {
 	const source = useMemo<LogsDataSource>(
 		() => ({
 			scope: "admin",
+			revision: state,
 			getEvents: (query: EventPageQuery, signal: AbortSignal) => api.getEvents(query, signal),
 			eventsCsvUrl: (query: EventPageQuery) => api.eventsCsvUrl(query),
 			onSessionExpired: () => reportError(new AdminSessionExpiredError(), ""),
 		}),
-		[api, reportError],
+		[api, reportError, state],
 	);
 
 	const options = useMemo<FilterOptions>(

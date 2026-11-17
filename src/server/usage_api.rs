@@ -15,7 +15,7 @@ use super::{
     oauth::current_time_ms,
     response,
     state::AppState,
-    usage::{UsageEventRow, UsageFilters},
+    usage::{UsageEventRow, UsageFilters, UsageNames},
     usage_analytics::{AnalyticsQueryError, AnalyticsRequest, AnalyticsScope, EventPageRequest},
 };
 
@@ -34,6 +34,7 @@ pub async fn analytics(
             request,
             &config.usage_tracking.model_prices,
             config.usage_tracking.fast_cost_multiplier(),
+            UsageNames::new(&config.state.users, &config.state.account_routing),
             now,
         )
         .await
@@ -55,6 +56,7 @@ pub async fn events(
     let request = EventPageRequest::from_url(url, &scope, earliest, now).map_err(query_error)?;
     let prices = &config.usage_tracking.model_prices;
     let multiplier = config.usage_tracking.fast_cost_multiplier();
+    let names = UsageNames::new(&config.state.users, &config.state.account_routing);
     let failed = |error: anyhow::Error| {
         tracing::warn!(event = "usage_events", status = "failed", error = %error);
         unavailable()
@@ -65,14 +67,14 @@ pub async fn events(
     {
         let events = state
             .usage
-            .export_events(request, prices, multiplier)
+            .export_events(request, prices, multiplier, names)
             .await
             .map_err(failed)?;
         return Ok(csv_response(&events));
     }
     let page = state
         .usage
-        .event_page(request, prices, multiplier, now)
+        .event_page(request, prices, multiplier, names, now)
         .await
         .map_err(failed)?;
     response::json(&page, 200)

@@ -27,7 +27,7 @@ use super::{
     scheduled::{NotificationChannel, refresh_account_quotas, send_test_notification},
     session_store::Principal,
     state::AppState,
-    usage::{UsageBounds, UsageFilters, UsageIdentityFilter, UsageRange},
+    usage::{UsageBounds, UsageFilters, UsageIdentityFilter, UsageNames, UsageRange},
     usage_analytics::AnalyticsScope,
     usage_api,
 };
@@ -169,6 +169,7 @@ async fn dispatch(
                     bounds,
                     &config.usage_tracking.model_prices,
                     config.usage_tracking.fast_cost_multiplier(),
+                    UsageNames::new(&config.state.users, &config.state.account_routing),
                 )
                 .await
                 .map_err(|error| {

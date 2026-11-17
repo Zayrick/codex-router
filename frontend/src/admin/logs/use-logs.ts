@@ -20,21 +20,22 @@ export interface LogsData {
 
 /**
  * First page (refreshed by `refreshMs`) plus pages appended with
- * offset = loaded count. Appended pages reset whenever the query changes.
+ * offset = loaded count. Appended pages reset when the query or metadata revision changes.
  */
 export function useLogs(
 	getEvents: (query: EventPageQuery, signal: AbortSignal) => Promise<UsageEventPage>,
 	query: EventPageQuery,
-	options: { refreshMs?: number; onSessionExpired: () => void; onError?: (message: string) => void },
+	options: { refreshMs?: number; revision?: unknown; onSessionExpired: () => void; onError?: (message: string) => void },
 ): LogsData {
 	const key = JSON.stringify(query);
-	const first = useResource((signal) => getEvents({ ...query, offset: 0, limit: PAGE_SIZE }, signal), [key], {
+	const revision = options.revision;
+	const first = useResource((signal) => getEvents({ ...query, offset: 0, limit: PAGE_SIZE }, signal), [key, revision], {
 		onSessionExpired: options.onSessionExpired,
 		...(options.refreshMs ? { refreshMs: options.refreshMs } : {}),
 	});
-	const [more, setMore] = useState<{ key: string; pages: UsageEventPage[] }>({ key, pages: [] });
+	const [more, setMore] = useState<{ key: string; revision: unknown; pages: UsageEventPage[] }>({ key, revision, pages: [] });
 	const [loadingMore, setLoadingMore] = useState(false);
-	const pages = useMemo(() => (more.key === key ? more.pages : []), [key, more]);
+	const pages = useMemo(() => (more.key === key && more.revision === revision ? more.pages : []), [key, more, revision]);
 
 	const events = useMemo(() => dedupe([first.data?.events ?? [], ...pages.map((page) => page.events)].flat(), (event) => String(event.id)), [first.data, pages]);
 	const sessions = useMemo(
@@ -53,13 +54,13 @@ export function useLogs(
 		setLoadingMore(true);
 		const controller = new AbortController();
 		getEvents({ ...query, offset: loaded, limit: PAGE_SIZE }, controller.signal)
-			.then((page) => setMore((current) => ({ key, pages: [...(current.key === key ? current.pages : []), page] })))
+			.then((page) => setMore((current) => ({ key, revision, pages: [...(current.key === key && current.revision === revision ? current.pages : []), page] })))
 			.catch((error: unknown) => {
 				if (error instanceof AdminSessionExpiredError) onSessionExpired();
 				else onError?.(error instanceof Error ? error.message : "加载更多失败。");
 			})
 			.finally(() => setLoadingMore(false));
-	}, [getEvents, key, loaded, loadingMore, onError, onSessionExpired, query]);
+	}, [getEvents, key, loaded, loadingMore, onError, onSessionExpired, query, revision]);
 
 	return {
 		page: first.data,

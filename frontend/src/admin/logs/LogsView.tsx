@@ -47,6 +47,8 @@ const LIVE_REFRESH_MS = 10_000;
 export interface LogsDataSource {
 	/** `user` hides identity filters and columns. */
 	scope: "admin" | "user";
+	/** Changes when the source's display metadata changes. */
+	revision?: unknown;
 	getEvents: (query: EventPageQuery, signal: AbortSignal) => Promise<UsageEventPage>;
 	eventsCsvUrl: (query: EventPageQuery) => string;
 	onSessionExpired: () => void;
@@ -122,6 +124,7 @@ export function LogsView({
 	useEffect(() => onExportUrl?.(exportUrl), [exportUrl, onExportUrl]);
 
 	const page = useLogs(source.getEvents, query, {
+		revision: source.revision,
 		onSessionExpired: source.onSessionExpired,
 		onError: (message) => toast.error(message),
 		...(live && filters.range !== "1h" ? { refreshMs: LIVE_REFRESH_MS } : {}),
