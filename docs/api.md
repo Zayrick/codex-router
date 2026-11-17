@@ -132,6 +132,16 @@ tool config、thinking 和 usage metadata。`generationConfig` 中 thinking leve
 
 ## 6. Responses 请求策略
 
+### 模型名指定思考强度
+
+所有生成类路由（Responses HTTP / WebSocket、compact、Chat Completions、旧版 Completions、
+Anthropic Messages、Gemini Content）都接受 `模型(思考强度)` 形式的模型名，例如
+`gpt-6-astra(high)`。此时上游收到的 `model` 为 `gpt-6-astra`，`reasoning.effort` 强制为
+`high`，覆盖请求中原有的思考强度字段（`reasoning.effort`、`reasoning_effort`、Anthropic
+`thinking`、Gemini `thinkingConfig` 等），`reasoning` 中的其他字段保持不变。括号内只允许字母、
+数字、`-` 和 `_`，统一转为小写，具体取值是否有效由上游判断。用量统计记录的是去掉后缀的模型名和
+实际生效的思考强度。
+
 `POST /v1/responses` 与 WebSocket `response.create` 应用以下共同规则：
 
 - 字符串形式的顶层 `input` 包装为单个 `user` / `input_text` 消息；

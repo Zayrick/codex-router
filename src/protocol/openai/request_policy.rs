@@ -54,6 +54,7 @@ const REMOVED_HTTP_RESPONSE_FIELDS: [&str; 3] =
     ["previous_response_id", "generate", "stream_options"];
 
 fn apply_base_policy(editor: &mut BodyEditor<'_>) {
+    apply_model_effort_suffix(editor);
     remove_fields(editor, &REMOVED_RESPONSE_FIELDS);
     remove_non_priority_service_tier(editor);
     set_field(editor, "store", Value::Bool(false));
@@ -66,6 +67,43 @@ pub(crate) fn apply_http_response_create_egress_policy_to(editor: &mut BodyEdito
 
 pub(crate) fn apply_websocket_response_create_egress_policy_to(editor: &mut BodyEditor<'_>) {
     apply_base_policy(editor);
+}
+
+/// Splits a `model(effort)` alias such as `gpt-5.5(high)` into the upstream
+/// model id and a forced `reasoning.effort`, overriding any effort the body
+/// already carries. Other `reasoning` fields such as `summary` are kept.
+pub(crate) fn apply_model_effort_suffix(editor: &mut BodyEditor<'_>) {
+    let Some((model, effort)) = editor
+        .current()
+        .get("model")
+        .and_then(Value::as_str)
+        .and_then(split_model_effort)
+    else {
+        return;
+    };
+    let body = editor.make_mut();
+    body.insert("model".into(), Value::String(model));
+    match body.get_mut("reasoning").and_then(Value::as_object_mut) {
+        Some(reasoning) => {
+            reasoning.insert("effort".into(), Value::String(effort));
+        }
+        None => {
+            let mut reasoning = JsonObject::new();
+            reasoning.insert("effort".into(), Value::String(effort));
+            body.insert("reasoning".into(), Value::Object(reasoning));
+        }
+    }
+}
+
+fn split_model_effort(model: &str) -> Option<(String, String)> {
+    let (base, effort) = model.trim().strip_suffix(')')?.rsplit_once('(')?;
+    let base = base.trim_end();
+    let effort = effort.trim();
+    let valid_effort = !effort.is_empty()
+        && effort
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    (!base.is_empty() && valid_effort).then(|| (base.to_owned(), effort.to_ascii_lowercase()))
 }
 
 fn remove_fields(editor: &mut BodyEditor<'_>, fields: &[&str]) {
@@ -127,6 +165,7 @@ const UNSUPPORTED_CONTENT_FIELDS: [&str; 1] = ["prompt_cache_breakpoint"];
 #[must_use]
 pub fn apply_converted_response_egress_policy<'a>(body: &'a JsonObject) -> Cow<'a, JsonObject> {
     let mut editor = BodyEditor::new(body);
+    apply_model_effort_suffix(&mut editor);
     remove_fields(&mut editor, &REMOVED_CONVERTED_RESPONSE_FIELDS);
     remove_non_priority_service_tier(&mut editor);
     set_field(&mut editor, "store", Value::Bool(false));
@@ -381,6 +420,40 @@ mod tests {
             apply_converted_response_egress_policy(&satisfied),
             Cow::Borrowed(_)
         ));
+    }
+
+    #[test]
+    fn model_effort_suffix_overrides_body_effort() {
+        let input = object(json!({
+            "model":"gpt-6-astra(High)",
+            "store":false,
+            "reasoning":{"effort":"low","summary":"auto"}
+        }));
+        assert_eq!(
+            apply_http_policy(&input).as_ref(),
+            &object(json!({
+                "model":"gpt-6-astra",
+                "store":false,
+                "reasoning":{"effort":"high","summary":"auto"}
+            }))
+        );
+        let converted = object(json!({"model":"gpt-6-astra(xhigh)"}));
+        let converted = apply_converted_response_egress_policy(&converted);
+        assert_eq!(converted["model"], "gpt-6-astra");
+        assert_eq!(converted["reasoning"], json!({"effort":"xhigh"}));
+        let websocket = object(json!({"model":"gpt-6-astra(none)","reasoning":null}));
+        let websocket = apply_websocket_policy(&websocket);
+        assert_eq!(websocket["model"], "gpt-6-astra");
+        assert_eq!(websocket["reasoning"], json!({"effort":"none"}));
+    }
+
+    #[test]
+    fn model_without_valid_effort_suffix_is_untouched() {
+        for model in ["gpt-6-astra", "gpt-6-astra()", "(high)", "gpt-6-astra(a b)"] {
+            assert_eq!(split_model_effort(model), None, "{model}");
+        }
+        let input = object(json!({"model":"gpt-6-astra","store":false}));
+        assert!(matches!(apply_http_policy(&input), Cow::Borrowed(_)));
     }
 
     #[test]

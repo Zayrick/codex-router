@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::core::JsonObject;
 
 use super::request_policy::{
-    BodyEditor, apply_http_response_create_egress_policy_to,
+    BodyEditor, apply_http_response_create_egress_policy_to, apply_model_effort_suffix,
     apply_websocket_response_create_egress_policy_to,
 };
 
@@ -38,6 +38,7 @@ fn adapt_responses_websocket_create_body<'a>(body: &'a JsonObject) -> Cow<'a, Js
 #[must_use]
 pub fn adapt_compact_body<'a>(body: &'a JsonObject) -> Cow<'a, JsonObject> {
     let mut editor = BodyEditor::new(body);
+    apply_model_effort_suffix(&mut editor);
     rewrite_system_message_roles(&mut editor);
     editor.finish()
 }
