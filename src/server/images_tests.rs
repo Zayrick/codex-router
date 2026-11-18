@@ -85,7 +85,7 @@ async fn native_json_edit_keeps_file_ids_and_future_options() {
     assert_eq!(request.body["images"], input["images"]);
     assert_eq!(request.body["mask"], input["mask"]);
     assert_eq!(request.body["future_option"], true);
-    assert_eq!(request.body["model"], "gpt-image-2");
+    assert!(!request.body.contains_key("model"));
 }
 
 #[tokio::test]

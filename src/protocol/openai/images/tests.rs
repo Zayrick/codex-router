@@ -5,14 +5,13 @@ fn object(value: Value) -> JsonObject {
 }
 
 #[test]
-fn defaults_only_the_model_and_retains_native_parameters() {
-    let mut input = object(json!({
+fn forwards_native_parameters_without_injecting_a_model() {
+    let input = object(json!({
         "prompt": "a blue circle", "size": "2048x1152", "quality": "low", "n": 2,
         "background": "transparent", "output_format": "webp", "output_compression": 70,
         "partial_images": 2, "stream": true, "extension": {"keep": true}
     }));
     let adapted = adapt_image_request(input.clone(), ImageOperation::Generate).unwrap();
-    input.insert("model".into(), json!("gpt-image-2"));
     assert_eq!(adapted.body, input);
     assert_eq!(adapted.response_format, ImageResponseFormat::Base64);
     assert_eq!(adapted.output_format, "webp");

@@ -162,11 +162,7 @@ fn maps_model_catalog_to_openai_list() {
             "object": "list",
             "data": [
                 { "id": "gpt-5.6-luna", "object": "model" },
-                { "id": "gpt-image-2", "object": "model", "created": 1_700_000_000, "owned_by": "openai" },
-                { "id": "gpt-image-1.5", "object": "model", "owned_by": "openai" },
-                { "id": "gpt-image-2.5-flare", "object": "model", "owned_by": "openai" },
-                { "id": "gpt-image-2.5-sunburst", "object": "model", "owned_by": "openai" },
-                { "id": "gpt-image-2.5", "object": "model", "owned_by": "openai" }
+                { "id": "gpt-image-2", "object": "model", "created": 1_700_000_000, "owned_by": "openai" }
             ]
         })
     );

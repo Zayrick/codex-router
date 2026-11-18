@@ -69,7 +69,7 @@ CORS。
 
 `POST /v1/images/generations` 和 `POST /v1/images/edits`（也接受尾部 `/`）分别调用
 `/backend-api/codex/images/generations` 和 `/backend-api/codex/images/edits`。
-两者要求非空 `prompt`，未指定 `model` 时使用 `gpt-image-2`。显式模型名、`size`、`quality`、
+两者要求非空 `prompt`；未指定 `model` 时不补默认值，由上游决定。显式模型名、`size`、`quality`、
 `n`、`background`、`output_format` 和其他扩展字段会传给上游；不根据模型列表限制请求，
 参数是否被接受或执行仍取决于上游。
 
@@ -87,10 +87,8 @@ CORS。
 `stream: true` 保留原生图像 SSE；`url` 模式按事件转换 `b64_json`，保留事件名、ID 和用量字段。
 上游错误保留原始状态、正文和重试相关 header。
 
-标准 `/v1/models` 会补入 `gpt-image-1.5`、`gpt-image-2`、`gpt-image-2.5-flare`、
-`gpt-image-2.5-sunburst` 和 `gpt-image-2.5`，已有同名条目保留上游元数据。
-这些是兼容目录条目，不表示账户已获得各型号权限。带 `client_version` 查询参数的原生 Codex
-模型目录仍直接返回上游内容，不补充条目。
+标准 `/v1/models` 只转换上游 Codex 模型目录的格式，不补充任何条目。带 `client_version`
+查询参数的原生 Codex 模型目录直接返回上游内容。
 
 ### Backend API 与透明转发
 

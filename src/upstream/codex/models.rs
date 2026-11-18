@@ -1,7 +1,6 @@
 use serde_json::{Map, Value, json};
 
 use crate::core::{ApiError, AppResult, object, string_field};
-use crate::protocol::openai::images::BUILTIN_IMAGE_MODELS;
 
 pub const MAX_MODEL_CATALOG_BYTES: usize = 1024 * 1024;
 
@@ -33,15 +32,6 @@ pub fn to_openai_model_list(payload: &Value) -> AppResult<Value> {
             model.insert("owned_by".into(), Value::String(owned_by.to_owned()));
         }
         data.push(Value::Object(model));
-    }
-    // The Codex text-model catalog does not enumerate all native Images models.
-    for id in BUILTIN_IMAGE_MODELS {
-        if !data
-            .iter()
-            .any(|model| model.get("id").and_then(Value::as_str) == Some(*id))
-        {
-            data.push(json!({"id": id, "object": "model", "owned_by": "openai"}));
-        }
     }
     Ok(json!({ "object": "list", "data": data }))
 }

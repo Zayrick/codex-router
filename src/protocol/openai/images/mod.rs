@@ -8,15 +8,6 @@ use serde_json::{Value, json};
 
 use crate::core::{ApiError, AppResult, JsonObject};
 
-pub const DEFAULT_IMAGE_MODEL: &str = "gpt-image-2";
-pub const BUILTIN_IMAGE_MODELS: &[&str] = &[
-    "gpt-image-1.5",
-    DEFAULT_IMAGE_MODEL,
-    "gpt-image-2.5-flare",
-    "gpt-image-2.5-sunburst",
-    "gpt-image-2.5",
-];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageOperation {
     Generate,
@@ -51,13 +42,10 @@ pub fn adapt_image_request(
     operation: ImageOperation,
 ) -> AppResult<ImageRequest> {
     required_string(body.get("prompt"), "prompt")?;
-    match body.get("model") {
-        None | Some(Value::Null) => {
-            body.insert("model".into(), Value::String(DEFAULT_IMAGE_MODEL.into()));
-        }
-        Some(value) => {
-            required_string(Some(value), "model")?;
-        }
+    if let Some(value) = body.get("model")
+        && !value.is_null()
+    {
+        required_string(Some(value), "model")?;
     }
     let response_format = match body.remove("response_format") {
         None | Some(Value::Null) => ImageResponseFormat::Base64,
