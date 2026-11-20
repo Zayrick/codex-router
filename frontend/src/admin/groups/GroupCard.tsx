@@ -188,18 +188,38 @@ export function GroupCard({
 	);
 }
 
-/** Two shortest windows of a member, short first ("5 小时", "7 天"). */
-function pairWindows(quota: AccountQuota | undefined): [WindowForecast | undefined, WindowForecast | undefined] {
-	const windows = visibleWindows(quota?.windows ?? []).toSorted((left, right) => (left.limitWindowSeconds ?? 0) - (right.limitWindowSeconds ?? 0));
-	return [windows[0], windows[1]];
+const DAY_SECONDS = 24 * 60 * 60;
+
+/** Windows of a day or longer ("7 天", "30 天") belong to the long column. */
+function isLongWindow(window: WindowForecast): boolean {
+	if (window.limitWindowSeconds && window.limitWindowSeconds > 0) return window.limitWindowSeconds >= DAY_SECONDS;
+	return window.kind === "weekly" || window.kind === "monthly" || window.kind === "secondary";
 }
 
-function windowHeaders(members: CodexAccount[], quotaById: Map<string, AccountQuota>): [string, string] {
+/**
+ * Shortest short window and shortest long window of a member ("5 小时", "7 天").
+ * Columns follow the window length, so an account reporting only a weekly
+ * window leaves the short column empty instead of shifting into it.
+ */
+function pairWindows(quota: AccountQuota | undefined): [WindowForecast | undefined, WindowForecast | undefined] {
+	const windows = visibleWindows(quota?.windows ?? []).toSorted((left, right) => (left.limitWindowSeconds ?? 0) - (right.limitWindowSeconds ?? 0));
+	return [windows.find((window) => !isLongWindow(window)), windows.find(isLongWindow)];
+}
+
+/**
+ * Column headers for the short and long windows; `null` hides a column no
+ * member reports. Without any quota data both default columns stay visible.
+ */
+function windowHeaders(members: CodexAccount[], quotaById: Map<string, AccountQuota>): [string | null, string | null] {
+	let short: WindowForecast | undefined;
+	let long: WindowForecast | undefined;
 	for (const member of members) {
-		const [short, long] = pairWindows(quotaById.get(member.id));
-		if (short && long) return [`${windowLabel(short)}已用`, `${windowLabel(long)}已用`];
+		const [memberShort, memberLong] = pairWindows(quotaById.get(member.id));
+		short ??= memberShort;
+		long ??= memberLong;
 	}
-	return ["5 小时已用", "7 天已用"];
+	if (!short && !long) return ["5 小时已用", "7 天已用"];
+	return [short ? `${windowLabel(short)}已用` : null, long ? `${windowLabel(long)}已用` : null];
 }
 
 function UsedCell({ window, now }: { window: WindowForecast | undefined; now: number }) {
@@ -269,8 +289,8 @@ function WeightedMembers({
 				<TableHeader>
 					<TableRow className="hover:bg-transparent">
 						<TableHead className="h-8 px-0 text-[11.5px] font-medium text-faint">账户</TableHead>
-						<TableHead className="h-8 text-[11.5px] font-medium text-faint">{shortHeader}</TableHead>
-						<TableHead className="h-8 text-[11.5px] font-medium text-faint">{longHeader}</TableHead>
+						{shortHeader ? <TableHead className="h-8 text-[11.5px] font-medium text-faint">{shortHeader}</TableHead> : null}
+						{longHeader ? <TableHead className="h-8 text-[11.5px] font-medium text-faint">{longHeader}</TableHead> : null}
 						<TableHead className="h-8 text-[11.5px] font-medium text-faint">{weighted ? "当前权重" : "当前分配"}</TableHead>
 						<TableHead className="h-8 text-[11.5px] font-medium text-faint">7 天实际占比</TableHead>
 						<TableHead className="h-8 text-[11.5px] font-medium text-faint">状态</TableHead>
@@ -291,12 +311,16 @@ function WeightedMembers({
 									</span>
 									<span className="block pl-4 text-[11.5px] text-faint">{memberMeta(member, quota, inGroup(member.id)?.rateLimited ?? (groupStats ? 0 : stats?.rateLimited))}</span>
 								</TableCell>
-								<TableCell>
-									<UsedCell now={now} window={short} />
-								</TableCell>
-								<TableCell>
-									<UsedCell now={now} window={long} />
-								</TableCell>
+								{shortHeader ? (
+									<TableCell>
+										<UsedCell now={now} window={short} />
+									</TableCell>
+								) : null}
+								{longHeader ? (
+									<TableCell>
+										<UsedCell now={now} window={long} />
+									</TableCell>
+								) : null}
 								<TableCell>
 									<span className="flex items-center gap-2">
 										<Meter className="w-20" color={seriesColor(0)} ratio={share} />
@@ -376,8 +400,8 @@ function FallbackOrder({
 					<TableRow className="hover:bg-transparent">
 						<TableHead className="h-8 w-12 px-0 text-[11.5px] font-medium text-faint">顺序</TableHead>
 						<TableHead className="h-8 text-[11.5px] font-medium text-faint">账户</TableHead>
-						<TableHead className="h-8 text-[11.5px] font-medium text-faint">{shortHeader}</TableHead>
-						<TableHead className="h-8 text-[11.5px] font-medium text-faint">{longHeader}</TableHead>
+						{shortHeader ? <TableHead className="h-8 text-[11.5px] font-medium text-faint">{shortHeader}</TableHead> : null}
+						{longHeader ? <TableHead className="h-8 text-[11.5px] font-medium text-faint">{longHeader}</TableHead> : null}
 						<TableHead className="h-8 text-[11.5px] font-medium text-faint">角色</TableHead>
 						<TableHead className="h-8 text-[11.5px] font-medium text-faint">状态</TableHead>
 					</TableRow>
@@ -401,12 +425,16 @@ function FallbackOrder({
 											.join(" · ")}
 									</span>
 								</TableCell>
-								<TableCell>
-									<UsedCell now={now} window={short} />
-								</TableCell>
-								<TableCell>
-									<UsedCell now={now} window={long} />
-								</TableCell>
+								{shortHeader ? (
+									<TableCell>
+										<UsedCell now={now} window={short} />
+									</TableCell>
+								) : null}
+								{longHeader ? (
+									<TableCell>
+										<UsedCell now={now} window={long} />
+									</TableCell>
+								) : null}
 								<TableCell className="text-muted-foreground">{index === 0 ? "首选账户" : "首选不可用时切换"}</TableCell>
 								<TableCell>{available ? <Tag tone="success">可用</Tag> : <Tag tone="danger">不可用</Tag>}</TableCell>
 							</TableRow>
