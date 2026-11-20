@@ -7,6 +7,7 @@ use super::{
     chatgpt_proxy::{ChatgptProxy, ChatgptTransport},
     config::ConfigStore,
     console_security::LoginThrottle,
+    live::LiveHub,
     session_store::SessionStore,
     usage::UsageStore,
 };
@@ -19,6 +20,8 @@ pub struct AppState {
     pub usage: UsageStore,
     pub account_router: AccountRouter,
     pub sessions: SessionStore,
+    /// Connections currently being proxied, for the console's live view.
+    pub live: LiveHub,
     pub login_throttle: Arc<LoginThrottle>,
     /// Serializes console sign-in with credential changes, so a sign-in can
     /// never observe a credential that is being disabled, deleted, or rotated.
@@ -66,6 +69,7 @@ impl AppState {
             usage,
             account_router,
             sessions,
+            live: LiveHub::default(),
             login_throttle: Arc::default(),
             credential_lock: Arc::default(),
         })

@@ -11,7 +11,8 @@ import { Button } from "@/components/ui/button";
 
 /** 调用日志: every request with filters, summary, session grouping and details. */
 export default function LogsPage() {
-	const { api, state, pricing, params, now, reportError } = useAdmin();
+	const { api, state, pricing, params, now, reportError, live } = useAdmin();
+	const pushTick = live.connected ? live.usageTick : undefined;
 	const search = params.toString();
 
 	const source = useMemo<LogsDataSource>(
@@ -21,8 +22,9 @@ export default function LogsPage() {
 			getEvents: (query: EventPageQuery, signal: AbortSignal) => api.getEvents(query, signal),
 			eventsCsvUrl: (query: EventPageQuery) => api.eventsCsvUrl(query),
 			onSessionExpired: () => reportError(new AdminSessionExpiredError(), ""),
+			...(pushTick !== undefined ? { pushTick } : {}),
 		}),
-		[api, reportError, state],
+		[api, pushTick, reportError, state],
 	);
 
 	const options = useMemo<FilterOptions>(

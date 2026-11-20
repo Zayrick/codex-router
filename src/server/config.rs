@@ -389,6 +389,8 @@ pub struct PersistentState {
 pub struct ConfigStore {
     path: PathBuf,
     config: RwLock<AppConfig>,
+    /// Increments after every persisted change.
+    revision: tokio::sync::watch::Sender<u64>,
 }
 
 impl ConfigStore {
@@ -410,7 +412,13 @@ impl ConfigStore {
         Ok(Arc::new(Self {
             path,
             config: RwLock::new(config),
+            revision: tokio::sync::watch::Sender::new(0),
         }))
+    }
+
+    /// Notifies after every persisted change to the configuration or stored state.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revision.subscribe()
     }
 
     pub async fn snapshot(&self) -> AppConfig {
@@ -529,6 +537,9 @@ impl ConfigStore {
             .await
             .map_err(|_| config_write_error())?;
         *current = next;
+        drop(current);
+        self.revision
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
         Ok(result)
     }
 }

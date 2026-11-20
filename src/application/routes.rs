@@ -132,6 +132,8 @@ pub enum AdminRoute {
     UsageAnalytics,
     UsageEvents,
     UsageLastSeen,
+    /// Server-Sent Events: live connections and change signals.
+    Live,
     Quota,
     NotificationTest,
     SettingsGet,
@@ -237,6 +239,7 @@ fn match_admin_api(method: &str, relative: &str) -> Option<AdminRoute> {
         ("GET", "usage/analytics") => AdminRoute::UsageAnalytics,
         ("GET", "usage/events") => AdminRoute::UsageEvents,
         ("GET", "usage/last-seen") => AdminRoute::UsageLastSeen,
+        ("GET", "live") => AdminRoute::Live,
         ("GET", "quota") => AdminRoute::Quota,
         ("POST", "settings/notifications/test") => AdminRoute::NotificationTest,
         ("GET", "settings") => AdminRoute::SettingsGet,

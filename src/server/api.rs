@@ -34,11 +34,12 @@ struct UsageSource {
 impl UsageSource {
     fn tracker(self, state: &AppState, endpoint: &str, websocket: bool) -> UsageTracker {
         let store = state.usage.clone();
-        if websocket {
+        let tracker = if websocket {
             UsageTracker::websocket(store, self.identity, self.client, endpoint)
         } else {
             UsageTracker::http(store, self.identity, self.client, endpoint)
-        }
+        };
+        tracker.track_live(&state.live)
     }
 }
 

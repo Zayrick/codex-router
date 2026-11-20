@@ -5,6 +5,7 @@ import { ActivityCard } from "@/admin/overview/activity";
 import { AttentionCard, ResourcesCard } from "@/admin/overview/attention";
 import { useOverviewData } from "@/admin/overview/data";
 import { FailuresCard, WeekActivityCard, WeekHealthCard } from "@/admin/overview/history";
+import { LiveConnectionsCard } from "@/admin/overview/live";
 import { IdentitiesCard, QuotaRiskCard } from "@/admin/overview/quota";
 import { KpiRow, StatusStrip } from "@/admin/overview/summary";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -24,6 +25,7 @@ export default function OverviewPage() {
 			) : null}
 			<StatusStrip data={data} />
 			<KpiRow data={data} />
+			<LiveConnectionsCard />
 			<div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
 				<ActivityCard data={data} />
 				<AttentionCard data={data} />

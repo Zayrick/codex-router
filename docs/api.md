@@ -448,6 +448,7 @@ API Key 鉴权的 Codex Responses 请求，以及按账户 ID 转发的 Codex Re
 | `GET /usage/analytics` | 用量分析聚合，见第 12 节 |
 | `GET /usage/events` | 分页调用日志、会话分组与 CSV 导出，见第 12 节 |
 | `GET /quota` | 各账户缓存的额度快照与耗尽预测；`?refresh=1` 先立即采样全部启用账户 |
+| `GET /live` | Server-Sent Events 实时流，见下文 |
 | `GET /pricing` | 读取模型价格、已使用模型与上次同步状态 `sync` |
 | `PUT /pricing` | 替换模型价格配置 |
 | `POST /pricing/sync` | 从价格源同步模型价格，并记录同步状态 |
@@ -458,6 +459,33 @@ API Key 鉴权的 Codex Responses 请求，以及按账户 ID 转发的 Codex Re
 | `POST /users` | 创建用户，默认不分配路由 |
 | `PUT /users` | 整体更新用户的名称、启用状态与凭据列表 |
 | `DELETE /users` | 删除用户及其全部凭据，并释放其路由 |
+
+`GET /live` 返回 `text/event-stream`。连接建立时和每次变化后（500 ms 内的变化合并为一次）发送
+`snapshot` 事件，空闲时每 15 秒发送注释心跳；每条流最长保持 60 秒后由服务端结束，浏览器按
+`retry: 3000` 自动重连并重新校验会话。事件数据形如：
+
+```json
+{
+  "at": 1795160511522,
+  "usageVersion": 12,
+  "stateVersion": 3,
+  "connections": [
+    {
+      "id": 7, "transport": "websocket", "endpoint": "/v1/responses",
+      "userId": "…", "userName": "张三", "credentialType": "api_key", "credentialId": "…", "credentialName": "laptop",
+      "codexAccountId": "…", "codexAccountName": "a@example.com", "accountGroupId": "…", "accountGroupName": "主力池",
+      "clientIp": "203.0.113.5", "userAgent": "codex_cli_rs/…", "model": "gpt-5",
+      "startedAt": 1795160400000, "lastActivityAt": 1795160510000, "active": true, "requests": 4
+    }
+  ]
+}
+```
+
+- `connections`：正在代理的已路由请求。HTTP 请求从路由完成持续到响应体结束；WebSocket 从握手持续到任一端关闭，
+  `active` 表示当前是否有响应在生成（轮次之间为空闲），`requests` 为该连接上发起的响应数。直连账户时
+  `accountGroupId` 为空。未经路由替换凭据的中继请求不计入。
+- `usageVersion`：每写入一条用量记录递增；`stateVersion`：每次配置或存储状态（用户、账户、路由、额度快照、OAuth）
+  写入后递增。两者在进程重启后从 0 开始，客户端只需比较是否变化。
 
 用户正文形如：
 

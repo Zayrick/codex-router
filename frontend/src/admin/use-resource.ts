@@ -12,12 +12,13 @@ export interface Resource<T> {
 
 /**
  * Loads data with abort-on-change. Keeps the previous data while reloading so
- * views do not flash; `refreshMs` polls while the tab is visible.
+ * views do not flash; `refreshMs` polls while the tab is visible, and a
+ * changed `refreshKey` (for example a pushed data version) reloads once.
  */
 export function useResource<T>(
 	load: (signal: AbortSignal) => Promise<T>,
 	deps: readonly unknown[],
-	options: { refreshMs?: number; onSessionExpired?: () => void; enabled?: boolean } = {},
+	options: { refreshMs?: number; refreshKey?: unknown; onSessionExpired?: () => void; enabled?: boolean } = {},
 ): Resource<T> {
 	const [data, setData] = useState<T | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -65,6 +66,12 @@ export function useResource<T>(
 		}, options.refreshMs);
 		return () => window.clearInterval(timer);
 	}, [options.refreshMs, enabled]);
+
+	const [seenKey, setSeenKey] = useState(options.refreshKey);
+	if (seenKey !== options.refreshKey) {
+		setSeenKey(options.refreshKey);
+		setVersion((value) => value + 1);
+	}
 
 	const reload = useCallback(() => setVersion((value) => value + 1), []);
 	return { data, error, loading, reload };

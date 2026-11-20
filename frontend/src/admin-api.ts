@@ -59,6 +59,42 @@ export interface CodexCredentialImport {
 	credentials: Record<string, unknown>;
 }
 
+/** A request or WebSocket being proxied right now (`GET /admin/api/live`). */
+export interface LiveConnection {
+	id: number;
+	transport: "http" | "websocket";
+	endpoint: string;
+	userId: string;
+	userName: string;
+	credentialType: CredentialType;
+	credentialId: string;
+	credentialName: string;
+	codexAccountId: string;
+	codexAccountName: string;
+	/** Empty when the user is routed to the account directly. */
+	accountGroupId: string;
+	accountGroupName: string;
+	clientIp: string;
+	userAgent: string;
+	model: string;
+	startedAt: number;
+	lastActivityAt: number;
+	/** A response is being generated; WebSockets are idle between turns. */
+	active: boolean;
+	/** Responses started on this connection. */
+	requests: number;
+}
+
+/** One `snapshot` event of the live stream. */
+export interface LiveSnapshot {
+	at: number;
+	/** Changes whenever a usage row is written. */
+	usageVersion: number;
+	/** Changes whenever configuration or stored state (users, accounts, quota) is written. */
+	stateVersion: number;
+	connections: LiveConnection[];
+}
+
 /** API key, or the ChatGPT account id of a client relaying its own sign-in. */
 export type CredentialType = "api_key" | "account_id";
 
@@ -817,6 +853,11 @@ export class AdminApiClient {
 			"/settings",
 			jsonRequest("PUT", settings),
 		);
+	}
+
+	/** Server-Sent Events stream of {@link LiveSnapshot}s. */
+	liveUrl(): string {
+		return `${this.basePath}/live`;
 	}
 
 	async getCodexAccountSubscription(id: string): Promise<SubscriptionInfo> {

@@ -52,6 +52,8 @@ export interface LogsDataSource {
 	getEvents: (query: EventPageQuery, signal: AbortSignal) => Promise<UsageEventPage>;
 	eventsCsvUrl: (query: EventPageQuery) => string;
 	onSessionExpired: () => void;
+	/** Changes when new usage is pushed; while defined it replaces polling. */
+	pushTick?: number;
 }
 
 /**
@@ -101,14 +103,21 @@ export function LogsView({
 		setActiveSaved(null);
 	}
 
-	// The 1-hour range slides with live refreshes.
+	const pushTick = source.pushTick;
+	const pushed = pushTick !== undefined;
+	// The 1-hour range slides with live refreshes: on pushed usage, or by polling.
 	useEffect(() => {
-		if (!live || filters.range !== "1h") return;
+		if (!live || filters.range !== "1h" || pushTick === undefined) return;
+		const timer = window.setTimeout(() => setAnchor(Date.now()), 0);
+		return () => window.clearTimeout(timer);
+	}, [filters.range, live, pushTick]);
+	useEffect(() => {
+		if (!live || filters.range !== "1h" || pushed) return;
 		const timer = window.setInterval(() => {
 			if (!document.hidden) setAnchor(Date.now());
 		}, LIVE_REFRESH_MS);
 		return () => window.clearInterval(timer);
-	}, [filters.range, live]);
+	}, [filters.range, live, pushed]);
 
 	const range = useMemo(() => resolveRange(filters, anchor), [anchor, filters]);
 	const baseQuery = useMemo(() => buildQuery(filters, range, { view, limit: PAGE_SIZE, grouped }), [filters, grouped, range, view]);
@@ -127,7 +136,7 @@ export function LogsView({
 		revision: source.revision,
 		onSessionExpired: source.onSessionExpired,
 		onError: (message) => toast.error(message),
-		...(live && filters.range !== "1h" ? { refreshMs: LIVE_REFRESH_MS } : {}),
+		...(live && filters.range !== "1h" ? (pushed ? { refreshKey: pushTick } : { refreshMs: LIVE_REFRESH_MS }) : {}),
 	});
 	const data = page.page;
 	const events = page.events;
@@ -185,6 +194,7 @@ export function LogsView({
 				counts={data?.views ?? null}
 				filters={filters}
 				live={live}
+				pushed={pushed}
 				loading={page.loading}
 				onApplySavedView={(saved) => {
 					setFilters(saved.filters);

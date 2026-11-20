@@ -25,13 +25,14 @@ export interface LogsData {
 export function useLogs(
 	getEvents: (query: EventPageQuery, signal: AbortSignal) => Promise<UsageEventPage>,
 	query: EventPageQuery,
-	options: { refreshMs?: number; revision?: unknown; onSessionExpired: () => void; onError?: (message: string) => void },
+	options: { refreshMs?: number; refreshKey?: unknown; revision?: unknown; onSessionExpired: () => void; onError?: (message: string) => void },
 ): LogsData {
 	const key = JSON.stringify(query);
 	const revision = options.revision;
 	const first = useResource((signal) => getEvents({ ...query, offset: 0, limit: PAGE_SIZE }, signal), [key, revision], {
 		onSessionExpired: options.onSessionExpired,
 		...(options.refreshMs ? { refreshMs: options.refreshMs } : {}),
+		...(options.refreshKey !== undefined ? { refreshKey: options.refreshKey } : {}),
 	});
 	const [more, setMore] = useState<{ key: string; revision: unknown; pages: UsageEventPage[] }>({ key, revision, pages: [] });
 	const [loadingMore, setLoadingMore] = useState(false);

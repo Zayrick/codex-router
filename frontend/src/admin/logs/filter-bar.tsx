@@ -69,6 +69,7 @@ export function LogFilterBar({
 	options,
 	range,
 	live,
+	pushed = false,
 	onLiveChange,
 	onRefresh,
 	loading,
@@ -87,6 +88,8 @@ export function LogFilterBar({
 	options: FilterOptions;
 	range: ResolvedRange;
 	live: boolean;
+	/** New requests are pushed by the server instead of polled. */
+	pushed?: boolean;
 	onLiveChange: (live: boolean) => void;
 	onRefresh: () => void;
 	loading: boolean;
@@ -184,7 +187,7 @@ export function LogFilterBar({
 					<span className="text-[12.5px] leading-5 font-medium tabular-nums">{rangeCaption(range)}</span>
 					<span className="text-[11px] leading-4 text-faint">
 						{Intl.DateTimeFormat().resolvedOptions().timeZone}
-						{live ? " · 每 10 秒刷新" : ""}
+						{live ? (pushed ? " · 实时推送" : " · 每 10 秒刷新") : ""}
 					</span>
 				</div>
 				<label className="flex items-center gap-2 px-2 text-[12.5px] font-medium">

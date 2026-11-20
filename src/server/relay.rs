@@ -142,7 +142,7 @@ async fn forward_relay(
         .filter(|_| is_codex_usage_path(client_url.path()))
         .map(|replacement| {
             let client = UsageClient::from_request(&parts.extensions, &parts.headers, config);
-            if upgrade.is_some() {
+            let tracker = if upgrade.is_some() {
                 UsageTracker::websocket(
                     state.usage.clone(),
                     replacement.identity.clone(),
@@ -156,7 +156,8 @@ async fn forward_relay(
                     client,
                     client_url.path(),
                 )
-            }
+            };
+            tracker.track_live(&state.live)
         });
     let routed_account_id = replacement.map(|replacement| replacement.account_id.clone());
     if let Some(upgrade) = upgrade {

@@ -20,6 +20,7 @@ use crate::{
 };
 
 use super::{
+    live::{LiveConnection, LiveConnectionGuard, LiveHub},
     oauth::current_time_ms,
     pricing::{ModelPrice, calculate_cost, price_index},
     usage_client::{SessionKind, UsageClient},
@@ -341,6 +342,8 @@ impl Outcome {
 pub struct UsageStore {
     connection: Arc<Mutex<Connection>>,
     path: Arc<PathBuf>,
+    /// Increments after every usage row is written.
+    recorded: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 impl UsageStore {
@@ -373,6 +376,7 @@ impl UsageStore {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(path),
+            recorded: Arc::new(tokio::sync::watch::Sender::new(0)),
         })
     }
 
@@ -380,17 +384,35 @@ impl UsageStore {
         self.path.as_ref()
     }
 
+    /// Notifies after every usage row is written.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.recorded.subscribe()
+    }
+
+    fn notify_recorded(&self) {
+        self.recorded
+            .send_modify(|version| *version = version.wrapping_add(1));
+    }
+
     /// Persists without blocking the caller; falls back to a direct write outside a runtime.
     fn record(&self, event: UsageEvent) {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let store = self.clone();
             runtime.spawn(async move {
-                if let Err(error) = store.insert(event).await {
-                    tracing::warn!(event = "usage_record", status = "failed", error = %error);
+                match store.insert(event).await {
+                    Ok(()) => store.notify_recorded(),
+                    Err(error) => {
+                        tracing::warn!(event = "usage_record", status = "failed", error = %error);
+                    }
                 }
             });
-        } else if let Err(error) = insert_event(&self.lock(), &event) {
-            tracing::warn!(event = "usage_record", status = "failed", error = %error);
+        } else {
+            match insert_event(&self.lock(), &event) {
+                Ok(()) => self.notify_recorded(),
+                Err(error) => {
+                    tracing::warn!(event = "usage_record", status = "failed", error = %error);
+                }
+            }
         }
     }
 
@@ -648,6 +670,8 @@ struct TrackerState {
     /// Set when a converted protocol decides streaming instead of the upstream body.
     client_stream: Option<bool>,
     attempt: Option<Attempt>,
+    /// Lists the connection in the console's live view until the tracker drops.
+    live: Option<LiveConnectionGuard>,
 }
 
 /// Request-side attributes copied onto every usage event recorded by a tracker.
@@ -789,6 +813,41 @@ impl UsageTracker {
         }
     }
 
+    /// Lists this connection in the console's live view until the last clone drops.
+    pub fn track_live(self, hub: &LiveHub) -> Self {
+        let inner = &self.inner;
+        let identity = &inner.identity;
+        let now = current_time_ms();
+        let guard = hub.register(LiveConnection {
+            id: 0,
+            transport: inner.transport.as_str(),
+            endpoint: inner.endpoint.clone(),
+            user_id: identity.user_id.clone(),
+            user_name: identity.user_name.clone(),
+            credential_type: identity.credential_type,
+            credential_id: identity.credential_id.clone(),
+            credential_name: identity.credential_name.clone(),
+            codex_account_id: identity.codex_account_id.clone(),
+            codex_account_name: identity.codex_account_name.clone(),
+            account_group_id: identity.account_group_id.clone(),
+            account_group_name: identity.account_group_name.clone(),
+            client_ip: inner.client.ip.clone(),
+            user_agent: inner.client.user_agent.clone(),
+            model: String::new(),
+            started_at: now,
+            last_activity_at: now,
+            active: false,
+            requests: 0,
+        });
+        let mut state = self.state();
+        if state.attempt.is_some() {
+            guard.response_started(&state.request.model);
+        }
+        state.live = Some(guard);
+        drop(state);
+        self
+    }
+
     fn state(&self) -> MutexGuard<'_, TrackerState> {
         self.inner
             .state
@@ -810,7 +869,8 @@ impl UsageTracker {
         }
         let request = UsageRequest::from_body(object);
         let mut state = self.state();
-        if self.inner.transport == Transport::WebSocket {
+        let started = self.inner.transport == Transport::WebSocket;
+        if started {
             if let Some(previous) = state.attempt.take() {
                 let outcome = Outcome::new(STATUS_CANCELLED, "superseded");
                 let event = self.inner.event(&state, previous, outcome);
@@ -823,13 +883,24 @@ impl UsageTracker {
             if let Some(model) = request.model {
                 state.request.model = model;
             }
-            return;
+        } else {
+            state.request.apply(request);
         }
-        state.request.apply(request);
+        if let Some(live) = &state.live {
+            if started {
+                live.response_started(&state.request.model);
+            } else {
+                live.model_known(&state.request.model);
+            }
+        }
     }
 
     pub fn record_request(&self, request: UsageRequest) {
-        self.state().request.apply(request);
+        let mut state = self.state();
+        state.request.apply(request);
+        if let Some(live) = &state.live {
+            live.model_known(&state.request.model);
+        }
     }
 
     pub fn observe_request_text(&self, text: &str) {
@@ -854,6 +925,9 @@ impl UsageTracker {
     pub fn fail(&self, error: &ApiError) {
         let mut state = self.state();
         let attempt = state.attempt.take().unwrap_or_else(Attempt::start);
+        if let Some(live) = &state.live {
+            live.response_finished();
+        }
         let outcome = Outcome {
             status: STATUS_FAILED,
             status_code: Some(error.status),
@@ -914,6 +988,9 @@ impl UsageTracker {
         let Some(attempt) = state.attempt.take() else {
             return;
         };
+        if let Some(live) = &state.live {
+            live.response_finished();
+        }
         let event = self.inner.event(&state, attempt, outcome);
         drop(state);
         self.inner.store.record(event);

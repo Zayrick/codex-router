@@ -30,9 +30,9 @@ export function useOverviewData(now: number): OverviewData {
 		{ range: "custom", startAt: midnight - 6 * DAY_MS, endAt: midnight + DAY_MS, bucketMinutes: 60 },
 		{ refreshMs: OVERVIEW_REFRESH_MS },
 	);
-	// `now` ticks every 30 s, so these rolling windows refetch on their own.
-	const lastHour = useAnalytics({ range: "custom", startAt: minute - HOUR_MS, endAt: minute, bucketMinutes: 5 });
-	const lastQuarter = useAnalytics({ range: "custom", startAt: minute - 15 * MINUTE_MS, endAt: minute, bucketMinutes: 15 });
+	// `now` ticks every 30 s, so these rolling windows also move on their own.
+	const lastHour = useAnalytics({ range: "custom", startAt: minute - HOUR_MS, endAt: minute, bucketMinutes: 5 }, { refreshMs: OVERVIEW_REFRESH_MS });
+	const lastQuarter = useAnalytics({ range: "custom", startAt: minute - 15 * MINUTE_MS, endAt: minute, bucketMinutes: 15 }, { refreshMs: OVERVIEW_REFRESH_MS });
 	const resources = [today, yesterday, week, lastHour, lastQuarter];
 	return {
 		today: today.data,

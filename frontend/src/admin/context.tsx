@@ -15,6 +15,7 @@ import {
 	type CodexAccountDeviceAuthorization,
 	type CodexAccountUpdate,
 	type CodexCredentialImport,
+	type LiveConnection,
 	type ModelPrice,
 	type NotificationChannel,
 	type PricingSyncStatus,
@@ -27,10 +28,24 @@ import { CONSOLE_API_BASE, signOut } from "@/session-api";
 
 import { CredentialImportDialog, DeviceLoginDialog, UserEditor } from "./dialogs";
 import { replaceUserRoute, routeTargetValue, userRoute, type RouteTargetSelection } from "./routing-model";
+import { useLiveStream, useThrottledTick } from "./live";
 import { errorMessage, type InitialData } from "./load";
 import { pageFromSearch, type ManagementPage } from "./pages";
 
 const QUOTA_REFRESH_MS = 60_000;
+/** Pushed changes refetch data at most this often. */
+const LIVE_REFETCH_MS = 5_000;
+
+export interface LiveState {
+	/** The live stream is up; views refetch on pushed changes instead of polling. */
+	connected: boolean;
+	/** Requests and WebSockets being proxied right now. */
+	connections: LiveConnection[];
+	/** Server time of the latest snapshot. */
+	at: number | null;
+	/** Increments (throttled) when new usage was recorded. */
+	usageTick: number;
+}
 
 export interface PricingState {
 	prices: ModelPrice[];
@@ -45,6 +60,7 @@ export interface AdminContextValue {
 	pricing: PricingState;
 	/** Cached quota snapshots with forecasts; null until loaded. */
 	quota: QuotaOverview | null;
+	live: LiveState;
 	/** Wall clock refreshed every 30 s. */
 	now: number;
 	page: ManagementPage;
@@ -188,7 +204,8 @@ export function AdminProvider({
 	const refreshState = useCallback(async () => {
 		try {
 			const next = await api.getState();
-			if (mounted.current) setState(next);
+			// Keep unchanged parts by reference so dependent views do not refetch.
+			if (mounted.current) setState((current) => preserveUnchanged(current, next));
 		} catch (error) {
 			reportError(error, "读取管理状态失败。");
 		}
@@ -209,17 +226,45 @@ export function AdminProvider({
 		[api, reportError],
 	);
 
+	const liveStream = useLiveStream(api.liveUrl(), () => void refreshState());
+	const liveConnected = liveStream.connected;
+	const usageTick = useThrottledTick(liveStream.snapshot?.usageVersion, LIVE_REFETCH_MS);
+	const stateTick = useThrottledTick(liveStream.snapshot?.stateVersion, LIVE_REFETCH_MS);
+
 	useEffect(() => {
-		// Load once on mount (outside the effect's synchronous phase), then poll.
+		// Load once on mount (outside the effect's synchronous phase).
 		const first = window.setTimeout(() => void refreshQuota(), 0);
+		return () => window.clearTimeout(first);
+	}, [refreshQuota]);
+
+	useEffect(() => {
+		// Poll only while the live stream is down; otherwise pushed changes refresh.
+		if (liveConnected) return;
 		const timer = window.setInterval(() => {
 			if (!document.hidden) void refreshQuota();
 		}, QUOTA_REFRESH_MS);
-		return () => {
-			window.clearTimeout(first);
-			window.clearInterval(timer);
-		};
-	}, [refreshQuota]);
+		return () => window.clearInterval(timer);
+	}, [liveConnected, refreshQuota]);
+
+	useEffect(() => {
+		if (stateTick === 0) return;
+		// Pushed state change: reload outside the effect's synchronous phase.
+		const timer = window.setTimeout(() => {
+			void refreshState();
+			void refreshQuota();
+		}, 0);
+		return () => window.clearTimeout(timer);
+	}, [stateTick, refreshState, refreshQuota]);
+
+	const live = useMemo<LiveState>(
+		() => ({
+			connected: liveConnected,
+			connections: liveStream.snapshot?.connections ?? [],
+			at: liveStream.snapshot?.at ?? null,
+			usageTick,
+		}),
+		[liveConnected, liveStream.snapshot, usageTick],
+	);
 
 	const logout = useCallback(async () => {
 		try {
@@ -501,6 +546,7 @@ export function AdminProvider({
 		settings,
 		pricing,
 		quota,
+		live,
 		now,
 		page: location.page,
 		params: new URLSearchParams(location.search),
@@ -557,3 +603,15 @@ export function AdminProvider({
 	);
 }
 
+
+/** `next`, reusing the parts of `current` whose content did not change. */
+function preserveUnchanged(current: AdminState, next: AdminState): AdminState {
+	const merged = { ...next } as Record<string, unknown>;
+	const previous = current as unknown as Record<string, unknown>;
+	let same = true;
+	for (const key of Object.keys(merged)) {
+		if (JSON.stringify(previous[key]) === JSON.stringify(merged[key])) merged[key] = previous[key];
+		else same = false;
+	}
+	return same && Object.keys(previous).length === Object.keys(merged).length ? current : (merged as unknown as AdminState);
+}

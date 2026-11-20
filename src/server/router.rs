@@ -513,6 +513,36 @@ mod tests {
         .await;
         assert_eq!(user_view.status(), StatusCode::FORBIDDEN);
 
+        // The live view streams Server-Sent Events, starting with a snapshot.
+        let live = send(
+            &app,
+            Request::get("/admin/api/live").header("cookie", &admin_cookie),
+        )
+        .await;
+        assert_eq!(live.status(), StatusCode::OK);
+        assert!(
+            live.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/event-stream")
+        );
+        let mut frames = live.into_body().into_data_stream();
+        use futures_util::StreamExt;
+        let retry = frames.next().await.unwrap().unwrap();
+        assert!(retry.starts_with(b"retry: "));
+        let snapshot = String::from_utf8(frames.next().await.unwrap().unwrap().to_vec()).unwrap();
+        assert!(snapshot.starts_with("event: snapshot\ndata: {"));
+        assert!(snapshot.contains("\"connections\":[]"));
+        let user_live = send(
+            &app,
+            Request::get("/admin/api/live").header(
+                "cookie",
+                &session_cookie(&sign_in(&app, "sk-test-value-123!").await),
+            ),
+        )
+        .await;
+        assert_eq!(user_live.status(), StatusCode::FORBIDDEN);
+
         // Disabling a key ends its sessions, and re-enabling does not revive them.
         let user = sign_in(&app, "sk-test-value-123!").await;
         let user_cookie = session_cookie(&user);

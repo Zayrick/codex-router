@@ -20,6 +20,7 @@ use super::{
     body,
     codex::CodexClient,
     config::{AdminSettings, AppConfig, PRICING_SYNC_KEY},
+    live,
     oauth::{ReqwestOAuthHttpClient, SystemClock, current_time_ms},
     pricing::{ModelPrice, sync_model_prices},
     quota::quota_overview,
@@ -188,6 +189,7 @@ async fn dispatch(
             })?;
             response::json(&last_seen, 200)
         }
+        AdminRoute::Live => Ok(live::stream(state)),
         AdminRoute::UsageEvents => {
             usage_api::events(client_url, AnalyticsScope::Admin, config, state).await
         }
