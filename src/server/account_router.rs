@@ -62,7 +62,10 @@ enum QuotaHealth {
 #[derive(Debug, Clone, Copy)]
 struct AccountQuotaState {
     health: QuotaHealth,
+    /// Remaining percent per remaining minute, averaged over Codex windows.
     average_ratio: Option<f64>,
+    /// Relative absolute capacity of the account's plan (Plus = 1).
+    plan_multiplier: f64,
 }
 
 impl AccountRouter {
@@ -391,10 +394,20 @@ fn quota_weights(
         .iter()
         .map(|account| match quota.get(&account.id) {
             Some(state) if state.health == QuotaHealth::Exhausted => 0.0,
-            Some(state) => state.average_ratio.unwrap_or(neutral),
+            Some(state) => state.average_ratio.unwrap_or(neutral) * state.plan_multiplier,
             None => neutral,
         })
         .collect()
+}
+
+/// Percent-based quota windows hide absolute capacity, so scale by plan size:
+/// Pro ($200) is 20x Plus, Pro Lite ($100) is 5x Plus.
+fn plan_multiplier(plan_type: Option<&str>) -> f64 {
+    match plan_type.map(str::trim) {
+        Some("pro") => 20.0,
+        Some(plan) if plan == "prolite" || plan.ends_with("_prolite") => 5.0,
+        _ => 1.0,
+    }
 }
 
 fn select_smooth_weighted(
@@ -455,6 +468,7 @@ fn account_quota_state_from_live(subscription: &CodexSubscriptionInfo) -> Accoun
             limit_reached: window.limit_reached,
         }),
         subscription.fetched_at,
+        subscription.plan_type.as_deref(),
     )
 }
 
@@ -468,12 +482,14 @@ fn account_quota_state_from_cached(snapshot: &CodexUsageMonitorState) -> Account
             limit_reached: window.limit_reached,
         }),
         snapshot.sampled_at as f64,
+        snapshot.plan_type.as_deref(),
     )
 }
 
 fn account_quota_state(
     samples: impl Iterator<Item = QuotaWindowSample>,
     sampled_at: f64,
+    plan_type: Option<&str>,
 ) -> AccountQuotaState {
     let mut saw_codex_window = false;
     let mut saw_available_signal = false;
@@ -518,6 +534,7 @@ fn account_quota_state(
     AccountQuotaState {
         health,
         average_ratio,
+        plan_multiplier: plan_multiplier(plan_type),
     }
 }
 
@@ -677,6 +694,7 @@ mod tests {
             }]
             .into_iter(),
             sampled_at,
+            None,
         );
         let second = account_quota_state(
             [QuotaWindowSample {
@@ -688,9 +706,45 @@ mod tests {
             }]
             .into_iter(),
             sampled_at,
+            None,
         );
         assert!((first.average_ratio.unwrap() - 10.0 / 120.0).abs() < 0.000_001);
         assert!((second.average_ratio.unwrap() - 5.0 / 180.0).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn quota_weight_scales_by_plan_capacity() {
+        let pro = account("00000000-0000-4000-8000-000000000001");
+        let pro_lite = account("00000000-0000-4000-8000-000000000002");
+        let plus = account("00000000-0000-4000-8000-000000000003");
+        let unknown = account("00000000-0000-4000-8000-000000000004");
+        let sampled_at = 1_000_000.0;
+        let state = |plan: &str| {
+            account_quota_state(
+                [QuotaWindowSample {
+                    category: CodexQuotaCategory::Codex,
+                    remaining_percent: Some(50.0),
+                    reset_at: Some(sampled_at + 60.0 * 60_000.0),
+                    allowed: Some(true),
+                    limit_reached: false,
+                }]
+                .into_iter(),
+                sampled_at,
+                Some(plan),
+            )
+        };
+        let quota = HashMap::from([
+            (pro.id.clone(), state("pro")),
+            (pro_lite.id.clone(), state("prolite")),
+            (plus.id.clone(), state("plus")),
+        ]);
+        let weights = quota_weights(&quota, &[pro, pro_lite, plus, unknown]);
+        let unit = 50.0 / 60.0;
+        assert!((weights[0] - 20.0 * unit).abs() < 0.000_001);
+        assert!((weights[1] - 5.0 * unit).abs() < 0.000_001);
+        assert!((weights[2] - unit).abs() < 0.000_001);
+        assert!((weights[3] - unit).abs() < 0.000_001);
+        assert_eq!(plan_multiplier(Some("self_serve_business_prolite")), 5.0);
     }
 
     #[test]
@@ -746,6 +800,7 @@ mod tests {
                 AccountQuotaState {
                     health: QuotaHealth::Exhausted,
                     average_ratio: None,
+                    plan_multiplier: 1.0,
                 },
             )
             .await;
@@ -756,6 +811,7 @@ mod tests {
                 AccountQuotaState {
                     health: QuotaHealth::Available,
                     average_ratio: Some(1.0),
+                    plan_multiplier: 1.0,
                 },
             )
             .await;

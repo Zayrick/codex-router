@@ -82,7 +82,7 @@ curl http://127.0.0.1:8787/v1/messages/count_tokens \
 账户组支持三种策略：
 
 - `round-robin`：按顺序平均轮询；
-- `weighted-round-robin`：根据账户剩余额度和刷新时间平滑加权；
+- `weighted-round-robin`：根据账户剩余额度、刷新时间和套餐容量（Pro 20x、Pro Lite 5x、其余 1x）平滑加权；
 - `fallback`：为每个用户固定账户，并在账户不可用时切换。
 
 前两种策略支持 session affinity，TTL 接受 `30m`、`1h`、`7d` 等时长或 `unlimited`。禁用账户会

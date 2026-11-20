@@ -125,7 +125,8 @@ enabled = true
 和不带 `userId` 的路由不再读取，启动时会被丢弃，需要在“用户”页重新录入。
 
 `strategy` 可设为 `round-robin`、`weighted-round-robin` 或 `fallback`。加权轮询的权重无需手工配置，
-由每账户额度快照中各 Codex 窗口的平均“剩余百分比 ÷ 距离刷新剩余分钟”计算。`round-robin` 和
+由每账户额度快照中各 Codex 窗口的平均“剩余百分比 ÷ 距离刷新剩余分钟”乘以套餐倍率计算
+（`pro` 为 20，`prolite` 及 `*_prolite` 为 5，其余为 1）。`round-robin` 和
 `weighted-round-robin` 可配置 `sessionAffinity` 与 TTL；`fallback` 按用户固定账户。
 
 `server.maintenance_interval_seconds` 控制 OAuth 与额度巡检间隔，默认值为 300 秒。

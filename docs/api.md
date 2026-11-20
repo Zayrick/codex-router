@@ -107,7 +107,8 @@ Codex OAuth 替换原请求中已有的 `Authorization` 和 `ChatGPT-Account-ID`
 
 - `round-robin`：按稳定账户顺序平均轮询；
 - `weighted-round-robin`：按 Codex 额度窗口的平均
-  `remainingPercent / 距离 resetAt 的剩余分钟` 平滑加权，未知额度按组内平均权重处理；
+  `remainingPercent / 距离 resetAt 的剩余分钟` 再乘以套餐倍率（`pro` 20、`prolite`/`*_prolite` 5、其余 1）
+  平滑加权，未知额度按组内平均权重处理；
 - `fallback`：按用户固定账户（同一用户的所有凭据共用），并在该账户不可用时切换。
 
 `round-robin` 和 `weighted-round-robin` 支持 `sessionAffinity` 与 `sessionAffinityTtl`。TTL 接受
