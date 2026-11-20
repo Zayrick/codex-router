@@ -15,7 +15,7 @@ use crate::{
     protocol::{anthropic, gemini, openai},
 };
 
-use super::usage::UsageTracker;
+use super::{response::tracked_body_bytes, usage::UsageTracker};
 
 pub async fn present_non_stream(
     upstream: reqwest::Response,
@@ -144,7 +144,7 @@ async fn consume_upstream_events(
     tracker: &UsageTracker,
     mut consume: impl FnMut(&JsonObject) -> AppResult<bool>,
 ) -> AppResult<()> {
-    let mut source = upstream.bytes_stream();
+    let mut source = tracked_body_bytes(upstream, tracker);
     let mut decoder = openai::sse::SseDecoder::new();
     while let Some(chunk) = source.next().await {
         let chunk = chunk.map_err(|_| stream_failed())?;
@@ -173,7 +173,7 @@ fn chat_stream(
     tracker: UsageTracker,
 ) -> Response {
     let headers = sse_headers(upstream.headers());
-    let mut source = upstream.bytes_stream();
+    let mut source = tracked_body_bytes(upstream, &tracker);
     let output = stream! {
         let mut decoder = openai::sse::SseDecoder::new();
         let mut presenter = openai::chat::ChatStreamPresenter::new(model, created, include_usage);
@@ -254,7 +254,7 @@ fn completion_stream(
     tracker: UsageTracker,
 ) -> Response {
     let headers = sse_headers(upstream.headers());
-    let mut source = upstream.bytes_stream();
+    let mut source = tracked_body_bytes(upstream, &tracker);
     let output = stream! {
         let mut decoder = openai::sse::SseDecoder::new();
         let mut presenter = openai::chat::ChatStreamPresenter::new(model, created, include_usage);
@@ -370,7 +370,7 @@ fn anthropic_stream(
     tracker: UsageTracker,
 ) -> Response {
     let headers = sse_headers(upstream.headers());
-    let mut source = upstream.bytes_stream();
+    let mut source = tracked_body_bytes(upstream, &tracker);
     let output = stream! {
         let mut decoder = openai::sse::SseDecoder::new();
         let mut presenter = anthropic::MessagesStreamPresenter::new(model, reverse_tool_names);
@@ -434,7 +434,7 @@ fn gemini_stream(
     tracker: UsageTracker,
 ) -> Response {
     let headers = sse_headers(upstream.headers());
-    let mut source = upstream.bytes_stream();
+    let mut source = tracked_body_bytes(upstream, &tracker);
     let output = stream! {
         let mut decoder = openai::sse::SseDecoder::new();
         let mut presenter = gemini::GeminiStreamPresenter::new(gemini::GeminiStreamOptions {

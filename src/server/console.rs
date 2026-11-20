@@ -73,7 +73,9 @@ async fn api(
     state: &AppState,
 ) -> AppResult<Response> {
     let now_ms = current_time_ms();
-    if request.method() != Method::GET && !is_same_origin_write(request.headers(), config) {
+    if request.method() != Method::GET
+        && !is_same_origin_write(request.headers(), &config.server.public_origin)
+    {
         return Err(invalid_origin());
     }
     match route {
@@ -224,8 +226,8 @@ async fn sign_in(
     // concurrent disable, delete, or credential change either completes first
     // (and this sign-in fails) or revokes the session created here.
     let _credentials = state.credential_lock.lock().await;
-    let config = state.config.snapshot().await;
-    let identities = Identities::load(&config, state).await?;
+    let current = state.config.snapshot().await;
+    let identities = Identities::load(&current, state).await?;
     let (principal, stored_credential) = match identities.identify(&credential) {
         Identified::One(principal, stored) => (principal, stored),
         Identified::Ambiguous => {
@@ -246,11 +248,11 @@ async fn sign_in(
     // A valid credential ends this attempt without clearing earlier failures
     // from the same client, so user credentials cannot reset admin guessing.
     drop(attempt);
-    if principal.is_admin() && insecure_public_origin(&config) {
+    if principal.is_admin() && insecure_public_origin(config) {
         return Err(insecure_admin_origin());
     }
 
-    let binding_key = binding_key(&config)?;
+    let binding_key = binding_key(&current)?;
     let tag = credential_tag(&binding_key, &principal, &stored_credential);
     let (token, record) = state
         .sessions
@@ -265,7 +267,7 @@ async fn sign_in(
     let mut output = response::json(&json!({ "session": SessionView::from(&record) }), 200)?;
     append_cookie(
         &mut output,
-        &session_cookie(&config, &token, cookie_max_age(&record, now_ms)),
+        &session_cookie(config, &token, cookie_max_age(&record, now_ms)),
     );
     Ok(output)
 }

@@ -1,6 +1,6 @@
 # Alpine 替换部署
 
-本次部署目标为 `root@192.168.160.172`，使用 Alpine/OpenRC。程序由 Docker 构建为
+以下首次迁移记录使用当时的 SSH 地址 `root@192.168.160.172` 和 Alpine/OpenRC。程序由 Docker 构建为
 x86_64 musl 静态二进制，在服务器上作为原生服务运行。
 
 ## 入口与服务
@@ -16,9 +16,10 @@ x86_64 musl 静态二进制，在服务器上作为原生服务运行。
 | 注册服务 | `codex-router-bootstrap` |
 
 管理员密钥保存在服务器 `/etc/codex-router/admin-secret`，可以通过 SSH 读取。
-浏览器管理入口使用上述局域网地址，与 `server.public_origin` 一致。
-nginx 在 8317 接收请求，管理路径仅允许实际连接来源为 `192.168.0.0/16`；HTTP、HTTPS 和端口属于不同来源。
-后端仅监听 `127.0.0.1:18317`，Bootstrap 通过该回环地址调用管理 API。
+Nginx 管理路径允许的客户端来源为 `192.168.0.0/16` 和 `10.0.0.0/8`。首次迁移的后端监听 `127.0.0.1:18317`，Bootstrap 通过回环调用管理 API。
+多地址或多端口部署可设置 `server.public_origin_from_proxy = true` 和 `server.trusted_proxies = ["127.0.0.1"]`。
+Nginx 通过 `X-Forwarded-Proto` 和 `X-Forwarded-Host` 传递实际监听的协议、IP 和端口。后端可以绑定 `0.0.0.0`，管理页随入口地址变化。
+本机程序直接调用后端时使用 `server.public_origin` 作为管理请求的 Origin。
 局域网控制台启用 `session.allow_insecure_http = true`，登录凭据通过内网 HTTP 传输。
 
 原 `cliproxyapi`、`cpa-usage-keeper`、`codex-account-proxy`、`codex-bootstrap` 已停用并移出

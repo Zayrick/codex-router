@@ -356,10 +356,10 @@ API Key 鉴权的 Codex Responses 请求，以及按账户 ID 转发的 Codex Re
 为 `api_key` 或 `account_id`、`credentialId`、`credentialName`；未设备注时为值的末 4 位）。失败的请求同样记录。HTTP 请求是一次尝试；WebSocket 连接中每个
 `response.create`/`response.append` 各是一次尝试，相同 response ID 只落库一次。`status` 取值：
 
-- `completed`、`incomplete`：上游返回 `response.completed`/`response.incomplete`；
-- `failed`：上游返回非 2xx、`response.failed` 或 `error` 事件，或路由在上游响应前出错（如凭据失效、上游不可达）；
-- `cancelled`：客户端在终止事件前断开，或在 WebSocket 中开始了下一个 response（`errorCode` 为 `superseded`）；
-- `interrupted`：上游流在终止事件前结束或出错（`errorCode` 为 `stream_truncated`）。
+- `completed` 和 `incomplete` 对应上游完成或提前结束的响应。`response.done` 按事件内的 `response.status` 记账，缺省为完成。
+- `failed` 包括上游非 2xx、流中的 `error`、`response.error`、`response.failed`，以及收到上游响应前的路由错误。上游可以先返回 HTTP 200，再通过 SSE 报错。
+- `cancelled` 包括转发在终止事件或上游读取结果到达前被释放（`client_cancelled`）、WebSocket 开始下一次响应（`superseded`），以及上游明确报告的取消状态。
+- `interrupted` 表示响应缺少终止事件。读到流结尾时记为 `stream_truncated`，上游 HTTP 正文读取报错时记为 `upstream_read_error`。
 
 每条记录还包含：客户端请求的模型（`requestedModel`）与上游报告的模型（`model`，缺失时回退到
 请求模型，计价按此字段）、是否流式、HTTP 状态码与错误码、端到端耗时与首个输出增量的耗时

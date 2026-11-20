@@ -81,7 +81,7 @@ pub struct SessionConfig {
     pub database_path: String,
     /// Allows administrator sign-in when `server.public_origin` is plain HTTP
     /// on a non-loopback host. Session cookies can then be sniffed in transit.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
     pub allow_insecure_http: bool,
 }
 
@@ -128,6 +128,9 @@ pub struct ServerConfig {
     pub bind: String,
     #[serde(default = "default_public_origin")]
     pub public_origin: String,
+    /// Resolve each request's public origin at a trusted reverse proxy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub public_origin_from_proxy: bool,
     #[serde(default = "default_cors_origin")]
     pub cors_origin: String,
     #[serde(default = "default_maintenance_interval")]
@@ -144,6 +147,7 @@ impl Default for ServerConfig {
         Self {
             bind: default_bind(),
             public_origin: default_public_origin(),
+            public_origin_from_proxy: false,
             cors_origin: default_cors_origin(),
             maintenance_interval_seconds: default_maintenance_interval(),
             log_filter: default_log_filter(),
@@ -834,6 +838,9 @@ fn validate_config(config: &AppConfig) -> Result<()> {
         .parse::<SocketAddr>()
         .context("server.bind must be an IP socket address")?;
     validate_origin(&config.server.public_origin, "server.public_origin")?;
+    if config.server.public_origin_from_proxy && config.server.trusted_proxies.is_empty() {
+        bail!("server.public_origin_from_proxy requires server.trusted_proxies");
+    }
     if config.server.cors_origin.trim().is_empty() {
         bail!("server.cors_origin must not be empty");
     }

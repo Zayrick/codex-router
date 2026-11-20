@@ -10,6 +10,9 @@ log_filter = "codex_router=info,tower_http=info"
 # Reverse proxies (IPs or CIDRs) whose X-Forwarded-For header identifies the
 # real client for sign-in throttling. Set this when a proxy runs on the same host.
 # trusted_proxies = ["127.0.0.1", "::1"]
+# Use the proxy listener's origin for each request. Configure the trusted proxy
+# to overwrite X-Forwarded-Proto and X-Forwarded-Host with its scheme and listener authority.
+# public_origin_from_proxy = true
 
 [admin]
 # Sign in at /admin with this secret. Use a long random value: the console path

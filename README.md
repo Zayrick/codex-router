@@ -142,7 +142,7 @@ Alpine/OpenRC 替换 CLIProxyAPI、迁移凭据、Bootstrap 注册与回滚流�
 
 - `upstream.chatgpt_proxy` 如包含认证信息，应与 OAuth 和 API Key 一样作为密钥保护；SOCKS5
   连接上的 ChatGPT 应用流量仍使用端到端 TLS；
-- `server.public_origin` 必须是客户端看到的精确 origin，并用于控制台同源校验；
+- `server.public_origin` 指定固定入口。启用 `server.public_origin_from_proxy = true` 后，Router 只接受 `server.trusted_proxies` 中的直连对端。Nginx 应覆盖 `X-Forwarded-Proto` 和 `X-Forwarded-Host`，分别使用 `$scheme` 和监听地址 `$server_addr:$server_port`。管理页按每次请求的协议、主机和端口校验同源。可信对端直接调用且省略这两个头时使用固定入口。
 - 控制台应通过 HTTPS 访问；`public_origin` 为非回环 HTTP 时默认禁止管理员登录；
 - 反向代理需要允许 WebSocket Upgrade，并关闭 SSE 响应缓冲；
 - `config.toml` 包含明文 OAuth、API Key、Webhook 和管理密钥，不应提交到版本库、复制到日志或

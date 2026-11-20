@@ -1,3 +1,5 @@
+use std::task::Poll;
+
 use axum::{
     body::Body,
     http::{
@@ -10,7 +12,8 @@ use axum::{
     },
     response::Response,
 };
-use futures_util::StreamExt;
+use bytes::Bytes;
+use futures_util::{Stream, StreamExt, stream};
 use serde::Serialize;
 
 use crate::core::{ApiError, AppResult};
@@ -161,6 +164,23 @@ pub fn upstream_proxy(response: reqwest::Response) -> Response {
     upstream(response, proxy_headers)
 }
 
+pub(super) fn tracked_body_bytes(
+    response: reqwest::Response,
+    tracker: &UsageTracker,
+) -> impl Stream<Item = reqwest::Result<Bytes>> + use<> {
+    let mut source = response.bytes_stream();
+    let tracker = tracker.clone();
+    stream::poll_fn(move |cx| {
+        let chunk = source.poll_next_unpin(cx);
+        match &chunk {
+            Poll::Ready(Some(Err(_))) => tracker.upstream_read_failed(),
+            Poll::Ready(None) => tracker.upstream_finished(),
+            _ => {}
+        }
+        chunk
+    })
+}
+
 pub fn upstream_proxy_tracked(response: reqwest::Response, tracker: UsageTracker) -> Response {
     let status = response.status();
     let headers = proxy_headers(response.headers());
@@ -170,7 +190,7 @@ pub fn upstream_proxy_tracked(response: reqwest::Response, tracker: UsageTracker
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
     tracker.observe_upstream_status(status.as_u16());
-    let mut source = response.bytes_stream();
+    let mut source = tracked_body_bytes(response, &tracker);
     let mut observer = tracker.wire_observer(content_type.as_deref());
     let output = async_stream::stream! {
         while let Some(chunk) = source.next().await {

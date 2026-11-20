@@ -10,12 +10,13 @@ use std::{
 use axum::{
     body::Body,
     extract::ConnectInfo,
-    http::{Extensions, HeaderMap, Request},
+    http::{Extensions, HeaderMap, Request, StatusCode, uri::Authority},
 };
 use ipnet::IpNet;
 use percent_encoding::percent_decode_str;
+use url::Url;
 
-use super::config::{AppConfig, parse_trusted_proxy};
+use super::config::{AppConfig, ServerConfig, parse_trusted_proxy};
 
 /// Cookie used when the console is published over HTTPS.
 pub const SECURE_SESSION_COOKIE: &str = "__Host-codex-session";
@@ -42,16 +43,58 @@ pub fn client_address(
     headers: &HeaderMap,
     config: &AppConfig,
 ) -> Option<IpAddr> {
-    let peer = extensions
+    let peer = peer_ip(extensions)?;
+    let trusted: Vec<_> = trusted_proxy_networks(&config.server).collect();
+    Some(forwarded_client(peer, headers, &trusted))
+}
+
+fn peer_ip(extensions: &Extensions) -> Option<IpAddr> {
+    extensions
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|info| canonical_ip(info.0.ip()))?;
-    let trusted: Vec<IpNet> = config
-        .server
+        .map(|info| canonical_ip(info.0.ip()))
+}
+
+fn trusted_proxy_networks(server: &ServerConfig) -> impl Iterator<Item = IpNet> + '_ {
+    server
         .trusted_proxies
         .iter()
         .filter_map(|entry| parse_trusted_proxy(entry).ok())
-        .collect();
-    Some(forwarded_client(peer, headers, &trusted))
+}
+
+fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    let mut values = headers.get_all(name).iter();
+    let first = values.next()?.to_str().ok()?;
+    values.next().is_none().then_some(first)
+}
+
+/// Apply the proxy's listener address to the configuration snapshot for this request.
+pub fn apply_proxy_origin(
+    request: &Request<Body>,
+    server: &mut ServerConfig,
+) -> Result<(), StatusCode> {
+    if !server.public_origin_from_proxy {
+        return Ok(());
+    }
+    let peer = peer_ip(request.extensions()).ok_or(StatusCode::FORBIDDEN)?;
+    if !trusted_proxy_networks(server).any(|net| net.contains(&peer)) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let headers = request.headers();
+    if !headers.contains_key("x-forwarded-host") && !headers.contains_key("x-forwarded-proto") {
+        // Local callers on the trusted connection use the configured internal origin.
+        return Ok(());
+    }
+    let scheme = single_header(headers, "x-forwarded-proto")
+        .filter(|scheme| matches!(*scheme, "http" | "https"))
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let authority = single_header(headers, "x-forwarded-host")
+        .filter(|value| !value.contains(['@', ',', '%', '\\']))
+        .and_then(|value| value.parse::<Authority>().ok())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let url =
+        Url::parse(&format!("{scheme}://{authority}")).map_err(|_| StatusCode::BAD_REQUEST)?;
+    server.public_origin = url.origin().ascii_serialization();
+    Ok(())
 }
 
 fn forwarded_client(peer: IpAddr, headers: &HeaderMap, trusted: &[IpNet]) -> IpAddr {
@@ -224,11 +267,8 @@ fn window_expired(window: &FailureWindow, now_ms: i64) -> bool {
 /// Requires a same-origin browser request for every console write. Cross-site
 /// forms cannot set a JSON content type without a CORS preflight, which the
 /// console never answers, and `Origin` must exactly match the public origin.
-pub fn is_same_origin_write(headers: &HeaderMap, config: &AppConfig) -> bool {
-    headers
-        .get("origin")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|origin| origin == config.server.public_origin)
+pub fn is_same_origin_write(headers: &HeaderMap, public_origin: &str) -> bool {
+    single_header(headers, "origin") == Some(public_origin)
 }
 
 pub fn has_json_content_type(headers: &HeaderMap) -> bool {
@@ -340,6 +380,89 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", HeaderValue::from_str(value).unwrap());
         headers
+    }
+
+    #[test]
+    fn proxy_listener_sets_the_exact_browser_origin_on_each_port() {
+        let server = ServerConfig {
+            public_origin_from_proxy: true,
+            trusted_proxies: vec!["127.0.0.1".into()],
+            ..Default::default()
+        };
+        for (scheme, authority, expected) in [
+            ("http", "192.168.161.10:8787", "http://192.168.161.10:8787"),
+            ("http", "10.10.1.1:8318", "http://10.10.1.1:8318"),
+            ("https", "[::1]:443", "https://[::1]"),
+        ] {
+            let mut request = Request::builder()
+                .extension(ConnectInfo(
+                    "127.0.0.1:54000".parse::<SocketAddr>().unwrap(),
+                ))
+                .header("x-forwarded-proto", scheme)
+                .header("x-forwarded-host", authority)
+                .header("origin", expected)
+                .body(Body::empty())
+                .unwrap();
+            let mut snapshot = server.clone();
+            apply_proxy_origin(&request, &mut snapshot).unwrap();
+            assert_eq!(snapshot.public_origin, expected);
+            assert!(is_same_origin_write(
+                request.headers(),
+                &snapshot.public_origin
+            ));
+            request
+                .headers_mut()
+                .insert("origin", HeaderValue::from_static("http://10.10.1.1:8317"));
+            assert!(!is_same_origin_write(
+                request.headers(),
+                &snapshot.public_origin
+            ));
+        }
+    }
+
+    #[test]
+    fn proxy_mode_requires_a_trusted_peer_and_complete_forwarding_headers() {
+        let mut server = ServerConfig {
+            trusted_proxies: vec!["127.0.0.1".into()],
+            ..Default::default()
+        };
+        let original = server.public_origin.clone();
+        let mut request = Request::builder()
+            .extension(ConnectInfo(
+                "192.0.2.1:49152".parse::<SocketAddr>().unwrap(),
+            ))
+            .body(Body::empty())
+            .unwrap();
+        apply_proxy_origin(&request, &mut server).unwrap();
+        server.public_origin_from_proxy = true;
+        assert_eq!(
+            apply_proxy_origin(&request, &mut server),
+            Err(StatusCode::FORBIDDEN)
+        );
+        request.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:49152".parse::<SocketAddr>().unwrap(),
+        ));
+        apply_proxy_origin(&request, &mut server).unwrap();
+        assert_eq!(server.public_origin, original);
+        request
+            .headers_mut()
+            .insert("x-forwarded-proto", HeaderValue::from_static("http"));
+        assert_eq!(
+            apply_proxy_origin(&request, &mut server),
+            Err(StatusCode::BAD_REQUEST)
+        );
+        request.headers_mut().append(
+            "x-forwarded-host",
+            HeaderValue::from_static("router.example:8080"),
+        );
+        request.headers_mut().append(
+            "x-forwarded-host",
+            HeaderValue::from_static("router.example:8081"),
+        );
+        assert_eq!(
+            apply_proxy_origin(&request, &mut server),
+            Err(StatusCode::BAD_REQUEST)
+        );
     }
 
     #[test]

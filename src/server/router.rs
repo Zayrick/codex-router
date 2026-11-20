@@ -20,7 +20,7 @@ use crate::{
 use super::{
     api::{RoutedApiIdentity, handle_api},
     console::{console_redirect, handle_console},
-    console_security::strip_console_cookies,
+    console_security::{apply_proxy_origin, strip_console_cookies},
     oauth::current_time_ms,
     relay::handle_relay,
     response,
@@ -40,7 +40,10 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
         .await
         .ok();
     let request = Request::from_parts(parts, body);
-    let config = state.config.snapshot().await;
+    let mut config = state.config.snapshot().await;
+    if let Err(status) = apply_proxy_origin(&request, &mut config.server) {
+        return response::empty(status.as_u16());
+    }
     let client_url = match client_url(&config.server.public_origin, request.uri()) {
         Some(url) => url,
         None => return response::empty(400),

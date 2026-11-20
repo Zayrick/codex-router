@@ -665,8 +665,8 @@ struct Attempt {
     started_at: Instant,
     first_output_at: Option<Instant>,
     status_code: Option<u16>,
-    /// The upstream body ended, or broke, while the attempt was still open.
-    upstream_ended: bool,
+    /// First observed upstream reason for an unfinished stream.
+    upstream_interruption: Option<&'static str>,
 }
 
 impl Attempt {
@@ -676,16 +676,16 @@ impl Attempt {
             started_at: Instant::now(),
             first_output_at: None,
             status_code: None,
-            upstream_ended: false,
+            upstream_interruption: None,
         }
     }
 
     /// Classifies an attempt that never received a terminal event.
     fn abandoned(&self) -> Outcome {
-        match self.status_code {
-            Some(status) if !(200..300).contains(&status) => Outcome::new(STATUS_FAILED, ""),
-            _ if self.upstream_ended => Outcome::new(STATUS_INTERRUPTED, "stream_truncated"),
-            _ => Outcome::new(STATUS_CANCELLED, "client_cancelled"),
+        match (self.status_code, self.upstream_interruption) {
+            (Some(status), _) if !(200..300).contains(&status) => Outcome::new(STATUS_FAILED, ""),
+            (_, Some(reason)) => Outcome::new(STATUS_INTERRUPTED, reason),
+            (_, None) => Outcome::new(STATUS_CANCELLED, "client_cancelled"),
         }
     }
 }
@@ -867,8 +867,16 @@ impl UsageTracker {
 
     /// Marks that the upstream body is finished; an attempt still open is then interrupted.
     pub fn upstream_finished(&self) {
+        self.mark_upstream_interruption("stream_truncated");
+    }
+
+    pub(super) fn upstream_read_failed(&self) {
+        self.mark_upstream_interruption("upstream_read_error");
+    }
+
+    fn mark_upstream_interruption(&self, reason: &'static str) {
         if let Some(attempt) = self.state().attempt.as_mut() {
-            attempt.upstream_ended = true;
+            attempt.upstream_interruption.get_or_insert(reason);
         }
     }
 
@@ -1058,15 +1066,14 @@ impl RequestBodyObserver {
     }
 }
 
-/// Watches a proxied upstream body. Dropping it before [`Self::finish`] means the
-/// client disconnected mid-response.
+/// Reads usage from the response bytes as they pass through to the client.
 pub struct UsageWireObserver {
     tracker: UsageTracker,
-    format: WireFormat,
+    format: Option<WireFormat>,
 }
 
 enum WireFormat {
-    Sse(Option<openai::sse::SseDecoder>),
+    Sse(Option<openai::sse::SseFrameDecoder>),
     Json(Option<Vec<u8>>),
 }
 
@@ -1079,26 +1086,30 @@ impl UsageWireObserver {
         });
         Self {
             tracker,
-            format: if is_sse {
-                WireFormat::Sse(Some(openai::sse::SseDecoder::new()))
-            } else {
-                WireFormat::Json(Some(Vec::new()))
-            },
+            format: is_sse.then(|| WireFormat::Sse(Some(openai::sse::SseFrameDecoder::new()))),
         }
     }
 
     pub fn push(&mut self, bytes: &[u8]) {
-        match &mut self.format {
+        let format = match &mut self.format {
+            Some(format) => format,
+            slot @ None => {
+                let Some(first) = bytes.iter().find(|byte| !byte.is_ascii_whitespace()) else {
+                    return;
+                };
+                slot.insert(match first {
+                    b'{' | b'[' => WireFormat::Json(Some(Vec::new())),
+                    _ => WireFormat::Sse(Some(openai::sse::SseFrameDecoder::new())),
+                })
+            }
+        };
+        match format {
             WireFormat::Sse(decoder) => {
                 let Some(active) = decoder.as_mut() else {
                     return;
                 };
                 match active.push_bytes(bytes) {
-                    Ok(events) => {
-                        for event in events {
-                            self.tracker.observe_response_object(&event);
-                        }
-                    }
+                    Ok(frames) => self.tracker.observe_sse_frames(frames),
                     Err(_) => *decoder = None,
                 }
             }
@@ -1115,27 +1126,35 @@ impl UsageWireObserver {
         }
     }
 
-    /// Called once the upstream body has ended, cleanly or not.
-    pub fn finish(mut self) {
-        match &mut self.format {
-            WireFormat::Sse(decoder) => {
-                if let Some(active) = decoder.as_mut()
-                    && let Ok(events) = active.finish()
-                {
-                    for event in events {
-                        self.tracker.observe_response_object(&event);
-                    }
+    pub fn finish(self) {
+        match self.format {
+            Some(WireFormat::Sse(Some(mut decoder))) => {
+                if let Ok(frames) = decoder.finish() {
+                    self.tracker.observe_sse_frames(frames);
                 }
             }
-            WireFormat::Json(buffer) => {
-                if let Some(active) = buffer.take()
-                    && let Ok(value) = serde_json::from_slice::<Value>(&active)
-                {
+            Some(WireFormat::Json(Some(buffer))) => {
+                if let Ok(value) = serde_json::from_slice::<Value>(&buffer) {
                     self.tracker.observe_response_body(&value);
                 }
             }
+            _ => {}
         }
         self.tracker.upstream_finished();
+    }
+}
+
+impl UsageTracker {
+    fn observe_sse_frames(&self, frames: Vec<openai::sse::SseFrame>) {
+        for frame in frames {
+            if let openai::sse::SseFrame::Data(data) = frame {
+                let objects =
+                    serde_json::Deserializer::from_str(&data).into_iter::<Map<String, Value>>();
+                for object in objects.map_while(Result::ok) {
+                    self.observe_response_object(&object);
+                }
+            }
+        }
     }
 }
 
@@ -1169,19 +1188,26 @@ fn parse_outcome(root: &Map<String, Value>, whole_body: bool) -> Option<Outcome>
         object.get("error").is_some_and(|error| !error.is_null())
             || object.get("detail").is_some_and(|detail| !detail.is_null())
     };
+    let response = root
+        .get("response")
+        .and_then(Value::as_object)
+        .unwrap_or(root);
     let status = match string(root, "type") {
         Some("response.completed") => STATUS_COMPLETED,
+        Some("response.done") => match string(response, "status") {
+            None | Some("completed") => STATUS_COMPLETED,
+            Some("failed") => STATUS_FAILED,
+            Some("incomplete") => STATUS_INCOMPLETE,
+            Some("cancelled") => STATUS_CANCELLED,
+            _ => return None,
+        },
         Some("response.incomplete") => STATUS_INCOMPLETE,
-        Some("response.failed" | "error") => STATUS_FAILED,
+        Some("response.failed" | "response.error" | "error") => STATUS_FAILED,
         Some(_) => return None,
         None if has_error(root) => STATUS_FAILED,
         None if whole_body || root.get("usage").is_some_and(Value::is_object) => STATUS_COMPLETED,
         None => return None,
     };
-    let response = root
-        .get("response")
-        .and_then(Value::as_object)
-        .unwrap_or(root);
     let usage = response
         .get("usage")
         .and_then(Value::as_object)
@@ -2904,6 +2930,80 @@ data: [DONE]
     }
 
     #[tokio::test]
+    async fn native_stream_records_headerless_sse_errors_before_downstream_closes() {
+        let (store, path) = temporary_store();
+        let wire = b": heartbeat\n\ndata: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"error\",\"code\":\"server_is_overloaded\"}\n\ndata: {\"type\":\"response.failed\"}\n\n";
+        for read_to_eof in [false, true] {
+            let chunks = wire
+                .chunks(11)
+                .map(|s| Ok(Bytes::copy_from_slice(s)))
+                .collect();
+            let mut body = proxied_usage_body(&store, chunks).into_data_stream();
+            let mut received = Vec::new();
+            while received.len() < wire.len() {
+                received.extend(body.next().await.unwrap().unwrap());
+            }
+            assert_eq!(received, wire);
+            if read_to_eof {
+                assert!(body.next().await.is_none());
+            }
+        }
+        for event in wait_for_requests(&store, 2).await.recent_events {
+            assert_eq!(event.status, STATUS_FAILED);
+            assert_eq!(event.error_code, "server_is_overloaded");
+            assert_eq!(event.status_code, Some(200));
+        }
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn native_stream_attributes_body_read_errors_before_yielding_them() {
+        let (store, path) = temporary_store();
+        let mut body =
+            proxied_usage_body(&store, vec![Err(std::io::ErrorKind::UnexpectedEof.into())])
+                .into_data_stream();
+        assert!(body.next().await.unwrap().is_err());
+        drop(body);
+        let event = only_event(&store).await;
+        assert_eq!(event.status, STATUS_INTERRUPTED);
+        assert_eq!(event.error_code, "upstream_read_error");
+        assert_eq!(event.status_code, Some(200));
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    #[tokio::test]
+    async fn native_stream_counts_done_usage_after_an_unrecognized_frame() {
+        let (store, path) = temporary_store();
+        let tracker = UsageTracker::http(store.clone(), identity(), client(), "/v1/responses");
+        let mut observer = tracker.wire_observer(Some("text/plain"));
+        observer.push(b"\n");
+        observer.push(b"event: notice\ndata: maintenance\n\n");
+        observer.push(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\ndata: {\"type\":\"response.done\",\"response\":\ndata: {\"id\":\"resp_done\",\"status\":\"completed\",\"usage\":{\"total_tokens\":6}}}\n\n");
+        drop(observer);
+        drop(tracker);
+        let event = only_event(&store).await;
+        assert_eq!(
+            (event.status.as_str(), event.response_id.as_str()),
+            (STATUS_COMPLETED, "resp_done")
+        );
+        assert_eq!(event.total_tokens, 6);
+        assert!(event.ttft_ms.is_some());
+        drop(store);
+        remove_temporary_store(&path);
+    }
+
+    fn proxied_usage_body(
+        store: &UsageStore,
+        chunks: Vec<std::io::Result<Bytes>>,
+    ) -> axum::body::Body {
+        let upstream = axum::http::Response::new(reqwest::Body::wrap_stream(stream::iter(chunks)));
+        let tracker = UsageTracker::http(store.clone(), identity(), client(), "/v1/responses");
+        super::super::response::upstream_proxy_tracked(upstream.into(), tracker).into_body()
+    }
+
+    #[tokio::test]
     async fn records_client_metadata_session_and_timing() {
         use super::super::usage_client::UsageSession;
 
@@ -2981,7 +3081,8 @@ data: [DONE]
             json!({"model":"gpt-5.5"}).as_object().unwrap(),
         ));
         tracker.observe_upstream_status(429);
-        let mut observer = tracker.wire_observer(Some("application/json"));
+        let mut observer = tracker.wire_observer(None);
+        observer.push(b" \r\n");
         observer.push(br#"{"error":{"type":"usage_limit_reached","message":"limit"}}"#);
         observer.finish();
         drop(tracker);
