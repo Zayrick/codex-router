@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::{
-    config::AppConfig, state::AppState, usage_analytics::WindowUsage,
+    account_health::HealthView, config::AppConfig, state::AppState, usage_analytics::WindowUsage,
     usage_store::CodexUsageStateRepository,
 };
 
@@ -53,6 +53,8 @@ pub struct AccountQuota {
     pub enabled: bool,
     /// Taken out of routing after a 429 or an exhausted window.
     pub quarantined: bool,
+    /// Capacity health learned from upstream overloads.
+    pub health: HealthView,
     pub sampled_at: Option<i64>,
     pub plan_type: Option<String>,
     pub windows: Vec<WindowForecast>,
@@ -102,7 +104,7 @@ pub async fn quota_overview(
         .iter()
         .filter(|group| only.is_none_or(|ids| group.account_ids.iter().any(|id| ids.contains(id))))
     {
-        groups.push(group_shares(state, group, &routing.accounts).await);
+        groups.push(group_shares(state, group, &routing.accounts, now_ms).await);
     }
     Ok(QuotaOverview {
         sampled_at: accounts
@@ -118,13 +120,17 @@ async fn group_shares(
     state: &AppState,
     group: &AccountGroup,
     accounts: &[CodexAccount],
+    now_ms: i64,
 ) -> GroupShares {
     let members = group
         .account_ids
         .iter()
         .filter_map(|id| accounts.iter().find(|account| account.id == *id).cloned())
         .collect::<Vec<_>>();
-    let shares = state.account_router.member_shares(group, &members).await;
+    let shares = state
+        .account_router
+        .member_shares(group, &members, now_ms)
+        .await;
     GroupShares {
         group_id: group.id.clone(),
         members: members
@@ -180,6 +186,7 @@ async fn account_quota(
         account_name: account.name.clone(),
         enabled: account.enabled,
         quarantined: state.account_router.is_quarantined(&account.id).await,
+        health: state.account_router.health(&account.id, now_ms),
         sampled_at: snapshot.as_ref().map(|snapshot| snapshot.sampled_at),
         plan_type: snapshot.and_then(|snapshot| snapshot.plan_type),
         windows,

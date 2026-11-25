@@ -18,6 +18,7 @@ use crate::{
 };
 
 use super::{
+    account_router::RouteHints,
     api::{RoutedApiIdentity, handle_api},
     console::{console_redirect, handle_console},
     console_security::{apply_proxy_origin, strip_console_cookies},
@@ -131,10 +132,14 @@ async fn dispatch(State(state): State<AppState>, request: Request<Body>) -> Resp
                 Ok(authenticated) => {
                     match state
                         .account_router
-                        .resolve(
+                        .resolve_with(
                             state.config.as_ref(),
                             &authenticated.user.id,
                             request.headers(),
+                            RouteHints {
+                                model: None,
+                                generative: route.is_generative(),
+                            },
                             current_time_ms(),
                         )
                         .await

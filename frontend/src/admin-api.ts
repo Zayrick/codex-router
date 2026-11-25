@@ -705,9 +705,19 @@ export interface AccountQuota {
 	enabled: boolean;
 	/** Taken out of routing after a 429 or an exhausted window. */
 	quarantined: boolean;
+	/** Capacity health learned from upstream overloads. */
+	health: AccountHealth;
 	sampledAt: number | null;
 	planType: string | null;
 	windows: WindowForecast[];
+}
+
+export interface AccountHealth {
+	state: "healthy" | "degraded" | "open" | "half_open";
+	/** Smoothed overload rate, 0..1. */
+	overloadRate: number;
+	/** When an open breaker lets the next probe through. */
+	retryAt: number | null;
 }
 
 export interface GroupShares {

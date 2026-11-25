@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -30,20 +30,39 @@ use crate::{
 };
 
 use super::{
-    chatgpt_proxy::ChatgptProxy, config::WebsocketIdleTimeout, response, usage::UsageTracker,
+    chatgpt_proxy::ChatgptProxy,
+    config::WebsocketIdleTimeout,
+    held_stream::{EventClass, classify_event},
+    response,
+    usage::UsageTracker,
 };
 
 /// Rechecks the idle timeout at least this often, so setting changes apply.
 const IDLE_RECHECK: Duration = Duration::from_secs(30);
-/// Close code and reason sent to both sides of an idle WebSocket.
-const IDLE_CLOSE_CODE: u16 = 1000;
+/// Close code sent to both sides when the proxy ends a WebSocket; reasons below.
+const NORMAL_CLOSE_CODE: u16 = 1000;
 const IDLE_CLOSE_REASON: &str = "idle timeout";
+/// Sent after an upstream overload. Clients that missed the error frame retry on
+/// a new connection, which routing then places on a healthier account.
+const OVERLOAD_CLOSE_REASON: &str = "upstream overloaded";
+/// After a bare overload `error` frame, wait this long for its terminal frame.
+const OVERLOAD_GRACE: Duration = Duration::from_secs(2);
+
+/// How a proxied WebSocket treats Responses traffic.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResponsesOptions {
+    /// Rewrite `response.create` messages for the Codex backend.
+    pub adapt: bool,
+    /// Close after an upstream overload so the client reconnects; only useful when
+    /// a reconnect can be routed to another account.
+    pub close_on_overload: bool,
+}
 
 pub async fn proxy(
     upgrade: WebSocketUpgrade,
     target: Url,
     headers: HeaderBag,
-    adapt_responses: bool,
+    options: ResponsesOptions,
     tracker: Option<UsageTracker>,
     proxy: Option<&ChatgptProxy>,
     idle_timeout: WebsocketIdleTimeout,
@@ -52,7 +71,7 @@ pub async fn proxy(
         upgrade,
         target,
         headers,
-        adapt_responses,
+        options,
         tracker.clone(),
         proxy,
         idle_timeout,
@@ -74,7 +93,7 @@ async fn connect(
     upgrade: WebSocketUpgrade,
     mut target: Url,
     headers: HeaderBag,
-    adapt_responses: bool,
+    options: ResponsesOptions,
     tracker: Option<UsageTracker>,
     proxy: Option<&ChatgptProxy>,
     idle_timeout: WebsocketIdleTimeout,
@@ -128,8 +147,7 @@ async fn connect(
     } else {
         upgrade
     };
-    Ok(upgrade
-        .on_upgrade(move |client| bridge(client, upstream, adapt_responses, tracker, idle_timeout)))
+    Ok(upgrade.on_upgrade(move |client| bridge(client, upstream, options, tracker, idle_timeout)))
 }
 
 /// Time of the last data message in either direction.
@@ -191,12 +209,29 @@ enum Ended {
     Client,
     Upstream,
     Idle,
+    Overloaded,
+}
+
+/// Overload class of an upstream frame. Frames are only parsed when they could
+/// be an overload, or while waiting for the terminal frame after one.
+fn overload_class(message: &UpstreamMessage, after_overload: bool) -> Option<EventClass> {
+    let UpstreamMessage::Text(text) = message else {
+        return None;
+    };
+    let text = text.as_str();
+    if !after_overload && !text.contains("overloaded") && !text.contains("slow_down") {
+        return None;
+    }
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(serde_json::Value::Object(object)) => Some(classify_event(&object)),
+        _ => None,
+    }
 }
 
 async fn bridge(
     client: WebSocket,
     upstream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
-    adapt_responses: bool,
+    options: ResponsesOptions,
     tracker: Option<UsageTracker>,
     idle_timeout: WebsocketIdleTimeout,
 ) {
@@ -205,15 +240,21 @@ async fn bridge(
     let activity = Activity::new();
 
     let request_tracker = tracker.clone();
+    // Set after an overload: the connection is about to close, so new requests
+    // are not started upstream (the client retries them on a new connection).
+    let closing = AtomicBool::new(false);
     let to_upstream = async {
         while let Some(message) = client_receiver.next().await {
             let Ok(message) = message else {
                 break;
             };
             if is_data(&message) {
+                if closing.load(Ordering::Relaxed) {
+                    continue;
+                }
                 activity.touch();
             }
-            let message = client_message(message, adapt_responses, request_tracker.as_ref());
+            let message = client_message(message, options.adapt, request_tracker.as_ref());
             if upstream_sender.send(message).await.is_err() {
                 break;
             }
@@ -221,10 +262,26 @@ async fn bridge(
         let _ = upstream_sender.close().await;
     };
     let to_client = async {
-        while let Some(message) = upstream_receiver.next().await {
-            let Ok(message) = message else {
+        // After a bare overload `error`, wait briefly for the response's own
+        // terminal frame (which may carry a retry hint), then close.
+        let mut deadline: Option<tokio::time::Instant> = None;
+        loop {
+            let next = match deadline {
+                Some(deadline) => {
+                    match tokio::time::timeout_at(deadline, upstream_receiver.next()).await {
+                        Ok(next) => next,
+                        Err(_) => return true,
+                    }
+                }
+                None => upstream_receiver.next().await,
+            };
+            let Some(Ok(message)) = next else {
                 break;
             };
+            let class = options
+                .close_on_overload
+                .then(|| overload_class(&message, deadline.is_some()))
+                .flatten();
             let Some(message) = upstream_message(message, tracker.as_ref()) else {
                 continue;
             };
@@ -234,13 +291,23 @@ async fn bridge(
             if client_sender.send(message).await.is_err() {
                 break;
             }
+            match class {
+                Some(EventClass::Overload { terminal: true }) => return true,
+                Some(EventClass::Terminal) if deadline.is_some() => return true,
+                Some(EventClass::Overload { terminal: false }) => {
+                    closing.store(true, Ordering::Relaxed);
+                    deadline.get_or_insert_with(|| tokio::time::Instant::now() + OVERLOAD_GRACE);
+                }
+                _ => {}
+            }
         }
         let _ = client_sender.close().await;
+        false
     };
     let idle = idle_expired(&activity, &idle_timeout, tracker.as_ref());
     let ended = tokio::select! {
         _ = to_upstream => Ended::Client,
-        _ = to_client => Ended::Upstream,
+        overloaded = to_client => if overloaded { Ended::Overloaded } else { Ended::Upstream },
         () = idle => Ended::Idle,
     };
     match ended {
@@ -252,16 +319,22 @@ async fn bridge(
             }
         }
         Ended::Client => {}
-        Ended::Idle => {
-            tracing::info!(event = "websocket_idle_closed");
+        Ended::Idle | Ended::Overloaded => {
+            let reason = if matches!(ended, Ended::Idle) {
+                tracing::info!(event = "websocket_idle_closed");
+                IDLE_CLOSE_REASON
+            } else {
+                tracing::info!(event = "websocket_overload_closed");
+                OVERLOAD_CLOSE_REASON
+            };
             let close_client = client_sender.send(AxumMessage::Close(Some(AxumCloseFrame {
-                code: IDLE_CLOSE_CODE,
-                reason: IDLE_CLOSE_REASON.into(),
+                code: NORMAL_CLOSE_CODE,
+                reason: reason.into(),
             })));
             let close_upstream =
                 upstream_sender.send(UpstreamMessage::Close(Some(UpstreamCloseFrame {
-                    code: IDLE_CLOSE_CODE.into(),
-                    reason: IDLE_CLOSE_REASON.into(),
+                    code: NORMAL_CLOSE_CODE.into(),
+                    reason: reason.into(),
                 })));
             let _ = tokio::time::timeout(
                 Duration::from_secs(5),

@@ -160,3 +160,17 @@ export function planText(plan: string | null | undefined): string {
 	if (!plan) return "";
 	return plan.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
+
+/** Routing status from upstream overloads; `null` while the account is healthy. */
+export function healthStatus(quota: AccountQuota | undefined): { label: string; tone: "danger" | "warning" } | null {
+	switch (quota?.health.state) {
+		case "open":
+			return { label: "过载熔断", tone: "danger" };
+		case "half_open":
+			return { label: "过载探测", tone: "warning" };
+		case "degraded":
+			return { label: "过载降权", tone: "warning" };
+		default:
+			return null;
+	}
+}

@@ -6,7 +6,7 @@ import { useAdmin } from "@/admin/context";
 import { DeleteConfirmationDialog } from "@/admin/dialogs";
 import { formatTtl, strategyLabel } from "@/admin/routing-model";
 import { IdentityChip, type RouteIdentity } from "@/admin/quota/AccountCard";
-import { TONE_COLOR, accountTitle, accountTone, cacheRate, planText, shortAccountName, successRate, visibleWindows, windowLabel, windowTone } from "@/admin/quota/model";
+import { TONE_COLOR, accountTitle, accountTone, cacheRate, healthStatus, planText, shortAccountName, successRate, visibleWindows, windowLabel, windowTone } from "@/admin/quota/model";
 import { UsagePanel } from "@/admin/quota/UsagePanel";
 import { Legend, LegendItem, Meter, StackedBar } from "@/components/app/bars";
 import { Tag } from "@/components/app/badges";
@@ -235,6 +235,8 @@ function UsedCell({ window, now }: { window: WindowForecast | undefined; now: nu
 function memberStatus(account: CodexAccount, quota: AccountQuota | undefined, now: number) {
 	if (!account.enabled) return <Tag>已停用</Tag>;
 	if (quota?.quarantined) return <Tag tone="danger">已暂停</Tag>;
+	const health = healthStatus(quota);
+	if (health) return <Tag tone={health.tone}>{health.label}</Tag>;
 	const tone = accountTone(quota, now);
 	if (tone === "danger") return <Tag tone="danger">即将耗尽</Tag>;
 	if (tone === "warning") {
@@ -411,7 +413,7 @@ function FallbackOrder({
 						const quota = quotaById.get(member.id);
 						const [short, long] = pairWindows(quota);
 						const direct = directIdentitiesOf(member.id);
-						const available = member.enabled && !quota?.quarantined && !(quota?.windows.some((window) => window.limitReached) ?? false);
+						const available = member.enabled && !quota?.quarantined && quota?.health.state !== "open" && !(quota?.windows.some((window) => window.limitReached) ?? false);
 						return (
 							<TableRow className="text-[13px] hover:bg-transparent" key={member.id}>
 								<TableCell className="px-0 py-3">

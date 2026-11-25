@@ -314,6 +314,8 @@ struct UsageEvent {
     latency_ms: i64,
     ttft_ms: Option<i64>,
     tokens: TokenUsage,
+    /// A `generate: false` warm-up; not stored, only reported to outcome sinks.
+    warmup: bool,
 }
 
 /// How an attempt ended, as reported by the upstream or inferred by the router.
@@ -662,6 +664,21 @@ struct UsageTrackerInner {
     endpoint: String,
     transport: Transport,
     state: Mutex<TrackerState>,
+    outcome_sink: Option<OutcomeSink>,
+}
+
+/// Receives every finished attempt before it is stored, e.g. to learn account health.
+pub type OutcomeSink = Arc<dyn Fn(&FinishedAttempt<'_>) + Send + Sync>;
+
+/// The parts of a finished attempt an [`OutcomeSink`] sees.
+pub struct FinishedAttempt<'a> {
+    pub codex_account_id: &'a str,
+    pub model: &'a str,
+    pub status: &'a str,
+    pub error_code: &'a str,
+    pub recorded_at_ms: i64,
+    /// A `generate: false` warm-up rather than a real generation.
+    pub warmup: bool,
 }
 
 #[derive(Default)]
@@ -682,6 +699,7 @@ struct RequestSettings {
     service_tier: String,
     stream: bool,
     prompt_cache_key: String,
+    warmup: bool,
 }
 
 struct Attempt {
@@ -722,9 +740,15 @@ pub struct UsageRequest {
     service_tier: String,
     stream: bool,
     prompt_cache_key: String,
+    /// `generate: false`: Codex warms a connection without generating.
+    warmup: bool,
 }
 
 impl UsageRequest {
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
     /// Reads the final body sent upstream, so egress policies are already applied.
     pub fn from_body(object: &Map<String, Value>) -> Self {
         let model = request_field(object, "model")
@@ -750,12 +774,14 @@ impl UsageRequest {
             .and_then(Value::as_str)
             .map(|value| value.trim().chars().take(MAX_ERROR_CODE_CHARS).collect())
             .unwrap_or_default();
+        let warmup = request_field(object, "generate").and_then(Value::as_bool) == Some(false);
         Self {
             model,
             reasoning_effort,
             service_tier,
             stream,
             prompt_cache_key,
+            warmup,
         }
     }
 }
@@ -769,6 +795,7 @@ impl RequestSettings {
         self.service_tier = request.service_tier;
         self.stream = request.stream;
         self.prompt_cache_key = request.prompt_cache_key;
+        self.warmup = request.warmup;
     }
 }
 
@@ -809,8 +836,17 @@ impl UsageTracker {
                     attempt: (transport == Transport::Http).then(Attempt::start),
                     ..TrackerState::default()
                 }),
+                outcome_sink: None,
             }),
         }
+    }
+
+    /// Reports every finished attempt to `sink`; call before cloning the tracker.
+    pub fn with_outcome_sink(mut self, sink: OutcomeSink) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.outcome_sink = Some(sink);
+        }
+        self
     }
 
     /// Lists this connection in the console's live view until the last clone drops.
@@ -874,7 +910,7 @@ impl UsageTracker {
             if let Some(previous) = state.attempt.take() {
                 let outcome = Outcome::new(STATUS_CANCELLED, "superseded");
                 let event = self.inner.event(&state, previous, outcome);
-                self.inner.store.record(event);
+                self.inner.record(event);
             }
             state.attempt = Some(Attempt::start());
         }
@@ -941,7 +977,7 @@ impl UsageTracker {
         };
         let event = self.inner.event(&state, attempt, outcome);
         drop(state);
-        self.inner.store.record(event);
+        self.inner.record(event);
     }
 
     /// Marks that the upstream body is finished; an attempt still open is then interrupted.
@@ -998,7 +1034,7 @@ impl UsageTracker {
         }
         let event = self.inner.event(&state, attempt, outcome);
         drop(state);
-        self.inner.store.record(event);
+        self.inner.record(event);
     }
 
     /// Passes a streamed request body through unchanged while reading its usage settings.
@@ -1045,6 +1081,20 @@ impl UsageTracker {
 }
 
 impl UsageTrackerInner {
+    fn record(&self, event: UsageEvent) {
+        if let Some(sink) = &self.outcome_sink {
+            sink(&FinishedAttempt {
+                codex_account_id: &event.codex_account_id,
+                model: &event.model,
+                status: &event.status,
+                error_code: &event.error_code,
+                recorded_at_ms: event.recorded_at_ms,
+                warmup: event.warmup,
+            });
+        }
+        self.store.record(event);
+    }
+
     fn event(&self, state: &TrackerState, attempt: Attempt, outcome: Outcome) -> UsageEvent {
         let request = &state.request;
         let session = &self.client.session;
@@ -1104,6 +1154,7 @@ impl UsageTrackerInner {
             ttft_ms: attempt
                 .first_output_at
                 .map(|at| elapsed_ms(attempt.started_at, at)),
+            warmup: request.warmup,
             tokens: outcome.tokens,
         }
     }
@@ -1116,7 +1167,7 @@ impl Drop for UsageTrackerInner {
         if let Some(attempt) = state.attempt.take() {
             let outcome = attempt.abandoned();
             let event = self.event(&state, attempt, outcome);
-            self.store.record(event);
+            self.record(event);
         }
     }
 }
@@ -1341,6 +1392,15 @@ fn parse_tokens(usage: &Map<String, Value>) -> TokenUsage {
 }
 
 /// First machine-readable reason found in Codex error and incomplete payloads.
+/// Error code of one streamed Responses event (SSE frame or WebSocket message).
+pub(super) fn event_error_code(root: &Map<String, Value>) -> String {
+    let response = root
+        .get("response")
+        .and_then(Value::as_object)
+        .unwrap_or(root);
+    error_code(root, response)
+}
+
 fn error_code(root: &Map<String, Value>, response: &Map<String, Value>) -> String {
     [
         nested(response, "error", "code"),

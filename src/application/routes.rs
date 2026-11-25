@@ -33,6 +33,19 @@ pub enum ApiRoute {
 }
 
 impl ApiRoute {
+    /// Whether the route generates a model response that reports an outcome.
+    pub const fn is_generative(&self) -> bool {
+        matches!(
+            self,
+            Self::Responses
+                | Self::Compact
+                | Self::ChatCompletions
+                | Self::Completions
+                | Self::Messages
+                | Self::GeminiGenerate { .. }
+        )
+    }
+
     pub const fn family(&self) -> ProtocolFamily {
         match self {
             Self::Messages | Self::MessageTokens => ProtocolFamily::Anthropic,

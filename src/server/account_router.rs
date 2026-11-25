@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -17,7 +20,11 @@ use crate::{
     upstream::codex::{CodexQuotaCategory, CodexSubscriptionInfo},
 };
 
-use super::usage_store::CodexUsageStateRepository;
+use super::{
+    account_health::{AccountHealth, CapacitySignal, HealthView, Outcome},
+    usage::OutcomeSink,
+    usage_store::CodexUsageStateRepository,
+};
 
 const MAX_AFFINITY_BINDINGS: usize = 10_000;
 
@@ -25,11 +32,26 @@ const MAX_AFFINITY_BINDINGS: usize = 10_000;
 pub struct ResolvedAccountRoute {
     pub account: CodexAccount,
     pub group: Option<AccountGroup>,
+    /// Session key (`group::session`) when the client named its session; used
+    /// for affinity (if the group pins sessions) and overload avoidance.
+    pub session_key: Option<String>,
+    /// Probe ticket when this request tests a recovering account.
+    pub probe: Option<u64>,
+}
+
+/// What the caller knows about the request when picking an account.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RouteHints<'a> {
+    /// Model of the request, when the body has been read.
+    pub model: Option<&'a str>,
+    /// Whether the request generates a response, so it can probe a recovering account.
+    pub generative: bool,
 }
 
 #[derive(Clone, Default)]
 pub struct AccountRouter {
     runtime: Arc<Mutex<RouterRuntime>>,
+    health: AccountHealth,
 }
 
 #[derive(Default)]
@@ -69,15 +91,45 @@ struct AccountQuotaState {
 }
 
 impl AccountRouter {
-    pub async fn resolve(
+    pub async fn resolve_with(
         &self,
         store: &dyn StateStore,
         user_id: &str,
         headers: &HeaderMap,
+        hints: RouteHints<'_>,
         now_ms: i64,
     ) -> AppResult<Option<ResolvedAccountRoute>> {
-        self.resolve_internal(store, user_id, headers, now_ms, true)
+        self.resolve_internal(store, user_id, headers, hints, &[], now_ms)
             .await
+    }
+
+    /// Picks another group member for a request that `failed` could not serve.
+    /// Returns `None` when the user is pinned to one account or no other member is
+    /// usable; the new account becomes the session's affinity binding.
+    pub async fn resolve_failover(
+        &self,
+        store: &dyn StateStore,
+        user_id: &str,
+        headers: &HeaderMap,
+        model: Option<&str>,
+        failed: &[String],
+        now_ms: i64,
+    ) -> AppResult<Option<ResolvedAccountRoute>> {
+        let hints = RouteHints {
+            model,
+            generative: false,
+        };
+        match self
+            .resolve_internal(store, user_id, headers, hints, failed, now_ms)
+            .await
+        {
+            Ok(Some(route)) if route.group.is_some() && !failed.contains(&route.account.id) => {
+                Ok(Some(route))
+            }
+            Ok(_) => Ok(None),
+            Err(error) if error.status == 404 => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     async fn resolve_internal(
@@ -85,8 +137,9 @@ impl AccountRouter {
         store: &dyn StateStore,
         user_id: &str,
         headers: &HeaderMap,
+        hints: RouteHints<'_>,
+        exclude: &[String],
         now_ms: i64,
-        advance_schedule: bool,
     ) -> AppResult<Option<ResolvedAccountRoute>> {
         let routing = RoutingRepository::new(store).read().await?;
         let Some(assignment) = routing.routes.iter().find(|route| route.user_id == user_id) else {
@@ -105,6 +158,8 @@ impl AccountRouter {
                 Ok(Some(ResolvedAccountRoute {
                     account,
                     group: None,
+                    session_key: None,
+                    probe: None,
                 }))
             }
             RouteTargetKind::Group => {
@@ -128,30 +183,30 @@ impl AccountRouter {
                 }
                 available.sort_by(|left, right| left.id.cmp(&right.id));
                 let limited = self.quota_limited_ids().await;
-                available.retain(|account| !limited.contains(&account.id));
+                available.retain(|account| {
+                    !limited.contains(&account.id) && !exclude.contains(&account.id)
+                });
                 if available.is_empty() {
                     return Err(route_unavailable());
                 }
-                let session_id = group
-                    .session_affinity
-                    .then(|| session_affinity_id(headers))
-                    .flatten();
-                let account = if advance_schedule {
-                    self.select_group_account(
+                let session_key = session_affinity_id(headers)
+                    .map(|session_id| format!("{}::{session_id}", group.id));
+                let (account, probe) = self
+                    .select_group_account(
                         &group,
                         &available,
                         user_id,
-                        session_id.as_deref(),
+                        session_key.as_deref(),
+                        hints,
                         now_ms,
                     )
                     .await
-                    .ok_or_else(route_unavailable)?
-                } else {
-                    available[0].clone()
-                };
+                    .ok_or_else(route_unavailable)?;
                 Ok(Some(ResolvedAccountRoute {
                     account,
                     group: Some(group),
+                    session_key,
+                    probe,
                 }))
             }
         }
@@ -196,6 +251,44 @@ impl AccountRouter {
         }
     }
 
+    /// Feeds one finished upstream attempt into the account's capacity health.
+    pub fn observe_outcome(&self, outcome: &Outcome<'_>) {
+        if !outcome.account_id.is_empty() {
+            self.health.observe(outcome);
+        }
+    }
+
+    /// A usage-tracker sink that feeds this router's health tracking. The probe
+    /// ticket, if any, travels with the first finished attempt only.
+    pub fn outcome_sink(&self, route: &ResolvedAccountRoute) -> OutcomeSink {
+        let router = self.clone();
+        let session_key = route.session_key.clone();
+        let probe = ProbeTicket {
+            health: self.health.clone(),
+            account_id: route.account.id.clone(),
+            ticket: AtomicU64::new(route.probe.unwrap_or(0)),
+        };
+        Arc::new(move |attempt| {
+            // Warm-ups (`generate: false`) say nothing about generation capacity.
+            if attempt.warmup {
+                return;
+            }
+            let ticket = probe.ticket.swap(0, Ordering::Relaxed);
+            router.observe_outcome(&Outcome {
+                account_id: attempt.codex_account_id,
+                model: attempt.model,
+                session_key: session_key.as_deref(),
+                signal: CapacitySignal::classify(attempt.status, attempt.error_code),
+                probe: (ticket != 0).then_some(ticket),
+                at_ms: attempt.recorded_at_ms,
+            });
+        })
+    }
+
+    pub fn health(&self, account_id: &str, now_ms: i64) -> HealthView {
+        self.health.view(account_id, now_ms)
+    }
+
     pub async fn observe_quota(&self, account_id: &str, subscription: &CodexSubscriptionInfo) {
         let state = account_quota_state_from_live(subscription);
         self.update_quota_state(account_id, state).await;
@@ -234,19 +327,33 @@ impl AccountRouter {
 
     /// Share of new (unbound) requests each enabled member would receive now,
     /// following the group's strategy; quarantined members get 0.
-    pub async fn member_shares(&self, group: &AccountGroup, members: &[CodexAccount]) -> Vec<f64> {
+    pub async fn member_shares(
+        &self,
+        group: &AccountGroup,
+        members: &[CodexAccount],
+        now_ms: i64,
+    ) -> Vec<f64> {
         let runtime = self.runtime.lock().await;
         let available = members
             .iter()
             .filter(|account| account.enabled && !runtime.quota_limited.contains(&account.id))
             .cloned()
             .collect::<Vec<_>>();
+        let (usable, health) = usable_candidates(&self.health, &available, &[], None, now_ms);
+        let available = usable;
         let weights = match group.strategy.as_str() {
-            WEIGHTED_ROUND_ROBIN_STRATEGY => quota_weights(&runtime.quota, &available),
-            FALLBACK_STRATEGY => (0..available.len())
-                .map(|index| if index == 0 { 1.0 } else { 0.0 })
+            WEIGHTED_ROUND_ROBIN_STRATEGY => quota_weights(&runtime.quota, &available)
+                .into_iter()
+                .zip(&health)
+                .map(|(quota, health)| quota * health)
                 .collect(),
-            _ => vec![1.0; available.len()],
+            FALLBACK_STRATEGY => {
+                let first = health.iter().position(|factor| *factor > 0.0);
+                (0..available.len())
+                    .map(|index| if Some(index) == first { 1.0 } else { 0.0 })
+                    .collect()
+            }
+            _ => health,
         };
         let total = weights.iter().sum::<f64>();
         members
@@ -289,41 +396,158 @@ impl AccountRouter {
         group: &AccountGroup,
         available: &[CodexAccount],
         user_id: &str,
-        session_id: Option<&str>,
+        session_key: Option<&str>,
+        hints: RouteHints<'_>,
         now_ms: i64,
-    ) -> Option<CodexAccount> {
+    ) -> Option<(CodexAccount, Option<u64>)> {
         let ttl = session_affinity_ttl(&group.session_affinity_ttl);
+        let avoided = session_key
+            .map(|key| self.health.avoided_accounts(key, now_ms))
+            .unwrap_or_default();
+        let (candidates, weights) =
+            usable_candidates(&self.health, available, &avoided, hints.model, now_ms);
         let mut runtime = self.runtime.lock().await;
-        if group.strategy == FALLBACK_STRATEGY {
-            return Some(select_fallback(&mut runtime, group, user_id, available));
-        }
-        if let Some(session_id) = session_id {
-            let cache_key = format!("{}::{session_id}", group.id);
-            let cached = runtime.affinity.get(&cache_key).and_then(|binding| {
+        let affinity_key = session_key.filter(|_| group.session_affinity);
+        if group.strategy != FALLBACK_STRATEGY
+            && let Some(cache_key) = affinity_key
+        {
+            let cached = runtime.affinity.get(cache_key).and_then(|binding| {
                 binding_is_current(binding, ttl, now_ms).then(|| binding.account_id.clone())
             });
+            // Degraded accounts keep their sessions (and prompt caches); open
+            // or avoided ones do not.
             if let Some(account_id) = cached
-                && let Some(account) = available.iter().find(|entry| entry.id == account_id)
+                && let Some(account) = candidates.iter().find(|entry| entry.id == account_id)
             {
-                if let Some(binding) = runtime.affinity.get_mut(&cache_key) {
+                if let Some(binding) = runtime.affinity.get_mut(cache_key) {
                     binding.touched_at_ms = now_ms;
                 }
-                return Some(account.clone());
+                return Some((account.clone(), None));
             }
-            runtime.affinity.remove(&cache_key);
-            let account = select_unbound(&mut runtime, group, available)?;
+            runtime.affinity.remove(cache_key);
+        }
+        // A fallback user keeps a usable bound account; probes take new users.
+        if group.strategy == FALLBACK_STRATEGY
+            && let Some(bound) = runtime.fallback.get(&format!("{}::{user_id}", group.id))
+            && let Some(account) = candidates.iter().find(|account| &account.id == bound)
+        {
+            return Some((account.clone(), None));
+        }
+        let (account, probe) = match self.claim_probe(available, &avoided, hints, now_ms) {
+            Some((account, ticket)) => (account, Some(ticket)),
+            None if group.strategy == FALLBACK_STRATEGY => (
+                select_fallback(&mut runtime, group, user_id, &candidates),
+                None,
+            ),
+            None => (
+                select_unbound(&mut runtime, group, &candidates, &weights)?,
+                None,
+            ),
+        };
+        if group.strategy != FALLBACK_STRATEGY
+            && let Some(cache_key) = affinity_key
+        {
             make_affinity_room(&mut runtime.affinity);
             runtime.affinity.insert(
-                cache_key,
+                cache_key.to_owned(),
                 AffinityBinding {
                     account_id: account.id.clone(),
                     touched_at_ms: now_ms,
                 },
             );
-            return Some(account);
         }
-        select_unbound(&mut runtime, group, available)
+        Some((account, probe))
     }
+
+    /// Hands one new generative request to a recovering (half-open) account.
+    fn claim_probe(
+        &self,
+        available: &[CodexAccount],
+        avoided: &[String],
+        hints: RouteHints<'_>,
+        now_ms: i64,
+    ) -> Option<(CodexAccount, u64)> {
+        if !hints.generative {
+            return None;
+        }
+        let (account_id, ticket) = self.health.claim_probe(
+            available
+                .iter()
+                .map(|account| account.id.as_str())
+                .filter(|id| !avoided.iter().any(|avoided| avoided == id)),
+            now_ms,
+        )?;
+        tracing::info!(event = "account_health", action = "probe", account_id);
+        let account = available.iter().find(|account| account.id == account_id)?;
+        Some((account.clone(), ticket))
+    }
+}
+
+/// A probe ticket held by a tracker; returned if the tracker ends unused
+/// (e.g. a WebSocket that closes before sending any request).
+struct ProbeTicket {
+    health: AccountHealth,
+    account_id: String,
+    ticket: AtomicU64,
+}
+
+impl Drop for ProbeTicket {
+    fn drop(&mut self) {
+        let ticket = *self.ticket.get_mut();
+        if ticket != 0 {
+            self.health.release_probe(&self.account_id, ticket);
+        }
+    }
+}
+
+/// Accounts eligible for new traffic and their health weights.
+///
+/// Usable (non-open) accounts the session has not just failed on come first;
+/// then any usable account. When nothing is usable, every account stays
+/// eligible, ranked by overload rate: a bad account beats no answer.
+fn usable_candidates(
+    health: &AccountHealth,
+    available: &[CodexAccount],
+    avoided: &[String],
+    model: Option<&str>,
+    now_ms: i64,
+) -> (Vec<CodexAccount>, Vec<f64>) {
+    let scored = available
+        .iter()
+        .map(|account| (account, health.factor(&account.id, model, now_ms)))
+        .collect::<Vec<_>>();
+    let pick = |keep: &dyn Fn(&CodexAccount, f64) -> bool| {
+        scored
+            .iter()
+            .filter(|(account, factor)| keep(account, *factor))
+            .map(|(account, factor)| ((*account).clone(), *factor))
+            .unzip::<_, _, Vec<_>, Vec<_>>()
+    };
+    let preferred = pick(&|account, factor| factor > 0.0 && !avoided.contains(&account.id));
+    if !preferred.0.is_empty() {
+        return preferred;
+    }
+    let usable = pick(&|_, factor| factor > 0.0);
+    if !usable.0.is_empty() {
+        return usable;
+    }
+    // Keep a half-open account's single probe the only request it carries,
+    // unless nothing else is left at all.
+    let idle = available
+        .iter()
+        .filter(|account| !health.probing(&account.id, now_ms))
+        .collect::<Vec<_>>();
+    let pool = if idle.is_empty() {
+        available.iter().collect()
+    } else {
+        idle
+    };
+    pool.into_iter()
+        .map(|account| {
+            let rate = health.overload_rate(&account.id, now_ms);
+            (account.clone(), (-8.0 * rate).exp().max(f64::MIN_POSITIVE))
+        })
+        .unzip()
 }
 
 fn quarantine_account(runtime: &mut RouterRuntime, account_id: &str) -> bool {
@@ -341,17 +565,20 @@ fn select_unbound(
     runtime: &mut RouterRuntime,
     group: &AccountGroup,
     available: &[CodexAccount],
+    health: &[f64],
 ) -> Option<CodexAccount> {
     match group.strategy.as_str() {
         WEIGHTED_ROUND_ROBIN_STRATEGY => {
-            let weights = quota_weights(&runtime.quota, available);
+            let weights = quota_weights(&runtime.quota, available)
+                .into_iter()
+                .zip(health)
+                .map(|(quota, health)| quota * health)
+                .collect::<Vec<_>>();
             select_smooth_weighted(&mut runtime.weighted, &group.id, available, &weights)
         }
-        _ => Some(select_round_robin(
-            &mut runtime.last_picked,
-            &group.id,
-            available,
-        )),
+        // Equal base weights: smooth weighted round-robin is plain round-robin
+        // until health tilts it.
+        _ => select_smooth_weighted(&mut runtime.weighted, &group.id, available, health),
     }
 }
 
@@ -616,6 +843,7 @@ fn route_unavailable() -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::{account_health::HealthState, usage::FinishedAttempt};
 
     fn account(id: &str) -> CodexAccount {
         CodexAccount {
@@ -786,6 +1014,262 @@ mod tests {
             select_fallback(&mut runtime, &group, "consumer-a", &available,),
             second
         );
+    }
+
+    fn round_robin_group(accounts: &[&CodexAccount]) -> AccountGroup {
+        AccountGroup {
+            id: "group".into(),
+            name: "pool".into(),
+            account_ids: accounts.iter().map(|account| account.id.clone()).collect(),
+            strategy: "round-robin".into(),
+            session_affinity: true,
+            session_affinity_ttl: "1h".into(),
+        }
+    }
+
+    const GENERATIVE: RouteHints<'static> = RouteHints {
+        model: None,
+        generative: true,
+    };
+
+    fn overload(router: &AccountRouter, account_id: &str, session: &str, now_ms: i64) {
+        router.observe_outcome(&Outcome {
+            account_id,
+            model: "gpt-test",
+            session_key: Some(session),
+            signal: CapacitySignal::Overload,
+            probe: None,
+            at_ms: now_ms,
+        });
+    }
+
+    /// Trips `account_id` while the rest of the pool serves normally (an
+    /// overload everywhere at once is global and only degrades accounts).
+    fn open(router: &AccountRouter, account_id: &str) {
+        for i in 0..50 {
+            router.observe_outcome(&Outcome {
+                account_id: "elsewhere",
+                model: "gpt-test",
+                session_key: None,
+                signal: CapacitySignal::Success,
+                probe: None,
+                at_ms: i,
+            });
+        }
+        for (i, session) in ["x", "y", "z"].into_iter().enumerate() {
+            overload(router, account_id, session, i as i64);
+        }
+        assert_eq!(router.health(account_id, 10).state, HealthState::Open);
+    }
+
+    async fn pick(
+        router: &AccountRouter,
+        group: &AccountGroup,
+        available: &[CodexAccount],
+        session: Option<&str>,
+        now_ms: i64,
+    ) -> (CodexAccount, Option<u64>) {
+        router
+            .select_group_account(group, available, "u", session, GENERATIVE, now_ms)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_overloaded_session_moves_to_another_account_and_stays_there() {
+        let (a, b, c) = (account("a"), account("b"), account("c"));
+        let group = round_robin_group(&[&a, &b, &c]);
+        let available = vec![a.clone(), b.clone(), c.clone()];
+        let router = AccountRouter::default();
+        let session = Some("group::s1");
+        assert_eq!(pick(&router, &group, &available, session, 0).await.0, a);
+        assert_eq!(pick(&router, &group, &available, session, 1).await.0, a);
+        overload(&router, "a", "group::s1", 2);
+        let moved = pick(&router, &group, &available, session, 3).await.0;
+        assert_ne!(moved, a);
+        assert_eq!(pick(&router, &group, &available, session, 4).await.0, moved);
+        // A second overload elsewhere must not send the session back to `a`.
+        overload(&router, &moved.id, "group::s1", 5);
+        let remaining = if moved == b { c } else { b };
+        assert_eq!(
+            pick(&router, &group, &available, session, 6).await.0,
+            remaining
+        );
+    }
+
+    #[tokio::test]
+    async fn avoidance_works_without_session_affinity() {
+        let (a, b) = (account("a"), account("b"));
+        let mut group = round_robin_group(&[&a, &b]);
+        group.session_affinity = false;
+        let available = vec![a.clone(), b.clone()];
+        let router = AccountRouter::default();
+        overload(&router, "a", "group::s1", 0);
+        for now in 1..5 {
+            assert_eq!(
+                pick(&router, &group, &available, Some("group::s1"), now)
+                    .await
+                    .0,
+                b
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn open_accounts_get_no_new_sessions_until_their_probe() {
+        let (a, b) = (account("a"), account("b"));
+        let group = round_robin_group(&[&a, &b]);
+        let available = vec![a.clone(), b.clone()];
+        let router = AccountRouter::default();
+        open(&router, "a");
+        for i in 0..6 {
+            let session = format!("group::new-{i}");
+            let (picked, probe) = pick(&router, &group, &available, Some(&session), 10 + i).await;
+            assert_eq!((picked, probe), (b.clone(), None));
+        }
+        let reopen = router.health("a", 10).retry_at.unwrap() + 1;
+        let (probe_account, ticket) =
+            pick(&router, &group, &available, Some("group::p"), reopen).await;
+        assert_eq!(probe_account, a);
+        assert!(ticket.is_some());
+        // Only one probe at a time.
+        let (next, ticket) = pick(&router, &group, &available, Some("group::q"), reopen).await;
+        assert_eq!((next, ticket), (b, None));
+    }
+
+    #[tokio::test]
+    async fn bound_sessions_are_not_diverted_to_probes() {
+        let (a, b) = (account("a"), account("b"));
+        let group = round_robin_group(&[&a, &b]);
+        let available = vec![a.clone(), b.clone()];
+        let router = AccountRouter::default();
+        open(&router, "a");
+        assert_eq!(
+            pick(&router, &group, &available, Some("group::s"), 10)
+                .await
+                .0,
+            b
+        );
+        let reopen = router.health("a", 10).retry_at.unwrap() + 1;
+        assert_eq!(
+            pick(&router, &group, &available, Some("group::s"), reopen).await,
+            (b, None)
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_groups_probe_recovering_accounts_with_new_users() {
+        let (a, b) = (account("a"), account("b"));
+        let mut group = round_robin_group(&[&a, &b]);
+        group.strategy = FALLBACK_STRATEGY.into();
+        let available = vec![a.clone(), b.clone()];
+        let router = AccountRouter::default();
+        open(&router, "a");
+        assert_eq!(pick(&router, &group, &available, None, 10).await.0, b);
+        let reopen = router.health("a", 10).retry_at.unwrap() + 1;
+        // The bound user keeps its healthy account.
+        assert_eq!(
+            pick(&router, &group, &available, None, reopen).await,
+            (b.clone(), None)
+        );
+        // A new user carries the probe.
+        let (probe_account, ticket) = router
+            .select_group_account(&group, &available, "new-user", None, GENERATIVE, reopen)
+            .await
+            .unwrap();
+        assert_eq!(probe_account, a);
+        assert!(ticket.is_some());
+    }
+
+    #[tokio::test]
+    async fn every_account_unhealthy_still_serves_from_the_least_bad() {
+        let (a, b) = (account("a"), account("b"));
+        let group = round_robin_group(&[&a, &b]);
+        let available = vec![a.clone(), b.clone()];
+        let router = AccountRouter::default();
+        open(&router, "a");
+        open(&router, "b");
+        let picked = router
+            .select_group_account(&group, &available, "u", None, RouteHints::default(), 10)
+            .await;
+        assert!(picked.is_some());
+    }
+
+    #[tokio::test]
+    async fn avoiding_does_not_prefer_open_accounts_over_a_degraded_one() {
+        let (a, b, c) = (account("a"), account("b"), account("c"));
+        let group = round_robin_group(&[&a, &b, &c]);
+        let available = vec![a.clone(), b.clone(), c.clone()];
+        let router = AccountRouter::default();
+        open(&router, "b");
+        open(&router, "c");
+        overload(&router, "a", "group::s", 20);
+        assert_eq!(router.health("a", 21).state, HealthState::Healthy);
+        // `a` is avoided by the session but the others are open: stay on `a`.
+        assert_eq!(
+            pick(&router, &group, &available, Some("group::s"), 21)
+                .await
+                .0,
+            a
+        );
+    }
+
+    fn route_for(account: &CodexAccount, probe: Option<u64>) -> ResolvedAccountRoute {
+        ResolvedAccountRoute {
+            account: account.clone(),
+            group: None,
+            session_key: None,
+            probe,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unused_probe_ticket_is_returned_when_its_tracker_ends() {
+        let a = account("a");
+        let router = AccountRouter::default();
+        open(&router, "a");
+        let reopen = router.health("a", 10).retry_at.unwrap() + 1;
+        let (_, ticket) = router.health.claim_probe(["a"], reopen).unwrap();
+        assert!(router.health.probing("a", reopen));
+        drop(router.outcome_sink(&route_for(&a, Some(ticket))));
+        assert!(!router.health.probing("a", reopen));
+    }
+
+    #[tokio::test]
+    async fn warmups_do_not_complete_a_probe() {
+        let a = account("a");
+        let router = AccountRouter::default();
+        open(&router, "a");
+        let reopen = router.health("a", 10).retry_at.unwrap() + 1;
+        let (_, ticket) = router.health.claim_probe(["a"], reopen).unwrap();
+        let sink = router.outcome_sink(&route_for(&a, Some(ticket)));
+        let attempt = |warmup| FinishedAttempt {
+            codex_account_id: "a",
+            model: "gpt-test",
+            status: "completed",
+            error_code: "",
+            recorded_at_ms: reopen + 1,
+            warmup,
+        };
+        sink(&attempt(true));
+        assert!(router.health.probing("a", reopen + 1));
+        sink(&attempt(false));
+        assert!(!router.health.probing("a", reopen + 1));
+    }
+
+    #[tokio::test]
+    async fn when_everything_is_down_a_probing_account_is_left_to_its_probe() {
+        let (a, b) = (account("a"), account("b"));
+        let available = vec![a.clone(), b.clone()];
+        let router = AccountRouter::default();
+        open(&router, "a");
+        open(&router, "b");
+        let reopen = router.health("a", 10).retry_at.unwrap() + 1;
+        assert!(router.health.claim_probe(["a"], reopen).is_some());
+        let (candidates, _) = usable_candidates(&router.health, &available, &[], None, reopen);
+        assert!(!candidates.is_empty());
+        assert!(!candidates.contains(&a), "{candidates:?}");
+        assert_eq!(candidates, [b]);
     }
 
     #[tokio::test]

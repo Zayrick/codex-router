@@ -181,27 +181,9 @@ pub(super) fn tracked_body_bytes(
     })
 }
 
+/// Streams a tracked upstream body, ending it at the terminal Responses event.
 pub fn upstream_proxy_tracked(response: reqwest::Response, tracker: UsageTracker) -> Response {
-    let status = response.status();
-    let headers = proxy_headers(response.headers());
-    let content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    tracker.observe_upstream_status(status.as_u16());
-    let mut source = tracked_body_bytes(response, &tracker);
-    let mut observer = tracker.wire_observer(content_type.as_deref());
-    let output = async_stream::stream! {
-        while let Some(chunk) = source.next().await {
-            if let Ok(bytes) = &chunk {
-                observer.push(bytes);
-            }
-            yield chunk;
-        }
-        observer.finish();
-    };
-    response_with_status(status, headers, Body::from_stream(output))
+    super::held_stream::release_tracked(response, &tracker)
 }
 
 pub fn suppress_html_body(response: Response) -> Response {
@@ -298,7 +280,7 @@ fn response(status: u16, headers: HeaderMap, body: Body) -> Response {
     response_with_status(status, headers, body)
 }
 
-fn response_with_status(status: StatusCode, headers: HeaderMap, body: Body) -> Response {
+pub(super) fn response_with_status(status: StatusCode, headers: HeaderMap, body: Body) -> Response {
     let mut response = Response::new(body);
     *response.status_mut() = status;
     *response.headers_mut() = headers;

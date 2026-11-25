@@ -16,18 +16,21 @@ use crate::{
 };
 
 use super::{
+    account_router::RouteHints,
     codex::header_bag,
     config::AppConfig,
     oauth::current_time_ms,
     response,
     state::AppState,
-    usage::{UsageIdentity, UsageTracker},
+    usage::{OutcomeSink, UsageIdentity, UsageTracker},
     usage_client::UsageClient,
     websocket,
 };
 
 struct RelayReplacement {
     account_id: String,
+    /// Feeds the routed account's health; carries the session and probe ticket.
+    outcome_sink: OutcomeSink,
     credentials: CodexCredentials,
     identity: UsageIdentity,
 }
@@ -58,7 +61,13 @@ async fn dispatch_relay(
             .get(ACCOUNT_ID_HEADER)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        replacement_credentials(incoming_account_id.as_deref(), request.headers(), state).await?
+        replacement_credentials(
+            incoming_account_id.as_deref(),
+            request.headers(),
+            is_codex_usage_path(client_url.path()),
+            state,
+        )
+        .await?
     } else {
         None
     };
@@ -76,6 +85,7 @@ async fn dispatch_relay(
 async fn replacement_credentials(
     incoming_account_id: Option<&str>,
     headers: &axum::http::HeaderMap,
+    generative: bool,
     state: &AppState,
 ) -> AppResult<Option<RelayReplacement>> {
     let Some(authenticated) = UserRepository::new(state.config.as_ref())
@@ -86,10 +96,14 @@ async fn replacement_credentials(
     };
     let Some(account_route) = state
         .account_router
-        .resolve(
+        .resolve_with(
             state.config.as_ref(),
             &authenticated.user.id,
             headers,
+            RouteHints {
+                model: None,
+                generative,
+            },
             current_time_ms(),
         )
         .await?
@@ -114,6 +128,7 @@ async fn replacement_credentials(
             .map(|group| (group.id.as_str(), group.name.as_str())),
     );
     Ok(Some(RelayReplacement {
+        outcome_sink: state.account_router.outcome_sink(&account_route),
         account_id: account_route.account.id,
         credentials: CodexCredentials {
             token: stored.access_token,
@@ -157,7 +172,9 @@ async fn forward_relay(
                     client_url.path(),
                 )
             };
-            tracker.track_live(&state.live)
+            tracker
+                .with_outcome_sink(replacement.outcome_sink.clone())
+                .track_live(&state.live)
         });
     let routed_account_id = replacement.map(|replacement| replacement.account_id.clone());
     if let Some(upgrade) = upgrade {
@@ -165,7 +182,11 @@ async fn forward_relay(
             upgrade,
             target,
             headers,
-            false,
+            websocket::ResponsesOptions {
+                adapt: false,
+                // Only routed Responses sockets: a reconnect there can pick another account.
+                close_on_overload: tracker.is_some(),
+            },
             tracker,
             state.chatgpt.proxy(),
             state.chatgpt.websocket_idle_timeout(),

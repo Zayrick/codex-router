@@ -1,4 +1,9 @@
-use axum::{body::Body, extract::ws::WebSocketUpgrade, http::Request, response::Response};
+use axum::{
+    body::Body,
+    extract::ws::WebSocketUpgrade,
+    http::{HeaderMap, Request},
+    response::Response,
+};
 use serde_json::{Value, json};
 use url::Url;
 
@@ -15,7 +20,7 @@ use super::{
     body,
     codex::{CodexClient, CodexProxyRoute},
     config::AppConfig,
-    images,
+    held_stream, images,
     oauth::current_time_ms,
     provider_error::{anthropic_upstream_error_response, gemini_upstream_error_response},
     response,
@@ -25,21 +30,43 @@ use super::{
     usage_client::UsageClient,
 };
 
+/// Most extra accounts one HTTP request may try after overloads.
+const MAX_FAILOVERS: usize = 1;
+
 /// Who sent a request, captured before the request is consumed.
+#[derive(Clone)]
 struct UsageSource {
     identity: UsageIdentity,
     client: UsageClient,
 }
 
 impl UsageSource {
-    fn tracker(self, state: &AppState, endpoint: &str, websocket: bool) -> UsageTracker {
+    /// A tracker for one attempt through `route`; its outcomes feed account health.
+    fn tracker(
+        &self,
+        state: &AppState,
+        endpoint: &str,
+        websocket: bool,
+        route: &ResolvedAccountRoute,
+    ) -> UsageTracker {
         let store = state.usage.clone();
+        let identity = self.identity.clone().with_account_route(
+            &route.account.id,
+            &route.account.name,
+            route
+                .group
+                .as_ref()
+                .map(|group| (group.id.as_str(), group.name.as_str())),
+        );
+        let client = self.client.clone();
         let tracker = if websocket {
-            UsageTracker::websocket(store, self.identity, self.client, endpoint)
+            UsageTracker::websocket(store, identity, client, endpoint)
         } else {
-            UsageTracker::http(store, self.identity, self.client, endpoint)
+            UsageTracker::http(store, identity, client, endpoint)
         };
-        tracker.track_live(&state.live)
+        tracker
+            .with_outcome_sink(state.account_router.outcome_sink(route))
+            .track_live(&state.live)
     }
 }
 
@@ -202,9 +229,9 @@ async fn dispatch(
                 ApiRoute::Proxy => CodexProxyRoute::Proxy,
                 _ => return Err(runtime_failure()),
             };
-            let tracker =
-                track_usage.then(|| usage.tracker(state, client_url.path(), websocket.is_some()));
             if let Some(upgrade) = websocket {
+                let tracker = track_usage
+                    .then(|| usage.tracker(state, client_url.path(), true, account_route));
                 let output = client
                     .forward_websocket(
                         upgrade,
@@ -218,6 +245,18 @@ async fn dispatch(
                 observe_upstream_status(state, account_route, output.status().as_u16()).await;
                 return Ok(output);
             }
+            if route == ApiRoute::Responses {
+                return responses_with_failover(
+                    request,
+                    client_url,
+                    state,
+                    &usage,
+                    account_route.clone(),
+                )
+                .await;
+            }
+            let tracker =
+                track_usage.then(|| usage.tracker(state, client_url.path(), false, account_route));
             let upstream = client
                 .forward_proxy(request, client_url, proxy_route, tracker.as_ref())
                 .await
@@ -236,7 +275,7 @@ async fn dispatch(
             let (parts, body) = request.into_parts();
             let input = body::request_json(&parts.headers, body).await?;
             let adapted = route.adapter().ok_or_else(runtime_failure)?.adapt(&input)?;
-            let tracker = usage.tracker(state, client_url.path(), false);
+            let tracker = usage.tracker(state, client_url.path(), false, account_route);
             tracker.set_client_stream(adapted.stream);
             let upstream = client
                 .send_converted_responses(&adapted.body, &parts.headers, &tracker)
@@ -260,6 +299,88 @@ async fn dispatch(
             let output = present_non_stream(upstream, &adapted.response, created, tracker).await?;
             response::json(&output, 200)
         }
+    }
+}
+
+/// Proxies a Responses request, replaying it on another group member when the
+/// upstream reports an overload before the client has seen any output.
+async fn responses_with_failover(
+    request: Request<Body>,
+    client_url: &Url,
+    state: &AppState,
+    usage: &UsageSource,
+    mut account_route: ResolvedAccountRoute,
+) -> AppResult<Response> {
+    let headers: HeaderMap = request.headers().clone();
+    let endpoint = client_url.path();
+    let mut prepared =
+        match CodexClient::prepare_proxy(request, client_url, CodexProxyRoute::Responses).await {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                usage
+                    .tracker(state, endpoint, false, &account_route)
+                    .fail(&error);
+                return Err(error);
+            }
+        };
+    let usage_request = prepared.usage_request();
+    let model = usage_request
+        .as_ref()
+        .and_then(|request| request.model())
+        .map(str::to_owned);
+    let mut failed = Vec::new();
+    loop {
+        let tracker = usage.tracker(state, endpoint, false, &account_route);
+        if let Some(request) = usage_request.clone() {
+            tracker.record_request(request);
+        }
+        let oauth = OAuthRepository::new(state.config.as_ref(), &account_route.account.id);
+        let upstream = CodexClient::new(&oauth, &state.chatgpt)
+            .send_prepared(&mut prepared)
+            .await
+            .inspect_err(|error| tracker.fail(error))?;
+        let can_fail_over =
+            account_route.group.is_some() && failed.len() < MAX_FAILOVERS && prepared.replayable();
+        // Without a failover the stream is not held, but an error body is still
+        // read so a capacity rejection is told apart from exhausted quota.
+        let hold = if can_fail_over {
+            held_stream::DEFAULT_HOLD
+        } else {
+            std::time::Duration::ZERO
+        };
+        let held = held_stream::hold(upstream, &tracker, hold).await;
+        // A capacity rejection (even as HTTP 429 `slow_down`) is health, not quota.
+        if !held.overloaded {
+            observe_upstream_status(state, &account_route, held.status().as_u16()).await;
+        }
+        if !held.overloaded || !can_fail_over {
+            return Ok(held.release());
+        }
+        failed.push(account_route.account.id.clone());
+        let next = state
+            .account_router
+            .resolve_failover(
+                state.config.as_ref(),
+                &usage.identity.user_id,
+                &headers,
+                model.as_deref(),
+                &failed,
+                current_time_ms(),
+            )
+            .await
+            .ok()
+            .flatten();
+        let Some(next) = next else {
+            return Ok(held.release());
+        };
+        tracing::info!(
+            event = "account_failover",
+            from = %account_route.account.id,
+            to = %next.account.id,
+            model = model.as_deref().unwrap_or_default()
+        );
+        prepared.forget_account_state();
+        account_route = next;
     }
 }
 

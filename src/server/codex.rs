@@ -168,10 +168,23 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
         tracker: Option<&UsageTracker>,
     ) -> AppResult<reqwest::Response> {
         let credentials = self.credentials().await?;
+        let mut prepared = Self::prepare_proxy(request, client_url, route).await?;
+        if let (Some(tracker), Some(request)) = (tracker, prepared.usage_request()) {
+            tracker.record_request(request);
+        }
+        self.send_prepared_with(&credentials, &mut prepared).await
+    }
+
+    /// Reads and adapts a proxied request without choosing an account yet.
+    pub async fn prepare_proxy(
+        request: Request<Body>,
+        client_url: &Url,
+        route: CodexProxyRoute,
+    ) -> AppResult<PreparedProxy> {
         let (parts, body) = request.into_parts();
         let source = header_bag(&parts.headers);
         let target = resolve_codex_proxy_url(client_url, parts.method.as_str());
-        let prepared = prepare_proxy_body(
+        let body = prepare_proxy_body(
             body,
             &parts.headers,
             client_url,
@@ -180,12 +193,46 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             source,
         )
         .await?;
-        if let (Some(tracker), Some(request)) = (tracker, prepared.usage_request) {
-            tracker.record_request(request);
-        }
-        let headers = proxy_request_headers(&prepared.headers, &credentials, target.path(), false);
-        self.send(&target, parts.method, headers, prepared.body, false)
-            .await
+        Ok(PreparedProxy {
+            method: parts.method,
+            target,
+            body,
+        })
+    }
+
+    /// Sends a prepared request with this client's account. A replayable body can
+    /// be sent again, e.g. through another account after an overload.
+    pub async fn send_prepared(
+        &self,
+        prepared: &mut PreparedProxy,
+    ) -> AppResult<reqwest::Response> {
+        let credentials = self.credentials().await?;
+        self.send_prepared_with(&credentials, prepared).await
+    }
+
+    async fn send_prepared_with(
+        &self,
+        credentials: &CodexCredentials,
+        prepared: &mut PreparedProxy,
+    ) -> AppResult<reqwest::Response> {
+        let headers = proxy_request_headers(
+            &prepared.body.headers,
+            credentials,
+            prepared.target.path(),
+            false,
+        );
+        let body = match &prepared.body.replay {
+            Some(bytes) => Some(reqwest::Body::from(bytes.clone())),
+            None => prepared.body.body.take(),
+        };
+        self.send(
+            &prepared.target,
+            prepared.method.clone(),
+            headers,
+            body,
+            false,
+        )
+        .await
     }
 
     pub async fn forward_websocket(
@@ -209,7 +256,11 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             upgrade,
             target,
             headers,
-            route == CodexProxyRoute::Responses,
+            websocket::ResponsesOptions {
+                adapt: route == CodexProxyRoute::Responses,
+                // Reconnecting lets routing move the session to a healthier account.
+                close_on_overload: route == CodexProxyRoute::Responses,
+            },
             tracker,
             self.transport.proxy(),
             self.transport.websocket_idle_timeout(),
@@ -265,9 +316,34 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
     }
 }
 
+/// A proxied request read from the client, ready to send through any account.
+pub struct PreparedProxy {
+    method: Method,
+    target: Url,
+    body: PreparedProxyBody,
+}
+
+impl PreparedProxy {
+    pub fn usage_request(&self) -> Option<UsageRequest> {
+        self.body.usage_request.clone()
+    }
+
+    /// Whether the request can be sent again through another account.
+    pub fn replayable(&self) -> bool {
+        self.body.replay.is_some()
+    }
+
+    /// Drops state the previous account issued before replaying on another one.
+    pub fn forget_account_state(&mut self) {
+        self.body.headers.remove("x-codex-turn-state");
+    }
+}
+
 struct PreparedProxyBody {
     headers: HeaderBag,
     body: Option<reqwest::Body>,
+    /// Complete, self-contained JSON body that may be sent more than once.
+    replay: Option<Bytes>,
     usage_request: Option<UsageRequest>,
 }
 
@@ -307,17 +383,23 @@ async fn adapt_json_body<'a>(
     let parsed = parse_json_body_with_source(encoded, content_encoding.as_deref())?;
     let adapted = adapt(&parsed.body);
     let usage_request = Some(UsageRequest::from_body(adapted.as_ref()));
-    if matches!(adapted, Cow::Borrowed(_)) {
-        return Ok(PreparedProxyBody {
-            headers,
-            body: Some(reqwest::Body::from(parsed.encoded_body)),
-            usage_request,
-        });
-    }
-    let bytes = serde_json::to_vec(adapted.as_ref()).map_err(|_| json_serialization_error())?;
+    let (headers, bytes) = if matches!(adapted, Cow::Borrowed(_)) {
+        (headers, Bytes::from(parsed.encoded_body))
+    } else {
+        let bytes = serde_json::to_vec(adapted.as_ref()).map_err(|_| json_serialization_error())?;
+        (json_headers(&headers), Bytes::from(bytes))
+    };
+    // Uploaded files only resolve on the account that stored them.
+    let self_contained = !references_file(&Value::Object(adapted.as_ref().clone()));
+    let (body, replay) = if self_contained {
+        (None, Some(bytes))
+    } else {
+        (Some(reqwest::Body::from(bytes)), None)
+    };
     Ok(PreparedProxyBody {
-        headers: json_headers(&headers),
-        body: Some(reqwest::Body::from(bytes)),
+        headers,
+        body,
+        replay,
         usage_request,
     })
 }
@@ -384,8 +466,20 @@ async fn adapt_live_bootstrap(
     Ok(PreparedProxyBody {
         headers: json_headers(&headers),
         body: Some(reqwest::Body::from(bytes)),
+        replay: None,
         usage_request: None,
     })
+}
+
+/// Whether a request body refers to an uploaded file anywhere.
+fn references_file(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object
+            .iter()
+            .any(|(key, value)| (key == "file_id" && !value.is_null()) || references_file(value)),
+        Value::Array(items) => items.iter().any(references_file),
+        _ => false,
+    }
 }
 
 fn passthrough_body(body: Body, method: &Method, headers: HeaderBag) -> PreparedProxyBody {
@@ -394,6 +488,7 @@ fn passthrough_body(body: Body, method: &Method, headers: HeaderBag) -> Prepared
     PreparedProxyBody {
         headers,
         body,
+        replay: None,
         usage_request: None,
     }
 }
@@ -457,4 +552,22 @@ fn live_request_too_large() -> ApiError {
     ApiError::new(413, "The live multipart body is too large.")
         .with_kind("invalid_request_error")
         .with_code("live_request_too_large")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::references_file;
+
+    #[test]
+    fn finds_file_references_anywhere_in_a_request() {
+        assert!(references_file(&json!({
+            "input": [{"role": "user", "content": [{"type": "input_file", "file_id": "file-1"}]}]
+        })));
+        assert!(!references_file(&json!({
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "\"file_id\""}]}]
+        })));
+        assert!(!references_file(&json!({"input": [], "file_id": null})));
+    }
 }

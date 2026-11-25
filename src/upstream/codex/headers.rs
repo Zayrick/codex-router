@@ -47,6 +47,10 @@ impl HeaderBag {
         );
     }
 
+    pub fn remove(&mut self, name: &str) -> Option<String> {
+        self.values.remove(&name.to_ascii_lowercase())
+    }
+
     pub fn append(&mut self, name: impl Into<String>, value: impl Into<String>) {
         let name = name.into().to_ascii_lowercase();
         let value = value.into().trim().to_owned();

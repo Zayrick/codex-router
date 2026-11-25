@@ -22,6 +22,7 @@ import {
 	cacheRate,
 	forecastCopy,
 	formatBurn,
+	healthStatus,
 	initial,
 	maskAccountId,
 	planText,
@@ -75,6 +76,7 @@ export function AccountCard({
 	const plan = quota?.planType ?? account.subscription?.planType ?? null;
 	const tokenExpired = account.oauth ? account.oauth.expiresAt > 0 && account.oauth.expiresAt <= now : true;
 	const tone = accountTone(quota, now);
+	const health = healthStatus(quota);
 	const windows = visibleWindows(quota?.windows ?? []);
 	const exhausting = windows.filter((window) => window.exhaustsBeforeReset || window.limitReached);
 	const isBusy = busy.has(`codex:${account.id}`);
@@ -106,6 +108,7 @@ export function AccountCard({
 						)}
 						{!account.enabled ? <Tag>已停用</Tag> : null}
 						{account.enabled && quota?.quarantined ? <Tag tone="danger">已暂停调度</Tag> : null}
+						{account.enabled && health ? <Tag tone={health.tone}>{health.label}</Tag> : null}
 						{account.enabled && tone === "danger" ? <Tag tone="danger">额度即将耗尽</Tag> : null}
 						{account.enabled && tone === "warning" ? <Tag tone="warning">额度偏紧</Tag> : null}
 					</div>
