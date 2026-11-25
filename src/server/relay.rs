@@ -20,6 +20,7 @@ use super::{
     codex::header_bag,
     config::AppConfig,
     oauth::current_time_ms,
+    relay_identity::{Ownership, pooled_request},
     response,
     state::AppState,
     usage::{OutcomeSink, UsageIdentity, UsageTracker},
@@ -55,21 +56,25 @@ async fn dispatch_relay(
     config: &AppConfig,
     state: &AppState,
 ) -> AppResult<Response> {
-    let replacement = if client_url.path().starts_with("/backend-api/codex/") {
-        let incoming_account_id = request
-            .headers()
-            .get(ACCOUNT_ID_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        replacement_credentials(
-            incoming_account_id.as_deref(),
-            request.headers(),
-            is_codex_usage_path(client_url.path()),
-            state,
-        )
-        .await?
-    } else {
-        None
+    // Only inference and the model catalog move to a pooled account; every
+    // other request keeps the caller's own ChatGPT credentials.
+    let pooled = pooled_request(request.method(), client_url.path(), upgrade.is_some());
+    let replacement = match pooled {
+        Some(pooled) => {
+            let incoming_account_id = request
+                .headers()
+                .get(ACCOUNT_ID_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            replacement_credentials(
+                incoming_account_id.as_deref(),
+                request.headers(),
+                pooled.generative,
+                state,
+            )
+            .await?
+        }
+        None => None,
     };
     forward_relay(
         request,
@@ -94,6 +99,18 @@ async fn replacement_credentials(
     else {
         return Ok(None);
     };
+    // The account ID header alone proves nothing: the caller's token must
+    // belong to that account. Anything short of proof stays on the caller's own
+    // credentials.
+    let claimed = incoming_account_id.unwrap_or_default();
+    if state
+        .relay_ownership
+        .verify(&state.chatgpt, headers, claimed)
+        .await
+        != Ownership::Verified
+    {
+        return Ok(None);
+    }
     let Some(account_route) = state
         .account_router
         .resolve_with(

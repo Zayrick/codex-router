@@ -20,6 +20,7 @@ mod pricing;
 mod provider_error;
 mod quota;
 mod relay;
+mod relay_identity;
 mod response;
 mod router;
 mod scheduled;

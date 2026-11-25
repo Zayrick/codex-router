@@ -8,6 +8,7 @@ use super::{
     config::ConfigStore,
     console_security::LoginThrottle,
     live::LiveHub,
+    relay_identity::AccountOwnership,
     session_store::SessionStore,
     usage::UsageStore,
 };
@@ -19,6 +20,8 @@ pub struct AppState {
     pub chatgpt: ChatgptTransport,
     pub usage: UsageStore,
     pub account_router: AccountRouter,
+    /// Proves relayed callers own the ChatGPT account they claim.
+    pub relay_ownership: AccountOwnership,
     pub sessions: SessionStore,
     /// Connections currently being proxied, for the console's live view.
     pub live: LiveHub,
@@ -68,6 +71,7 @@ impl AppState {
             chatgpt,
             usage,
             account_router,
+            relay_ownership: AccountOwnership::default(),
             sessions,
             live: LiveHub::default(),
             login_throttle: Arc::default(),
