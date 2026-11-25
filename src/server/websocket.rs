@@ -6,6 +6,13 @@ use axum::{
     http::{HeaderName, HeaderValue, StatusCode},
     response::Response,
 };
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
+
+use tokio::time::Instant;
+
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, client_async_tls, connect_async,
@@ -22,7 +29,15 @@ use crate::{
     upstream::codex::HeaderBag,
 };
 
-use super::{chatgpt_proxy::ChatgptProxy, response, usage::UsageTracker};
+use super::{
+    chatgpt_proxy::ChatgptProxy, config::WebsocketIdleTimeout, response, usage::UsageTracker,
+};
+
+/// Rechecks the idle timeout at least this often, so setting changes apply.
+const IDLE_RECHECK: Duration = Duration::from_secs(30);
+/// Close code and reason sent to both sides of an idle WebSocket.
+const IDLE_CLOSE_CODE: u16 = 1000;
+const IDLE_CLOSE_REASON: &str = "idle timeout";
 
 pub async fn proxy(
     upgrade: WebSocketUpgrade,
@@ -31,6 +46,7 @@ pub async fn proxy(
     adapt_responses: bool,
     tracker: Option<UsageTracker>,
     proxy: Option<&ChatgptProxy>,
+    idle_timeout: WebsocketIdleTimeout,
 ) -> AppResult<Response> {
     let result = connect(
         upgrade,
@@ -39,6 +55,7 @@ pub async fn proxy(
         adapt_responses,
         tracker.clone(),
         proxy,
+        idle_timeout,
     )
     .await;
     if let Some(tracker) = &tracker {
@@ -60,6 +77,7 @@ async fn connect(
     adapt_responses: bool,
     tracker: Option<UsageTracker>,
     proxy: Option<&ChatgptProxy>,
+    idle_timeout: WebsocketIdleTimeout,
 ) -> AppResult<Response> {
     match target.scheme() {
         "https" => target
@@ -110,7 +128,69 @@ async fn connect(
     } else {
         upgrade
     };
-    Ok(upgrade.on_upgrade(move |client| bridge(client, upstream, adapt_responses, tracker)))
+    Ok(upgrade
+        .on_upgrade(move |client| bridge(client, upstream, adapt_responses, tracker, idle_timeout)))
+}
+
+/// Time of the last data message in either direction.
+struct Activity {
+    origin: Instant,
+    last_ms: AtomicU64,
+}
+
+impl Activity {
+    fn new() -> Self {
+        Self {
+            origin: Instant::now(),
+            last_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn touch(&self) {
+        let elapsed = u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.last_ms.store(elapsed, Ordering::Relaxed);
+    }
+
+    fn idle_for(&self) -> Duration {
+        self.origin
+            .elapsed()
+            .saturating_sub(Duration::from_millis(self.last_ms.load(Ordering::Relaxed)))
+    }
+}
+
+/// Resolves once the connection has been idle for the configured timeout with
+/// no response in progress; never resolves while the timeout is disabled.
+async fn idle_expired(
+    activity: &Activity,
+    timeout: &WebsocketIdleTimeout,
+    tracker: Option<&UsageTracker>,
+) {
+    loop {
+        let wait = match timeout.get() {
+            None => IDLE_RECHECK,
+            Some(limit) => {
+                let idle = activity.idle_for();
+                let generating = tracker.is_some_and(UsageTracker::response_in_progress);
+                if idle >= limit && !generating {
+                    return;
+                }
+                limit
+                    .saturating_sub(idle)
+                    .clamp(Duration::from_secs(1), IDLE_RECHECK)
+            }
+        };
+        tokio::time::sleep(wait).await;
+    }
+}
+
+fn is_data(message: &AxumMessage) -> bool {
+    matches!(message, AxumMessage::Text(_) | AxumMessage::Binary(_))
+}
+
+enum Ended {
+    Client,
+    Upstream,
+    Idle,
 }
 
 async fn bridge(
@@ -118,9 +198,11 @@ async fn bridge(
     upstream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     adapt_responses: bool,
     tracker: Option<UsageTracker>,
+    idle_timeout: WebsocketIdleTimeout,
 ) {
     let (mut client_sender, mut client_receiver) = client.split();
     let (mut upstream_sender, mut upstream_receiver) = upstream.split();
+    let activity = Activity::new();
 
     let request_tracker = tracker.clone();
     let to_upstream = async {
@@ -128,6 +210,9 @@ async fn bridge(
             let Ok(message) = message else {
                 break;
             };
+            if is_data(&message) {
+                activity.touch();
+            }
             let message = client_message(message, adapt_responses, request_tracker.as_ref());
             if upstream_sender.send(message).await.is_err() {
                 break;
@@ -143,20 +228,47 @@ async fn bridge(
             let Some(message) = upstream_message(message, tracker.as_ref()) else {
                 continue;
             };
+            if is_data(&message) {
+                activity.touch();
+            }
             if client_sender.send(message).await.is_err() {
                 break;
             }
         }
         let _ = client_sender.close().await;
     };
-    let upstream_closed = tokio::select! {
-        _ = to_upstream => false,
-        _ = to_client => true,
+    let idle = idle_expired(&activity, &idle_timeout, tracker.as_ref());
+    let ended = tokio::select! {
+        _ = to_upstream => Ended::Client,
+        _ = to_client => Ended::Upstream,
+        () = idle => Ended::Idle,
     };
-    // A response still open when the upstream hangs up was interrupted; when the
-    // client leaves first, the tracker's drop records it as cancelled.
-    if upstream_closed && let Some(tracker) = &tracker {
-        tracker.upstream_finished();
+    match ended {
+        // A response still open when the upstream hangs up was interrupted; when the
+        // client leaves first, the tracker's drop records it as cancelled.
+        Ended::Upstream => {
+            if let Some(tracker) = &tracker {
+                tracker.upstream_finished();
+            }
+        }
+        Ended::Client => {}
+        Ended::Idle => {
+            tracing::info!(event = "websocket_idle_closed");
+            let close_client = client_sender.send(AxumMessage::Close(Some(AxumCloseFrame {
+                code: IDLE_CLOSE_CODE,
+                reason: IDLE_CLOSE_REASON.into(),
+            })));
+            let close_upstream =
+                upstream_sender.send(UpstreamMessage::Close(Some(UpstreamCloseFrame {
+                    code: IDLE_CLOSE_CODE.into(),
+                    reason: IDLE_CLOSE_REASON.into(),
+                })));
+            let _ = tokio::time::timeout(
+                Duration::from_secs(5),
+                futures_util::future::join(close_client, close_upstream),
+            )
+            .await;
+        }
     }
 }
 
@@ -227,4 +339,34 @@ fn websocket_unavailable() -> ApiError {
     ApiError::new(502, "The upstream WebSocket is unavailable.")
         .with_kind("upstream_error")
         .with_code("websocket_proxy_unavailable")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_timer_fires_after_quiet_period_and_resets_on_activity() {
+        let activity = Activity::new();
+        let timeout = WebsocketIdleTimeout::fixed(60);
+        let started = Instant::now();
+        tokio::time::sleep(Duration::from_secs(40)).await;
+        activity.touch();
+        idle_expired(&activity, &timeout, None).await;
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_secs(100), "{waited:?}");
+        assert!(waited < Duration::from_secs(102), "{waited:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disabled_timeout_never_fires() {
+        let activity = Activity::new();
+        let timeout = WebsocketIdleTimeout::fixed(0);
+        let fired = tokio::time::timeout(
+            Duration::from_secs(3_600),
+            idle_expired(&activity, &timeout, None),
+        )
+        .await;
+        assert!(fired.is_err());
+    }
 }

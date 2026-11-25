@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, HashSet},
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, bail};
@@ -173,6 +176,21 @@ pub struct UpstreamConfig {
     pub codex_resets_url: String,
     #[serde(default = "default_codex_client_version")]
     pub codex_client_version: String,
+    /// Closes proxied WebSockets after this many seconds without messages
+    /// while no response is being generated; 0 keeps them open.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub websocket_idle_timeout_seconds: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// Accepted idle timeouts: 0 (never close) or this range, in seconds.
+pub const WEBSOCKET_IDLE_TIMEOUT_RANGE: std::ops::RangeInclusive<u64> = 30..=86_400;
+
+fn valid_websocket_idle_timeout(value: u64) -> bool {
+    value == 0 || WEBSOCKET_IDLE_TIMEOUT_RANGE.contains(&value)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -256,6 +274,9 @@ pub struct AdminSettings {
 #[serde(rename_all = "camelCase")]
 pub struct UpstreamSettings {
     pub codex_client_version: String,
+    /// See [`UpstreamConfig::websocket_idle_timeout_seconds`].
+    #[serde(default)]
+    pub websocket_idle_timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,6 +341,7 @@ impl From<&AppConfig> for AdminSettings {
             },
             upstream: UpstreamSettings {
                 codex_client_version: config.upstream.codex_client_version.clone(),
+                websocket_idle_timeout_seconds: config.upstream.websocket_idle_timeout_seconds,
             },
             usage: UsageSettings {
                 fast_cost_multiplier: config.usage_tracking.fast_cost_multiplier(),
@@ -391,6 +413,8 @@ pub struct ConfigStore {
     config: RwLock<AppConfig>,
     /// Increments after every persisted change.
     revision: tokio::sync::watch::Sender<u64>,
+    /// Mirror of `upstream.websocket_idle_timeout_seconds` readable without the lock.
+    websocket_idle_timeout: Arc<AtomicU64>,
 }
 
 impl ConfigStore {
@@ -411,9 +435,17 @@ impl ConfigStore {
         }
         Ok(Arc::new(Self {
             path,
+            websocket_idle_timeout: Arc::new(AtomicU64::new(
+                config.upstream.websocket_idle_timeout_seconds,
+            )),
             config: RwLock::new(config),
             revision: tokio::sync::watch::Sender::new(0),
         }))
+    }
+
+    /// The current WebSocket idle timeout, following settings changes.
+    pub fn websocket_idle_timeout(&self) -> WebsocketIdleTimeout {
+        WebsocketIdleTimeout(self.websocket_idle_timeout.clone())
     }
 
     /// Notifies after every persisted change to the configuration or stored state.
@@ -475,6 +507,8 @@ impl ConfigStore {
             validate_admin_settings(&stored, config)?;
             config.public_account.show_quota = stored.public_account.show_quota;
             config.upstream.codex_client_version = stored.upstream.codex_client_version.clone();
+            config.upstream.websocket_idle_timeout_seconds =
+                stored.upstream.websocket_idle_timeout_seconds;
             config.usage_tracking.fast_cost_multiplier = Some(stored.usage.fast_cost_multiplier);
             config.upstream.codex_resets_url = stored.notifications.reset_watch_api_url.clone();
             config.notifications.reset_watch_enabled =
@@ -536,11 +570,34 @@ impl ConfigStore {
         persist(&self.path, &next)
             .await
             .map_err(|_| config_write_error())?;
+        self.websocket_idle_timeout.store(
+            next.upstream.websocket_idle_timeout_seconds,
+            Ordering::Relaxed,
+        );
         *current = next;
         drop(current);
         self.revision
             .send_modify(|revision| *revision = revision.wrapping_add(1));
         Ok(result)
+    }
+}
+
+/// Live handle on the WebSocket idle timeout setting.
+#[derive(Clone)]
+pub struct WebsocketIdleTimeout(Arc<AtomicU64>);
+
+impl WebsocketIdleTimeout {
+    /// `None` when idle WebSockets stay open.
+    pub fn get(&self) -> Option<std::time::Duration> {
+        match self.0.load(Ordering::Relaxed) {
+            0 => None,
+            seconds => Some(std::time::Duration::from_secs(seconds)),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn fixed(seconds: u64) -> Self {
+        Self(Arc::new(AtomicU64::new(seconds)))
     }
 }
 
@@ -572,6 +629,7 @@ fn normalized_admin_settings(mut settings: AdminSettings) -> AdminSettings {
 fn validate_admin_settings(settings: &AdminSettings, config: &AppConfig) -> AppResult<()> {
     if !valid_fast_cost_multiplier(settings.usage.fast_cost_multiplier)
         || !valid_codex_client_version(&settings.upstream.codex_client_version)
+        || !valid_websocket_idle_timeout(settings.upstream.websocket_idle_timeout_seconds)
     {
         return Err(invalid_admin_settings());
     }
@@ -907,6 +965,9 @@ fn validate_config(config: &AppConfig) -> Result<()> {
     if !valid_codex_client_version(&config.upstream.codex_client_version) {
         bail!("upstream.codex_client_version must use the numeric major.minor.patch format");
     }
+    if !valid_websocket_idle_timeout(config.upstream.websocket_idle_timeout_seconds) {
+        bail!("upstream.websocket_idle_timeout_seconds must be 0 or between 30 and 86400");
+    }
     let resets = Url::parse(&config.upstream.codex_resets_url)
         .context("upstream.codex_resets_url must be a valid URL")?;
     if resets.scheme() != "https" || resets.host_str().is_none() {
@@ -1089,6 +1150,7 @@ mod tests {
                 chatgpt_proxy: None,
                 codex_resets_url: default_codex_resets_url(),
                 codex_client_version: default_codex_client_version(),
+                websocket_idle_timeout_seconds: 0,
             },
             usage_tracking: UsageTrackingConfig::default(),
             notifications: NotificationConfig::default(),
@@ -1122,6 +1184,32 @@ mod tests {
             settings.upstream.codex_client_version = invalid.into();
             assert!(validate_admin_settings(&settings, &value).is_err());
         }
+    }
+
+    #[test]
+    fn websocket_idle_timeout_defaults_off_and_validates_settings() {
+        let legacy: UpstreamConfig = toml::from_str("").unwrap();
+        assert_eq!(legacy.websocket_idle_timeout_seconds, 0);
+        let value = config();
+        for (seconds, valid) in [
+            (0, true),
+            (29, false),
+            (30, true),
+            (600, true),
+            (86_401, false),
+        ] {
+            let mut settings = AdminSettings::from(&value);
+            settings.upstream.websocket_idle_timeout_seconds = seconds;
+            assert_eq!(
+                validate_admin_settings(&settings, &value).is_ok(),
+                valid,
+                "{seconds}"
+            );
+        }
+        // Settings saved by an older console omit the field and keep it off.
+        let settings: UpstreamSettings =
+            serde_json::from_str(r#"{"codexClientVersion":"0.168.0"}"#).unwrap();
+        assert_eq!(settings.websocket_idle_timeout_seconds, 0);
     }
 
     #[test]

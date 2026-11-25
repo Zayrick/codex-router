@@ -909,6 +909,11 @@ impl UsageTracker {
         }
     }
 
+    /// Whether a response is being generated (an attempt has started and not ended).
+    pub fn response_in_progress(&self) -> bool {
+        self.state().attempt.is_some()
+    }
+
     /// Records whether the client asked for a stream when the upstream body always streams.
     pub fn set_client_stream(&self, stream: bool) {
         self.state().client_stream = Some(stream);

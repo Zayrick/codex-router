@@ -212,6 +212,7 @@ impl<'repository, 'store> CodexClient<'repository, 'store> {
             route == CodexProxyRoute::Responses,
             tracker,
             self.transport.proxy(),
+            self.transport.websocket_idle_timeout(),
         )
         .await
     }

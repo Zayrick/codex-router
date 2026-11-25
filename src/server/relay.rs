@@ -168,6 +168,7 @@ async fn forward_relay(
             false,
             tracker,
             state.chatgpt.proxy(),
+            state.chatgpt.websocket_idle_timeout(),
         )
         .await?;
         if let Some(account_id) = routed_account_id.as_deref() {

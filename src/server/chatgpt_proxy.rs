@@ -8,15 +8,31 @@ use tokio::net::{TcpStream, lookup_host};
 use tower::Service;
 use url::{Host, Url};
 
+use super::config::WebsocketIdleTimeout;
+
 #[derive(Clone)]
 pub(crate) struct ChatgptTransport {
     client: reqwest::Client,
     proxy: Option<ChatgptProxy>,
+    websocket_idle_timeout: WebsocketIdleTimeout,
 }
 
 impl ChatgptTransport {
-    pub const fn new(client: reqwest::Client, proxy: Option<ChatgptProxy>) -> Self {
-        Self { client, proxy }
+    pub const fn new(
+        client: reqwest::Client,
+        proxy: Option<ChatgptProxy>,
+        websocket_idle_timeout: WebsocketIdleTimeout,
+    ) -> Self {
+        Self {
+            client,
+            proxy,
+            websocket_idle_timeout,
+        }
+    }
+
+    /// Live idle timeout for proxied WebSockets (follows the settings page).
+    pub fn websocket_idle_timeout(&self) -> WebsocketIdleTimeout {
+        self.websocket_idle_timeout.clone()
     }
 
     pub const fn client(&self) -> &reqwest::Client {

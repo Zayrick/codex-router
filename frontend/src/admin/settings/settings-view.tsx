@@ -37,13 +37,17 @@ import { formatCost, formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 import {
+	idleSecondsLabel,
 	isHttpsUrl,
+	MAX_WEBSOCKET_IDLE_SECONDS,
+	MIN_WEBSOCKET_IDLE_SECONDS,
 	parseMultiplier,
 	sectionLabel,
 	settingsChanges,
 	toDraft,
 	toSettings,
 	validClientVersion,
+	validIdleSeconds,
 	validMultiplier,
 	validationError,
 	type SettingsDraft,
@@ -119,7 +123,7 @@ export function SettingsView() {
 	const enabledChannels = [draft.barkEnabled, draft.dingtalkEnabled].filter(Boolean).length;
 	const navAside: Record<SettingsSection, string> = {
 		public: draft.showQuota ? "显示额度" : "隐藏额度",
-		upstream: draft.codexClientVersion || "—",
+		upstream: `${draft.codexClientVersion || "—"} · ${idleSecondsLabel(draft.websocketIdleTimeoutSeconds)}`,
 		billing: `${draft.fastCostMultiplier || "—"}×`,
 		events: `${enabledEvents} / 3`,
 		recipients: draft.allAccounts ? "全部" : `${selectedAccounts} / ${state.codexAccounts.length}`,
@@ -202,7 +206,7 @@ export function SettingsView() {
 					/>
 				</Section>
 
-				<Section description="配置查询可用模型时使用的客户端版本。" icon={<RadioTowerIcon />} id="upstream" title="上游">
+				<Section description="配置查询可用模型时使用的客户端版本，以及空闲 WebSocket 的断开时间。" icon={<RadioTowerIcon />} id="upstream" title="上游">
 					<Field>
 						<FieldLabel className="text-[12.5px]" htmlFor="settings-codex-client-version">
 							Codex 客户端版本
@@ -220,6 +224,27 @@ export function SettingsView() {
 						/>
 						<FieldDescription id="settings-codex-client-version-help">
 							{validClientVersion(draft.codexClientVersion) ? "影响上游返回的模型列表，保存后即时生效。" : "请输入 x.y.z 格式的版本号，例如 0.168.0。"}
+						</FieldDescription>
+					</Field>
+					<Field>
+						<FieldLabel className="text-[12.5px]" htmlFor="settings-websocket-idle-timeout">
+							WebSocket 空闲断开（秒）
+						</FieldLabel>
+						<Input
+							aria-describedby="settings-websocket-idle-timeout-help"
+							aria-invalid={!validIdleSeconds(draft.websocketIdleTimeoutSeconds) || undefined}
+							className="max-w-xs font-mono"
+							id="settings-websocket-idle-timeout"
+							inputMode="numeric"
+							onChange={(event) => patch({ websocketIdleTimeoutSeconds: event.target.value })}
+							placeholder="0"
+							spellCheck={false}
+							value={draft.websocketIdleTimeoutSeconds}
+						/>
+						<FieldDescription id="settings-websocket-idle-timeout-help">
+							{validIdleSeconds(draft.websocketIdleTimeoutSeconds)
+								? `连续这么久没有消息、且没有正在生成的响应时，正常关闭 WebSocket（客户端下次发送时会重新连接）。0 为不断开；保存后对现有连接即时生效。`
+								: `请输入 0 或 ${MIN_WEBSOCKET_IDLE_SECONDS}–${MAX_WEBSOCKET_IDLE_SECONDS} 之间的整数。`}
 						</FieldDescription>
 					</Field>
 				</Section>

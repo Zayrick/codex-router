@@ -1,6 +1,8 @@
 import type { AdminSettings, CodexAccount } from "@/admin-api";
 
 export const MAX_FAST_COST_MULTIPLIER = 100;
+export const MIN_WEBSOCKET_IDLE_SECONDS = 30;
+export const MAX_WEBSOCKET_IDLE_SECONDS = 86_400;
 
 export type SettingsSection = "public" | "upstream" | "billing" | "events" | "recipients" | "channels";
 
@@ -8,6 +10,8 @@ export type SettingsSection = "public" | "upstream" | "billing" | "events" | "re
 export interface SettingsDraft {
 	showQuota: boolean;
 	codexClientVersion: string;
+	/** Seconds as typed; empty or 0 keeps idle WebSockets open. */
+	websocketIdleTimeoutSeconds: string;
 	fastCostMultiplier: string;
 	resetWatchEnabled: boolean;
 	quotaResetEnabled: boolean;
@@ -27,6 +31,7 @@ export function toDraft(settings: AdminSettings): SettingsDraft {
 	return {
 		showQuota: settings.publicAccount.showQuota,
 		codexClientVersion: settings.upstream.codexClientVersion,
+		websocketIdleTimeoutSeconds: String(settings.upstream.websocketIdleTimeoutSeconds ?? 0),
 		fastCostMultiplier: String(settings.usage.fastCostMultiplier),
 		resetWatchEnabled: notifications.resetWatchEnabled,
 		quotaResetEnabled: notifications.quotaResetEnabled,
@@ -45,7 +50,7 @@ export function toDraft(settings: AdminSettings): SettingsDraft {
 export function toSettings(draft: SettingsDraft): AdminSettings {
 	return {
 		publicAccount: { showQuota: draft.showQuota },
-		upstream: { codexClientVersion: draft.codexClientVersion.trim() },
+		upstream: { codexClientVersion: draft.codexClientVersion.trim(), websocketIdleTimeoutSeconds: parseIdleSeconds(draft.websocketIdleTimeoutSeconds) },
 		usage: { fastCostMultiplier: Number(draft.fastCostMultiplier) },
 		notifications: {
 			resetWatchEnabled: draft.resetWatchEnabled,
@@ -69,6 +74,25 @@ export function validMultiplier(value: string): boolean {
 	return Number.isFinite(parsed) && parsed > 0 && parsed <= MAX_FAST_COST_MULTIPLIER;
 }
 
+/** Empty input means 0 (never close); NaN when not a whole number. */
+export function parseIdleSeconds(value: string): number {
+	const text = value.trim();
+	if (!text) return 0;
+	return /^\d+$/.test(text) ? Number(text) : Number.NaN;
+}
+
+export function validIdleSeconds(value: string): boolean {
+	const seconds = parseIdleSeconds(value);
+	return seconds === 0 || (seconds >= MIN_WEBSOCKET_IDLE_SECONDS && seconds <= MAX_WEBSOCKET_IDLE_SECONDS);
+}
+
+/** "关闭" or "600 秒". */
+export function idleSecondsLabel(value: string): string {
+	const seconds = parseIdleSeconds(value);
+	if (Number.isNaN(seconds)) return value.trim() || "—";
+	return seconds === 0 ? "不断开" : `${seconds} 秒`;
+}
+
 export function validClientVersion(value: string): boolean {
 	const version = value.trim();
 	return version.length <= 64 && /^\d+\.\d+\.\d+$/.test(version);
@@ -86,6 +110,7 @@ export function isHttpsUrl(value: string): boolean {
 /** First validation problem of the draft, if any. */
 export function validationError(draft: SettingsDraft): string | null {
 	if (!validClientVersion(draft.codexClientVersion)) return "Codex 客户端版本需使用 x.y.z 格式，例如 0.168.0。";
+	if (!validIdleSeconds(draft.websocketIdleTimeoutSeconds)) return `WebSocket 空闲断开时间需为 0（不断开）或 ${MIN_WEBSOCKET_IDLE_SECONDS}–${MAX_WEBSOCKET_IDLE_SECONDS} 之间的整数秒。`;
 	if (!validMultiplier(draft.fastCostMultiplier)) return `Fast 计费倍率必须大于 0 且不超过 ${MAX_FAST_COST_MULTIPLIER}。`;
 	if (!isHttpsUrl(draft.resetWatchApiUrl)) return "重置预测 API 地址必须是有效的 HTTPS 链接。";
 	if (draft.barkPushUrl.trim() && !isHttpsUrl(draft.barkPushUrl)) return "Bark 推送链接必须使用 HTTPS。";
@@ -125,6 +150,9 @@ export function settingsChanges(saved: SettingsDraft, draft: SettingsDraft, acco
 	if (saved.showQuota !== draft.showQuota) changes.push({ section: "public", text: `显示账户额度 ${onOff(draft.showQuota)}` });
 	if (saved.codexClientVersion.trim() !== draft.codexClientVersion.trim()) {
 		changes.push({ section: "upstream", text: `客户端版本 ${saved.codexClientVersion} → ${draft.codexClientVersion.trim() || "—"}` });
+	}
+	if (parseIdleSeconds(saved.websocketIdleTimeoutSeconds) !== parseIdleSeconds(draft.websocketIdleTimeoutSeconds)) {
+		changes.push({ section: "upstream", text: `WebSocket 空闲断开 ${idleSecondsLabel(saved.websocketIdleTimeoutSeconds)} → ${idleSecondsLabel(draft.websocketIdleTimeoutSeconds)}` });
 	}
 	if (parseMultiplier(saved.fastCostMultiplier) !== parseMultiplier(draft.fastCostMultiplier)) {
 		changes.push({ section: "billing", text: `Fast 计费倍率 ${saved.fastCostMultiplier}× → ${draft.fastCostMultiplier || "—"}×` });

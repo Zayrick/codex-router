@@ -54,7 +54,7 @@ impl AppState {
         } else {
             client.clone()
         };
-        let chatgpt = ChatgptTransport::new(chatgpt_client, proxy);
+        let chatgpt = ChatgptTransport::new(chatgpt_client, proxy, config.websocket_idle_timeout());
         let usage_path = config.resolve_path(&snapshot.usage_tracking.database_path);
         let usage = UsageStore::open(usage_path)?;
         let sessions = SessionStore::open(config.resolve_path(&snapshot.session.database_path))?;

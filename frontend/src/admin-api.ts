@@ -161,6 +161,8 @@ export interface AdminSettings {
 	};
 	upstream: {
 		codexClientVersion: string;
+		/** Closes WebSockets idle for this many seconds (no messages, nothing generating); 0 = never. */
+		websocketIdleTimeoutSeconds: number;
 	};
 	usage: {
 		/** Cost multiplier for Fast (priority tier) requests. */
