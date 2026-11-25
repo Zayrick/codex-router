@@ -183,7 +183,7 @@ function ConnectionTable({ connections }: { connections: LiveConnection[] }) {
 						</TableCell>
 						<TableCell className="font-mono text-xs">{connection.model || "—"}</TableCell>
 						<TableCell>
-							<StatusDot tone={connection.active ? "success" : "neutral"}>{connection.active ? "生成中" : "空闲"}</StatusDot>
+							<ConnectionStatus connection={connection} />
 						</TableCell>
 						<TableCell className="text-right tabular-nums">{formatCount(connection.requests)}</TableCell>
 						<TableCell className="text-right tabular-nums">{formatSpan(Math.max(0, now - connection.startedAt))}</TableCell>
@@ -197,6 +197,17 @@ function ConnectionTable({ connections }: { connections: LiveConnection[] }) {
 	);
 }
 
+/** A WebSocket the client opened ahead of its first request (Codex preconnects on thread start). */
+function isPreconnect(connection: LiveConnection): boolean {
+	return connection.transport === "websocket" && connection.requests === 0 && !connection.active;
+}
+
+function ConnectionStatus({ connection }: { connection: LiveConnection }) {
+	if (connection.active) return <StatusDot tone="success">生成中</StatusDot>;
+	if (isPreconnect(connection)) return <StatusDot tone="neutral">预连接</StatusDot>;
+	return <StatusDot tone="neutral">空闲</StatusDot>;
+}
+
 /** Requests and WebSockets being proxied now, as a credential → group → account flow. */
 export function LiveConnectionsCard() {
 	const { live } = useAdmin();
@@ -204,6 +215,7 @@ export function LiveConnectionsCard() {
 	const flow = useMemo(() => buildFlow(connections), [connections]);
 	const websockets = connections.filter((connection) => connection.transport === "websocket").length;
 	const active = connections.filter((connection) => connection.active).length;
+	const preconnects = connections.filter(isPreconnect).length;
 
 	const status = live.connected ? (
 		<StatusDot tone="success">实时</StatusDot>
@@ -218,6 +230,7 @@ export function LiveConnectionsCard() {
 				<FootChip label="WebSocket" value={formatCount(websockets)} />
 				<FootChip label="HTTP" value={formatCount(connections.length - websockets)} />
 				<FootChip label="生成中" value={formatCount(active)} />
+				<FootChip label="预连接" value={formatCount(preconnects)} />
 			</div>
 			{connections.length === 0 ? (
 				<div className="flex h-24 items-center justify-center rounded-lg border border-dashed text-[12.5px] text-muted-foreground">
