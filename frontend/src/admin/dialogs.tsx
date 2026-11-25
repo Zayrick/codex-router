@@ -122,7 +122,9 @@ export function UserEditor({
 	);
 	const [target, setTarget] = useState<RouteTargetSelection>(route);
 
-	const values = credentials.map((credential) => (credential.type === "api_key" ? credential.value : credential.value.trim()));
+	// A value may repeat across kinds (an account id used as an API key), not within one.
+	const credentialKey = (credential: CredentialDraft) => `${credential.type}:${credential.type === "api_key" ? credential.value : credential.value.trim()}`;
+	const values = credentials.map(credentialKey);
 	const duplicate = new Set(values).size !== values.length;
 	const valid = Boolean(name.trim()) && credentials.length > 0 && credentials.length <= MAX_CREDENTIALS && credentials.every(validCredential) && !duplicate;
 
@@ -169,7 +171,7 @@ export function UserEditor({
 									{credentials.map((credential) => (
 										<CredentialRow
 											credential={credential}
-											duplicate={values.filter((value) => value === (credential.type === "api_key" ? credential.value : credential.value.trim())).length > 1}
+											duplicate={values.filter((value) => value === credentialKey(credential)).length > 1}
 											key={credential.key}
 											loading={loading}
 											onChange={(patch) => update(credential.key, patch)}

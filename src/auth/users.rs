@@ -3,7 +3,7 @@
 //! A user owns any number of API keys and ChatGPT account ids. Requests and
 //! console sessions authenticated by any of them are attributed to the user.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -343,7 +343,9 @@ fn valid_credential_value(kind: CredentialKind, value: &str) -> bool {
 }
 
 /// Checks the whole collection: unique ids and names, and every credential
-/// value unique across all users and kinds so a value names one user.
+/// value belonging to one user so a value names one user. A user may reuse a
+/// value across kinds (an account id that is also their API key), but not
+/// twice within one kind.
 fn validate_users(mut users: Vec<User>) -> AppResult<Vec<User>> {
     if users.len() > MAX_USERS {
         return Err(user_conflict("The user limit has been reached."));
@@ -351,6 +353,7 @@ fn validate_users(mut users: Vec<User>) -> AppResult<Vec<User>> {
     let mut ids = HashSet::new();
     let mut names = HashSet::new();
     let mut credential_ids = HashSet::new();
+    let mut owners: HashMap<String, String> = HashMap::new();
     let mut values = HashSet::new();
     for user in &mut users {
         if !valid_record_id(&user.id) || !ids.insert(user.id.clone()) {
@@ -370,7 +373,10 @@ fn validate_users(mut users: Vec<User>) -> AppResult<Vec<User>> {
             {
                 return Err(invalid_credential());
             }
-            if !values.insert(credential.value.clone()) {
+            let owner = owners
+                .entry(credential.value.clone())
+                .or_insert_with(|| user.id.clone());
+            if *owner != user.id || !values.insert((credential.kind, credential.value.clone())) {
                 return Err(user_conflict("That credential is already configured."));
             }
         }
@@ -579,7 +585,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credential_values_are_unique_across_users_and_kinds() {
+    async fn credential_values_belong_to_one_user() {
         let store = MemoryStore::default();
         let repository = UserRepository::new(&store);
         repository
@@ -605,6 +611,29 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(duplicate_name.status, 409);
+        // One user may use the same value as an API key and an account id…
+        repository
+            .create(&user_input(
+                "frank",
+                json!([
+                    { "type": "api_key", "value": "fbae3abd-da86-4369-8e58-f79d9122fe17", "enabled": true },
+                    { "type": "account_id", "value": "fbae3abd-da86-4369-8e58-f79d9122fe17", "enabled": true },
+                ]),
+            ))
+            .await
+            .unwrap();
+        // …but not twice in one kind.
+        let same_kind = repository
+            .create(&user_input(
+                "gina",
+                json!([
+                    { "type": "api_key", "value": "sk-twice-value-3!", "enabled": true },
+                    { "type": "api_key", "value": "sk-twice-value-3!", "enabled": true },
+                ]),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(same_kind.status, 409);
     }
 
     #[test]

@@ -580,6 +580,22 @@ mod tests {
         let mut disabled = config.clone();
         disabled.state.users[0].enabled = false;
         assert_eq!(identify("sk-enabled-123!", &disabled), Identified::None);
+
+        // A value a user holds as both an API key and an account id still names that user.
+        let mut shared = config.clone();
+        shared.state.users[0]
+            .credentials
+            .push(crate::auth::UserCredential {
+                id: "00000000-0000-4000-8000-000000000014".into(),
+                kind: crate::auth::CredentialKind::ApiKey,
+                value: "account-123".into(),
+                name: String::new(),
+                enabled: true,
+            });
+        assert!(matches!(
+            identify("account-123", &shared),
+            Identified::One(Principal::User(user), _) if user == USER
+        ));
     }
 
     #[test]
