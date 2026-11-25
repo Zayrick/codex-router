@@ -3,7 +3,7 @@ import { PlusIcon, RefreshCwIcon, TriangleAlertIcon, UploadIcon, UsersIcon } fro
 
 import type { AccountQuota, CodexAccount, SubscriptionInfo } from "@/admin-api";
 import { useAdmin } from "@/admin/context";
-import { AccountNameDialog } from "@/admin/dialogs";
+import { AccountEditDialog } from "@/admin/dialogs";
 import { useAnalytics } from "@/admin/hooks";
 import { AccountCard, type RouteIdentity, type RoutingSource } from "@/admin/quota/AccountCard";
 import {
@@ -195,13 +195,16 @@ export default function CodexAccountsPage() {
 			))}
 
 			{renaming ? (
-				<AccountNameDialog
+				<AccountEditDialog
 					account={renaming}
 					busy={busy.has(`codex:${renaming.id}`)}
 					onCancel={() => setRenaming(null)}
-					onSave={(name) => {
-						void updateCodexAccount(renaming, { name, enabled: renaming.enabled }).then(() => setRenaming(null));
+					onSave={({ name, proxy }) => {
+						void updateCodexAccount(renaming, { name, enabled: renaming.enabled, proxy }).then((saved) => {
+							if (saved) setRenaming(null);
+						});
 					}}
+					onTestProxy={(proxy) => api.testCodexAccountProxy(renaming.id, proxy)}
 				/>
 			) : null}
 		</div>

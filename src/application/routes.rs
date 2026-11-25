@@ -155,6 +155,8 @@ pub enum AdminRoute {
     PricingUpdate,
     PricingSync,
     CodexAccountUpdate,
+    /// `POST codex-accounts/proxy/test`: reach ChatGPT through a proxy.
+    CodexAccountProxyTest,
     CodexAccountDelete,
     CodexAccountImport,
     CodexAccountOAuthStart,
@@ -261,6 +263,7 @@ fn match_admin_api(method: &str, relative: &str) -> Option<AdminRoute> {
         ("PUT", "pricing") => AdminRoute::PricingUpdate,
         ("POST", "pricing/sync") => AdminRoute::PricingSync,
         ("PUT", "codex-accounts") => AdminRoute::CodexAccountUpdate,
+        ("POST", "codex-accounts/proxy/test") => AdminRoute::CodexAccountProxyTest,
         ("DELETE", "codex-accounts") => AdminRoute::CodexAccountDelete,
         ("POST", "codex-accounts/import") => AdminRoute::CodexAccountImport,
         ("POST", "codex-accounts/oauth/device") => AdminRoute::CodexAccountOAuthStart,

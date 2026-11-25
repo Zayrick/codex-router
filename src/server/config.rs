@@ -878,6 +878,7 @@ fn import_legacy_account(
             id: id.clone(),
             name,
             enabled: true,
+            proxy: None,
         });
     }
     config
@@ -1167,7 +1168,7 @@ mod tests {
         value.server.public_origin = "https://router.example/path".into();
         assert!(validate_config(&value).is_err());
         value.server.public_origin = "https://router.example".into();
-        value.upstream.chatgpt_proxy = Some("http://proxy.example:1080".into());
+        value.upstream.chatgpt_proxy = Some("ftp://proxy.example:1080".into());
         assert!(validate_config(&value).is_err());
         value.upstream.chatgpt_proxy = Some("socks5://proxy.example:1080".into());
         value.server.cors_origin = "https://client.example\ninvalid".into();
@@ -1220,6 +1221,7 @@ mod tests {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "主账户".into(),
             enabled: true,
+            proxy: None,
         });
 
         let mut settings = AdminSettings::from(&value);
@@ -1249,6 +1251,7 @@ mod tests {
             id: account_id.into(),
             name: "主账户".into(),
             enabled: true,
+            proxy: None,
         });
         fs::write(&path, toml::to_string_pretty(&value).unwrap())
             .await

@@ -159,7 +159,8 @@ async fn dispatch(
     }
 
     let oauth = OAuthRepository::new(state.config.as_ref(), &account_route.account.id);
-    let client = CodexClient::new(&oauth, &state.chatgpt);
+    let transport = state.account_transport(&account_route.account)?;
+    let client = CodexClient::new(&oauth, &transport);
     match route {
         ApiRoute::Images(operation) => {
             let (parts, body) = request.into_parts();
@@ -335,7 +336,10 @@ async fn responses_with_failover(
             tracker.record_request(request);
         }
         let oauth = OAuthRepository::new(state.config.as_ref(), &account_route.account.id);
-        let upstream = CodexClient::new(&oauth, &state.chatgpt)
+        let transport = state
+            .account_transport(&account_route.account)
+            .inspect_err(|error| tracker.fail(error))?;
+        let upstream = CodexClient::new(&oauth, &transport)
             .send_prepared(&mut prepared)
             .await
             .inspect_err(|error| tracker.fail(error))?;

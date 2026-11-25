@@ -45,6 +45,8 @@ export interface CodexAccount {
 	id: string;
 	name: string;
 	enabled: boolean;
+	/** Upstream proxy for all of this account's traffic; the password is masked. */
+	proxy?: string | null;
 	oauth: OAuthStatus | null;
 	subscription: SubscriptionMetadata | null;
 }
@@ -52,6 +54,17 @@ export interface CodexAccount {
 export interface CodexAccountUpdate {
 	name: string;
 	enabled: boolean;
+	/** Omit to keep the current proxy; `null` or "" removes it. */
+	proxy?: string | null;
+}
+
+export interface ProxyTestResult {
+	ok: boolean;
+	latencyMs: number;
+	/** Exit address ChatGPT saw. */
+	ip?: string | null;
+	location?: string | null;
+	error?: string;
 }
 
 export interface CodexCredentialImport {
@@ -895,6 +908,10 @@ export class AdminApiClient {
 			"/codex-accounts/oauth/device/poll",
 			jsonRequest("POST", { accountId, state }),
 		);
+	}
+
+	testCodexAccountProxy(id: string | null, proxy: string): Promise<ProxyTestResult> {
+		return this.requestJson<ProxyTestResult>("/codex-accounts/proxy/test", jsonRequest("POST", { id, proxy }));
 	}
 
 	async updateCodexAccount(

@@ -307,7 +307,7 @@ async fn quota_snapshot(
     state: &AppState,
     now_ms: i64,
 ) -> Option<QuotaSnapshot> {
-    match live_quota_snapshot(oauth, state, now_ms).await {
+    match live_quota_snapshot(oauth, account_id, state, now_ms).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
             tracing::warn!(
@@ -325,10 +325,12 @@ async fn quota_snapshot(
 
 async fn live_quota_snapshot(
     oauth: &OAuthRepository<'_>,
+    account_id: &str,
     state: &AppState,
     now_ms: i64,
 ) -> AppResult<Option<QuotaSnapshot>> {
-    let client = CodexClient::new(oauth, &state.chatgpt);
+    let transport = state.account_transport_by_id(account_id).await?;
+    let client = CodexClient::new(oauth, &transport);
     let usage = client.fetch_usage().await?;
     let subscription =
         codex_subscription_from_usage(&usage.payload, usage.metadata, now_ms as f64)?;
@@ -428,6 +430,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             enabled,
+            proxy: None,
         }
     }
 

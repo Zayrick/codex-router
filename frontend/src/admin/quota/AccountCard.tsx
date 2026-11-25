@@ -85,6 +85,7 @@ export function AccountCard({
 		maskAccountId(account.oauth?.accountId),
 		account.oauth?.expiresAt ? `Token 至 ${formatDay(account.oauth.expiresAt)}` : null,
 		quota?.sampledAt ? `同步于 ${formatSyncTime(quota.sampledAt, now)}` : null,
+		account.proxy ? `代理 ${proxyHost(account.proxy)}` : null,
 	].filter(Boolean);
 
 	return (
@@ -131,7 +132,7 @@ export function AccountCard({
 						{refreshing ? <Spinner /> : <RefreshCwIcon />}
 					</Button>
 					<Button disabled={isBusy} onClick={onRename} size="sm" type="button" variant="outline">
-						重命名
+						编辑
 					</Button>
 					<DeleteConfirmationDialog
 						description="相关路由也会被移除。此操作无法撤销。"
@@ -395,3 +396,12 @@ function formatLong(value: number | null | undefined): string {
 	return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${formatClock(value, false)}`;
 }
 
+/** `scheme://host:port` of a proxy URL, without credentials. */
+function proxyHost(proxy: string): string {
+	try {
+		const url = new URL(proxy);
+		return `${url.protocol}//${url.host}`;
+	} catch {
+		return proxy;
+	}
+}

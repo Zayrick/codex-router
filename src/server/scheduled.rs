@@ -62,8 +62,6 @@ pub async fn run_once(state: &AppState) {
     }
 
     let clock = SystemClock;
-    let http = ReqwestOAuthHttpClient::new(&state.client);
-    let provider = OAuthProvider::new(&http, &clock);
     let accounts = match RoutingRepository::new(state.config.as_ref()).read().await {
         Ok(routing) => routing.accounts,
         Err(error) => {
@@ -73,12 +71,25 @@ pub async fn run_once(state: &AppState) {
     };
     stream::iter(accounts)
         .for_each_concurrent(CODEX_ACCOUNT_REFRESH_CONCURRENCY, |account| {
-            let provider = &provider;
             let clock = &clock;
             let config = &config;
             async move {
+                // Token refreshes leave through the account's proxy too, so the
+                // account always shows OpenAI the same address.
+                let client = match account.proxy {
+                    Some(_) => match state.account_transport(&account) {
+                        Ok(transport) => transport.client().clone(),
+                        Err(error) => {
+                            log_failure("scheduled_codex_account_refresh", &error);
+                            return;
+                        }
+                    },
+                    None => state.client.clone(),
+                };
+                let http = ReqwestOAuthHttpClient::new(&client);
+                let provider = OAuthProvider::new(&http, clock);
                 let oauth = OAuthRepository::new(state.config.as_ref(), &account.id);
-                let service = OAuthRefreshService::new(&oauth, provider, clock);
+                let service = OAuthRefreshService::new(&oauth, &provider, clock);
                 if let Err(error) = service.refresh(Some(now_ms)).await {
                     log_failure("scheduled_codex_account_refresh", &error);
                 }
@@ -193,7 +204,8 @@ async fn monitor_usage(
     account_name: &str,
     now_ms: i64,
 ) -> AppResult<()> {
-    let client = CodexClient::new(oauth, &state.chatgpt);
+    let transport = state.account_transport_by_id(account_id).await?;
+    let client = CodexClient::new(oauth, &transport);
     let usage = client.fetch_usage().await?;
     let subscription =
         codex_subscription_from_usage(&usage.payload, usage.metadata, now_ms as f64)?;

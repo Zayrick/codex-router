@@ -24,6 +24,10 @@ pub struct CodexAccount {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+    /// Upstream proxy (`socks5://`, `socks5h://` or `http://`) for all of this
+    /// account's traffic; `None` uses the default upstream route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +105,7 @@ impl AccountRoutingState {
             id,
             name,
             enabled: true,
+            proxy: None,
         };
         self.accounts.push(account.clone());
         Ok(account)
@@ -190,6 +195,15 @@ impl<'a> RoutingRepository<'a> {
             .ok_or_else(codex_account_not_found)?;
         account.name = name;
         account.enabled = enabled;
+        // An absent `proxy` keeps the current one; `null` or "" clears it.
+        // Callers validate the URL before it gets here.
+        match object.get("proxy") {
+            None => {}
+            Some(Value::Null) => account.proxy = None,
+            Some(Value::String(proxy)) if proxy.trim().is_empty() => account.proxy = None,
+            Some(Value::String(proxy)) => account.proxy = Some(proxy.clone()),
+            Some(_) => return Err(invalid_codex_account()),
+        }
         if !enabled {
             state.routes.retain(|route| {
                 !(route.target_type == RouteTargetKind::Account && route.target_id == id)
@@ -571,6 +585,7 @@ mod tests {
                     id: account_id.into(),
                     name: "primary".into(),
                     enabled: true,
+                    proxy: None,
                 }],
                 groups: vec![AccountGroup {
                     id: group_id.into(),

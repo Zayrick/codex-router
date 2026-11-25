@@ -2593,6 +2593,7 @@ mod tests {
                 id: "acct".into(),
                 name: "Current account".into(),
                 enabled: true,
+                proxy: None,
             }],
             groups: vec![AccountGroup {
                 id: "group".into(),

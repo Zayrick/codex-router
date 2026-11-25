@@ -18,6 +18,7 @@ use crate::{
 
 use super::{
     body,
+    chatgpt_proxy::{ChatgptProxy, ChatgptTransport, REDACTED_PASSWORD, redact_proxy_url},
     codex::CodexClient,
     config::{AdminSettings, AppConfig, PRICING_SYNC_KEY},
     live,
@@ -105,7 +106,8 @@ async fn dispatch(
                 .unwrap_or(Value::Null);
             let account = routing.account(&id).await?;
             let oauth = OAuthRepository::new(state.config.as_ref(), &account.id);
-            let client = CodexClient::new(&oauth, &state.chatgpt);
+            let transport = state.account_transport(&account)?;
+            let client = CodexClient::new(&oauth, &transport);
             let usage = client.fetch_usage().await?;
             let subscription = codex_subscription_from_usage(
                 &usage.payload,
@@ -458,11 +460,37 @@ async fn dispatch(
             }
         }
         AdminRoute::CodexAccountUpdate => {
-            let input = admin_json(request).await?;
+            let mut input = admin_json(request).await?;
             let id = input.get("id").cloned().unwrap_or(Value::Null);
+            if let Some(proxy) = input.get("proxy").cloned() {
+                let current = routing.account(&id).await?.proxy;
+                input.insert(
+                    "proxy".into(),
+                    match submitted_proxy(&proxy, current.as_deref())? {
+                        Some(proxy) => Value::String(proxy),
+                        None => Value::Null,
+                    },
+                );
+            }
             let value = Value::Object(input);
             let updated = routing.update_account(&id, &value).await?;
             codex_accounts_response(state, updated.accounts, 200).await
+        }
+        AdminRoute::CodexAccountProxyTest => {
+            let input = admin_json(request).await?;
+            let current = match input.get("id") {
+                Some(id) if !id.is_null() => routing.account(id).await?.proxy,
+                _ => None,
+            };
+            let proxy = submitted_proxy(
+                input.get("proxy").unwrap_or(&Value::Null),
+                current.as_deref(),
+            )?;
+            let transport = state
+                .chatgpt
+                .for_proxy(proxy.as_deref())
+                .map_err(|_| invalid_proxy("The proxy URL is invalid."))?;
+            response::json(&probe_proxy(&transport).await, 200)
         }
         AdminRoute::CodexAccountDelete => {
             let input = admin_json(request).await?;
@@ -646,7 +674,11 @@ async fn codex_account_states(
                 let oauth = OAuthRepository::new(store.as_ref(), &account.id);
                 let credentials = oauth.read().await?;
                 Ok(CodexAccountState {
-                    account,
+                    // The console never sees a stored proxy password.
+                    account: CodexAccount {
+                        proxy: account.proxy.as_deref().map(redact_proxy_url),
+                        ..account
+                    },
                     oauth: credentials.as_ref().map(oauth_status),
                     subscription: credentials.as_ref().map(|credentials| {
                         codex_subscription_metadata(credentials.id_token.as_deref())
@@ -822,6 +854,74 @@ fn invalid_usage_identity_filter() -> ApiError {
         .with_code("invalid_usage_identity_filter")
 }
 
+/// Resolves a proxy URL from the console: blank clears it, the redacted form
+/// of the stored URL keeps it, anything else must parse.
+fn submitted_proxy(value: &Value, current: Option<&str>) -> AppResult<Option<String>> {
+    let proxy = match value {
+        Value::Null => return Ok(None),
+        Value::String(proxy) => proxy.trim(),
+        _ => return Err(invalid_proxy("The proxy URL must be a string.")),
+    };
+    if proxy.is_empty() {
+        return Ok(None);
+    }
+    if let Some(current) = current
+        && proxy == redact_proxy_url(current)
+    {
+        return Ok(Some(current.to_owned()));
+    }
+    if url::Url::parse(proxy).is_ok_and(|url| url.password() == Some(REDACTED_PASSWORD)) {
+        return Err(invalid_proxy("Re-enter the proxy password."));
+    }
+    ChatgptProxy::parse(proxy).map_err(|error| invalid_proxy(&format!("{error}.")))?;
+    Ok(Some(proxy.to_owned()))
+}
+
+fn invalid_proxy(message: &str) -> ApiError {
+    ApiError::new(400, message.to_owned())
+        .with_kind("invalid_request_error")
+        .with_code("invalid_proxy")
+}
+
+/// Reaches ChatGPT through `transport` and reports the exit address it saw.
+async fn probe_proxy(transport: &ChatgptTransport) -> Value {
+    let started = std::time::Instant::now();
+    let result = transport
+        .client()
+        .get("https://chatgpt.com/cdn-cgi/trace")
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await;
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let response = match result {
+        Ok(response) => response,
+        Err(error) => {
+            return json!({ "ok": false, "latencyMs": latency_ms, "error": proxy_error_text(&error) });
+        }
+    };
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let field = |name: &str| {
+        body.lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .map(str::to_owned)
+    };
+    if !status.is_success() {
+        return json!({ "ok": false, "latencyMs": latency_ms, "error": format!("HTTP {}", status.as_u16()) });
+    }
+    json!({ "ok": true, "latencyMs": latency_ms, "ip": field("ip"), "location": field("loc") })
+}
+
+fn proxy_error_text(error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        "timed out".into()
+    } else if error.is_connect() {
+        "could not connect through the proxy".into()
+    } else {
+        "request failed".into()
+    }
+}
+
 #[cfg(test)]
 mod pricing_sync_tests {
     use super::*;
@@ -863,5 +963,53 @@ mod pricing_sync_tests {
             vec!["edited", "added"]
         );
         assert!(manual_price_models(&current, None).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use serde_json::json;
+
+    use super::submitted_proxy;
+
+    #[test]
+    fn submitted_proxies_are_cleared_kept_or_validated() {
+        let stored = "socks5h://user:secret@proxy.example:1080";
+        // Blank or null clears.
+        assert_eq!(submitted_proxy(&json!(""), Some(stored)).unwrap(), None);
+        assert_eq!(submitted_proxy(&json!(null), Some(stored)).unwrap(), None);
+        // The redacted form the console shows keeps the stored password.
+        assert_eq!(
+            submitted_proxy(
+                &json!("socks5h://user:********@proxy.example:1080"),
+                Some(stored)
+            )
+            .unwrap()
+            .as_deref(),
+            Some(stored)
+        );
+        // A new URL replaces it after validation.
+        assert_eq!(
+            submitted_proxy(&json!(" http://proxy.example:3128 "), Some(stored))
+                .unwrap()
+                .as_deref(),
+            Some("http://proxy.example:3128")
+        );
+        for invalid in [json!("ftp://proxy.example"), json!("not a url"), json!(42)] {
+            let error = submitted_proxy(&invalid, None).unwrap_err();
+            assert_eq!(error.status, 400);
+            assert_eq!(error.code.as_deref(), Some("invalid_proxy"));
+        }
+        // The placeholder password is never stored as a real one.
+        assert!(
+            submitted_proxy(
+                &json!("socks5h://user:********@other.example:1080"),
+                Some(stored)
+            )
+            .is_err()
+        );
+        assert!(
+            submitted_proxy(&json!("socks5h://user:********@proxy.example:1080"), None).is_err()
+        );
     }
 }

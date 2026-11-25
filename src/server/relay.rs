@@ -17,6 +17,7 @@ use crate::{
 
 use super::{
     account_router::RouteHints,
+    chatgpt_proxy::ChatgptTransport,
     codex::header_bag,
     config::AppConfig,
     oauth::current_time_ms,
@@ -34,6 +35,8 @@ struct RelayReplacement {
     outcome_sink: OutcomeSink,
     credentials: CodexCredentials,
     identity: UsageIdentity,
+    /// The pooled account's upstream route (its proxy, if any).
+    transport: ChatgptTransport,
 }
 
 pub async fn handle_relay(
@@ -105,7 +108,7 @@ async fn replacement_credentials(
     let claimed = incoming_account_id.unwrap_or_default();
     if state
         .relay_ownership
-        .verify(&state.chatgpt, headers, claimed)
+        .verify(state.chatgpt.default_transport(), headers, claimed)
         .await
         != Ownership::Verified
     {
@@ -127,6 +130,7 @@ async fn replacement_credentials(
     else {
         return Ok(None);
     };
+    let transport = state.account_transport(&account_route.account)?;
     let oauth = OAuthRepository::new(state.config.as_ref(), &account_route.account.id);
     let stored = oauth.require_valid(current_time_ms()).await?;
     if stored
@@ -152,6 +156,7 @@ async fn replacement_credentials(
             account_id: stored.account_id,
         },
         identity,
+        transport,
     }))
 }
 
@@ -194,6 +199,12 @@ async fn forward_relay(
                 .track_live(&state.live)
         });
     let routed_account_id = replacement.map(|replacement| replacement.account_id.clone());
+    // Pooled requests leave through their account's proxy; the caller's own
+    // traffic takes the default route.
+    let transport = replacement.map_or_else(
+        || state.chatgpt.default_transport(),
+        |replacement| &replacement.transport,
+    );
     if let Some(upgrade) = upgrade {
         let output = websocket::proxy(
             upgrade,
@@ -205,8 +216,8 @@ async fn forward_relay(
                 close_on_overload: tracker.is_some(),
             },
             tracker,
-            state.chatgpt.proxy(),
-            state.chatgpt.websocket_idle_timeout(),
+            transport.proxy(),
+            transport.websocket_idle_timeout(),
         )
         .await?;
         if let Some(account_id) = routed_account_id.as_deref() {
@@ -218,8 +229,7 @@ async fn forward_relay(
         return Ok(output);
     }
 
-    let mut outgoing = state
-        .chatgpt
+    let mut outgoing = transport
         .client()
         .request(parts.method.clone(), target.as_str());
     for (name, value) in headers.iter() {

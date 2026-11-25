@@ -83,7 +83,8 @@ export interface AdminContextValue {
 	toggleUser: (entry: User) => Promise<void>;
 	deleteUser: (entry: User) => Promise<void>;
 
-	updateCodexAccount: (account: CodexAccount, value: CodexAccountUpdate) => Promise<void>;
+	/** Resolves to whether the update was saved. */
+	updateCodexAccount: (account: CodexAccount, value: CodexAccountUpdate) => Promise<boolean>;
 	deleteCodexAccount: (account: CodexAccount) => Promise<void>;
 	startDeviceLogin: () => void;
 	deviceLoginActive: boolean;
@@ -355,10 +356,12 @@ export function AdminProvider({
 	);
 
 	const updateCodexAccount = useCallback(
-		(account: CodexAccount, value: CodexAccountUpdate) =>
-			withBusy(`codex:${account.id}`, async () => {
+		async (account: CodexAccount, value: CodexAccountUpdate) => {
+			let saved = false;
+			await withBusy(`codex:${account.id}`, async () => {
 				try {
 					const accounts = await api.updateCodexAccount(account.id, value);
+					saved = true;
 					const routing = await api.getAccountRouting();
 					if (!mounted.current) return;
 					setState((current) => ({ ...current, codexAccounts: accounts, ...routing }));
@@ -367,7 +370,9 @@ export function AdminProvider({
 				} catch (error) {
 					reportError(error, "更新账户失败。");
 				}
-			}),
+			});
+			return saved;
+		},
 		[api, refreshQuota, reportError, withBusy],
 	);
 

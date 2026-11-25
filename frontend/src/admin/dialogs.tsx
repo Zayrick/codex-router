@@ -1,5 +1,5 @@
 // Dialogs shared by the console pages: user editor, account group editor,
-// Codex account rename and device login.
+// Codex account editor and device login.
 
 import { useState, type FormEvent } from "react";
 import { CopyIcon, ExternalLinkIcon, EyeIcon, EyeOffIcon, PlusIcon, RefreshCwIcon, Trash2Icon, TriangleAlertIcon } from "lucide-react";
@@ -10,6 +10,7 @@ import type {
 	CodexAccount,
 	CodexAccountDeviceAuthorization,
 	CredentialType,
+	ProxyTestResult,
 	RouteAssignment,
 	User,
 	UserInput,
@@ -539,37 +540,84 @@ export function GroupEditorDialog({
 
 const TRANSPARENT_CHECKBOX_CLASS = "data-checked:bg-transparent data-checked:text-foreground dark:data-checked:bg-transparent";
 
-export function AccountNameDialog({
+export function AccountEditDialog({
 	account,
 	busy,
 	onCancel,
 	onSave,
+	onTestProxy,
 }: {
 	account: CodexAccount;
 	busy: boolean;
 	onCancel: () => void;
-	onSave: (name: string) => void;
+	onSave: (value: { name: string; proxy: string | null }) => void;
+	onTestProxy: (proxy: string) => Promise<ProxyTestResult>;
 }) {
 	const [name, setName] = useState(account.name);
+	const [proxy, setProxy] = useState(account.proxy ?? "");
+	const [testing, setTesting] = useState(false);
+	const [result, setResult] = useState<ProxyTestResult | null>(null);
 
 	function submit(event: FormEvent<HTMLFormElement>): void {
 		event.preventDefault();
 		const value = name.trim();
-		if (value) onSave(value);
+		if (value) onSave({ name: value, proxy: proxy.trim() || null });
+	}
+
+	async function testProxy(): Promise<void> {
+		setTesting(true);
+		setResult(null);
+		try {
+			setResult(await onTestProxy(proxy.trim()));
+		} catch (error) {
+			setResult({ ok: false, latencyMs: 0, error: error instanceof Error ? error.message : "测试失败" });
+		} finally {
+			setTesting(false);
+		}
 	}
 
 	return (
 		<Dialog open onOpenChange={(open) => { if (!open && !busy) onCancel(); }}>
 			<DialogContent showCloseButton={!busy}>
 				<DialogHeader>
-					<DialogTitle>重命名账户</DialogTitle>
-					<DialogDescription>修改该 Codex 账户在管理面板中的显示名称。</DialogDescription>
+					<DialogTitle>编辑账户</DialogTitle>
 				</DialogHeader>
 				<form className="grid gap-4" onSubmit={submit}>
 					<FieldGroup>
 						<Field>
 							<FieldLabel htmlFor="codex-account-name">显示名称</FieldLabel>
 							<Input autoFocus disabled={busy} id="codex-account-name" maxLength={100} onChange={(event) => setName(event.target.value)} required type="text" value={name} />
+						</Field>
+						<Field>
+							<FieldLabel htmlFor="codex-account-proxy">代理</FieldLabel>
+							<InputGroup>
+								<InputGroupInput
+									autoComplete="off"
+									disabled={busy}
+									id="codex-account-proxy"
+									onChange={(event) => {
+										setProxy(event.target.value);
+										setResult(null);
+									}}
+									placeholder="socks5h://user:pass@host:1080"
+									spellCheck={false}
+									type="text"
+									value={proxy}
+								/>
+								<InputGroupAddon align="inline-end">
+									<InputGroupButton disabled={busy || testing} onClick={() => void testProxy()} type="button">
+										{testing ? <Spinner /> : null}
+										测试
+									</InputGroupButton>
+								</InputGroupAddon>
+							</InputGroup>
+							<FieldDescription className={result && !result.ok ? "text-danger" : undefined}>
+								{result
+									? result.ok
+										? `可用 · 出口 ${result.ip ?? "未知"}${result.location ? `（${result.location}）` : ""} · ${result.latencyMs} ms`
+										: `不可用：${result.error ?? "未知错误"}`
+									: "支持 socks5、socks5h、http；留空使用默认线路。"}
+							</FieldDescription>
 						</Field>
 					</FieldGroup>
 					<DialogFooter>

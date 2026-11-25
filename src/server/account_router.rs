@@ -850,6 +850,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             enabled: true,
+            proxy: None,
         }
     }
 
